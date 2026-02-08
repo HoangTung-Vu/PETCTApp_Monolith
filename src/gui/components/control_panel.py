@@ -1,0 +1,271 @@
+from PyQt6.QtWidgets import (
+    QWidget, QVBoxLayout, QPushButton, QTabWidget, 
+    QLabel, QSlider, QFormLayout, QGroupBox, QComboBox, QDoubleSpinBox
+)
+from PyQt6.QtCore import Qt, pyqtSignal
+
+class ControlPanel(QWidget):
+    """
+    Control Panel with Workflow and Display tabs.
+    """
+    # Signals
+    sig_load_ct_clicked = pyqtSignal()
+    sig_load_pet_clicked = pyqtSignal()
+    sig_segment_clicked = pyqtSignal()
+    sig_save_clicked = pyqtSignal()
+    sig_layout_changed = pyqtSignal(str)
+    sig_toggle_3d_pet = pyqtSignal(bool)
+    
+    # Display Settings Signals
+    sig_pet_opacity_changed = pyqtSignal(float)
+    sig_pet_opacity_changed = pyqtSignal(float)
+    sig_ct_window_level_changed = pyqtSignal(float, float) # window, level
+    sig_pet_window_level_changed = pyqtSignal(float, float) # window, level
+    sig_zoom_changed = pyqtSignal(int)
+    sig_toggle_mask = pyqtSignal(str, bool)
+    
+    # Session Signals
+    sig_new_session_clicked = pyqtSignal(str, str) # doctor, patient
+    sig_load_session_clicked = pyqtSignal(int)     # session_id
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._init_ui()
+
+    def _init_ui(self):
+        self.tabs = QTabWidget()
+        
+        self._init_workflow_tab()
+
+        self._init_view_tab()
+        self._init_display_tab()
+        
+        layout = QVBoxLayout(self)
+        layout.addWidget(self.tabs)
+        
+    def _init_workflow_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # Session Management
+        grp_session = QGroupBox("Session")
+        session_layout = QFormLayout()
+        
+        from PyQt6.QtWidgets import QLineEdit
+        self.input_doctor = QLineEdit()
+        self.input_patient = QLineEdit()
+        session_layout.addRow("Doctor:", self.input_doctor)
+        session_layout.addRow("Patient:", self.input_patient)
+        
+        self.btn_new_session = QPushButton("New Session")
+        self.btn_new_session.clicked.connect(self._emit_new_session)
+        session_layout.addRow(self.btn_new_session)
+        
+        self.combo_sessions = QComboBox()
+        # self.combo_sessions.addItem("Select Session...") # Populate later
+        
+        self.btn_load_this_session = QPushButton("Load Selected")
+        self.btn_load_this_session.clicked.connect(self._emit_load_session)
+        
+        session_layout.addRow("Previous:", self.combo_sessions)
+        session_layout.addRow(self.btn_load_this_session)
+        
+        grp_session.setLayout(session_layout)
+        layout.addWidget(grp_session)
+        
+        # Action Buttons
+        grp_actions = QGroupBox("Actions")
+        action_layout = QVBoxLayout()
+        
+        self.btn_load_ct = QPushButton("Load CT")
+        self.btn_load_ct.clicked.connect(self.sig_load_ct_clicked.emit)
+        
+        self.btn_load_pet = QPushButton("Load PET")
+        self.btn_load_pet.clicked.connect(self.sig_load_pet_clicked.emit)
+        
+        self.btn_segment = QPushButton("Run Segmentation")
+        self.btn_segment.clicked.connect(self.sig_segment_clicked.emit)
+        
+        self.btn_save = QPushButton("Save Session")
+        self.btn_save.clicked.connect(self.sig_save_clicked.emit)
+        
+        action_layout.addWidget(self.btn_load_ct)
+        action_layout.addWidget(self.btn_load_pet)
+        action_layout.addWidget(self.btn_segment)
+        action_layout.addWidget(self.btn_save)
+        grp_actions.setLayout(action_layout)
+        
+        layout.addWidget(grp_actions)
+        
+        # Segmentation Toggles
+        from PyQt6.QtWidgets import QCheckBox
+        grp_seg_disp = QGroupBox("Segmentation Visibility")
+        seg_disp_layout = QVBoxLayout()
+        
+        self.chk_tumor = QCheckBox("Show Tumor Mask")
+        self.chk_tumor.setChecked(True)
+        self.chk_tumor.toggled.connect(lambda c: self.sig_toggle_mask.emit("tumor", c))
+        
+        self.chk_body = QCheckBox("Show Body Mask")
+        self.chk_body.setChecked(True)
+        self.chk_body.toggled.connect(lambda c: self.sig_toggle_mask.emit("body", c))
+        
+        seg_disp_layout.addWidget(self.chk_tumor)
+        seg_disp_layout.addWidget(self.chk_body)
+        grp_seg_disp.setLayout(seg_disp_layout)
+        layout.addWidget(grp_seg_disp)
+
+        layout.addStretch()
+        
+        self.tabs.addTab(tab, "Workflow")
+
+    def _init_view_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # View Selection
+        grp_view = QGroupBox("View Mode")
+        view_layout = QVBoxLayout()
+        
+        # Mono Section
+        lbl_mono = QLabel("Mono-orthogonal:")
+        view_layout.addWidget(lbl_mono)
+        
+        self.btn_mono_axial = QPushButton("Axial")
+        self.btn_mono_axial.clicked.connect(lambda: self.sig_layout_changed.emit("mono_axial"))
+        view_layout.addWidget(self.btn_mono_axial)
+        
+        self.btn_mono_sag = QPushButton("Sagittal")
+        self.btn_mono_sag.clicked.connect(lambda: self.sig_layout_changed.emit("mono_sagittal"))
+        view_layout.addWidget(self.btn_mono_sag)
+        
+        self.btn_mono_cor = QPushButton("Coronal")
+        self.btn_mono_cor.clicked.connect(lambda: self.sig_layout_changed.emit("mono_coronal"))
+        view_layout.addWidget(self.btn_mono_cor)
+
+        # Grid Button
+        self.btn_grid = QPushButton("Grid View (6-Cell)")
+        self.btn_grid.clicked.connect(lambda: self.sig_layout_changed.emit("grid"))
+        view_layout.addWidget(self.btn_grid)
+        
+        # Overlay Section
+        lbl_overlay = QLabel("Overlay Mode:")
+        view_layout.addWidget(lbl_overlay)
+        
+        self.btn_overlay = QPushButton("Axial")
+        self.btn_overlay.clicked.connect(lambda: self.sig_layout_changed.emit("overlay_axial"))
+        view_layout.addWidget(self.btn_overlay)
+        
+        self.btn_overlay_sag = QPushButton("Sagittal")
+        self.btn_overlay_sag.clicked.connect(lambda: self.sig_layout_changed.emit("overlay_sagittal"))
+        view_layout.addWidget(self.btn_overlay_sag)
+        
+        self.btn_overlay_cor = QPushButton("Coronal")
+        self.btn_overlay_cor.clicked.connect(lambda: self.sig_layout_changed.emit("overlay_coronal"))
+        view_layout.addWidget(self.btn_overlay_cor)
+        
+        # 3D Section
+        lbl_3d = QLabel("3D Mode:")
+        view_layout.addWidget(lbl_3d)
+        
+        self.btn_3d = QPushButton("3D View")
+        self.btn_3d.clicked.connect(lambda: self.sig_layout_changed.emit("3d"))
+        view_layout.addWidget(self.btn_3d)
+        
+        self.chk_3d_pet = QPushButton("Toggle 3D PET")
+        self.chk_3d_pet.setCheckable(True)
+        self.chk_3d_pet.setChecked(True)
+        self.chk_3d_pet.clicked.connect(self._emit_3d_pet_toggle)
+        view_layout.addWidget(self.chk_3d_pet)
+        
+        grp_view.setLayout(view_layout)
+        layout.addWidget(grp_view)
+        layout.addStretch()
+        
+        self.tabs.addTab(tab, "View")
+
+    def _init_display_tab(self):
+        tab = QWidget()
+        layout = QFormLayout(tab)
+        
+        # CT Window/Level
+        # Window (Width) - typically 1 to 3000
+        # Level (Center) - typically -1000 to 1000
+        
+        self.spin_ct_window = QDoubleSpinBox()
+        self.spin_ct_window.setRange(1, 4000)
+        self.spin_ct_window.setValue(400) # Default Lung/Soft Tissue
+        self.spin_ct_window.valueChanged.connect(self._emit_ct_wl)
+        
+        self.spin_ct_level = QDoubleSpinBox()
+        self.spin_ct_level.setRange(-2000, 2000)
+        self.spin_ct_level.setValue(40)
+        self.spin_ct_level.valueChanged.connect(self._emit_ct_wl)
+        
+        layout.addRow("CT Window (Width):", self.spin_ct_window)
+        layout.addRow("CT Level (Center):", self.spin_ct_level)
+
+        # PET Window/Level
+        # PET is usually 0 to MAX. Window/Level might be weird but user asked for it.
+        # Window = Range, Level = Middle.
+        
+        self.spin_pet_window = QDoubleSpinBox()
+        self.spin_pet_window.setRange(0.1, 10000) # Arbitrary scale, large range
+        self.spin_pet_window.setValue(20)
+        self.spin_pet_window.valueChanged.connect(self._emit_pet_wl)
+        
+        self.spin_pet_level = QDoubleSpinBox()
+        self.spin_pet_level.setRange(0, 10000)
+        self.spin_pet_level.setValue(10)
+        self.spin_pet_level.valueChanged.connect(self._emit_pet_wl)
+
+        layout.addRow("PET Window:", self.spin_pet_window)
+        layout.addRow("PET Level:", self.spin_pet_level)
+        
+        # Zoom
+        self.slider_zoom = QSlider(Qt.Orientation.Horizontal)
+        self.slider_zoom.setRange(0, 100)
+        self.slider_zoom.setValue(20) # 1.0ish
+        self.slider_zoom.valueChanged.connect(self.sig_zoom_changed.emit)
+        
+        layout.addRow("Zoom:", self.slider_zoom)
+        
+        # PET Opacity
+        self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_opacity.setRange(0, 100)
+        self.slider_opacity.setValue(50)
+        self.slider_opacity.valueChanged.connect(
+            lambda v: self.sig_pet_opacity_changed.emit(v / 100.0)
+        )
+        
+        layout.addRow("PET Overlay Opacity:", self.slider_opacity)
+        
+        self.tabs.addTab(tab, "Display")
+        
+    def _emit_ct_wl(self):
+        self.sig_ct_window_level_changed.emit(
+            float(self.spin_ct_window.value()),
+            float(self.spin_ct_level.value())
+        )
+        
+    def _emit_pet_wl(self):
+        # We might need to map these slider values to actual intensity units if we want valid rendering
+        # For now, pass raw slider values and let LayoutManager (or Main) scale them?
+        # Or Just pass as is.
+        self.sig_pet_window_level_changed.emit(
+            float(self.spin_pet_window.value()),
+            float(self.spin_pet_level.value())
+        )
+
+    def _emit_new_session(self):
+        doc = self.input_doctor.text()
+        pat = self.input_patient.text()
+        self.sig_new_session_clicked.emit(doc, pat)
+        
+    def _emit_load_session(self):
+        data = self.combo_sessions.currentData()
+        if data is not None:
+             self.sig_load_session_clicked.emit(int(data))
+        
+    def _emit_3d_pet_toggle(self, checked):
+        self.sig_toggle_3d_pet.emit(checked)
