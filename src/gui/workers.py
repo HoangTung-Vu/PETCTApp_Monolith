@@ -46,3 +46,31 @@ class SegmentationWorker(QThread):
             import traceback
             traceback.print_exc()
             self.error.emit(str(e))
+
+class RefinementWorker(QThread):
+    """
+    Runs SUV refinement in a background thread.
+    """
+    finished = pyqtSignal(object) # Emits nib.Nifti1Image
+    error = pyqtSignal(str)
+    
+    def __init__(self, pet_image: nib.Nifti1Image, mask_image: nib.Nifti1Image, threshold: float):
+        super().__init__()
+        self.pet_image = pet_image
+        self.mask_image = mask_image
+        self.threshold = threshold
+        
+    def run(self):
+        try:
+            # Import here to avoid circular dependencies if any, though engine is core
+            from ..core.refinement_engine import RefinementEngine
+            
+            print(f"[Worker] Starting SUV Refinement (Threshold {self.threshold})...")
+            refined_image = RefinementEngine.refine_suv(self.pet_image, self.mask_image, self.threshold)
+            
+            self.finished.emit(refined_image)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))

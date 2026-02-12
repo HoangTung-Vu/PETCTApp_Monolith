@@ -30,6 +30,14 @@ class MainWindow(QMainWindow):
         # Load initial data
         self._refresh_session_list()
         
+        # Refinement State
+        self.current_tool = "pan_zoom"
+        self.brush_size = 10
+        self.target_layer = "tumor" # Default
+        self.target_layer = "tumor" # Default
+
+        
+        
     def _init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -50,7 +58,7 @@ class MainWindow(QMainWindow):
         self.control_panel.sig_load_ct_clicked.connect(self.load_ct_dialog)
         self.control_panel.sig_load_pet_clicked.connect(self.load_pet_dialog)
         self.control_panel.sig_segment_clicked.connect(self.run_segmentation_dialog) # Changed to dialog or direct
-        self.control_panel.sig_save_clicked.connect(self.save_session)
+        # self.control_panel.sig_save_clicked.connect(self.save_session) # Removed
         self.control_panel.sig_layout_changed.connect(self.layout_manager.set_view_mode)
         self.control_panel.sig_toggle_3d_pet.connect(self.layout_manager.toggle_3d_pet)
         
@@ -59,12 +67,78 @@ class MainWindow(QMainWindow):
         self.control_panel.sig_ct_window_level_changed.connect(self.layout_manager.set_ct_window_level)
         self.control_panel.sig_pet_window_level_changed.connect(self.layout_manager.set_pet_window_level)
         self.control_panel.sig_zoom_changed.connect(self.layout_manager.set_zoom)
+        self.control_panel.sig_zoom_to_fit.connect(self.layout_manager.reset_zoom)
         self.control_panel.sig_toggle_mask.connect(self.layout_manager.toggle_mask)
         
         # Session Management
         self.control_panel.sig_new_session_clicked.connect(self.create_new_session)
         self.control_panel.sig_load_session_clicked.connect(self.load_existing_session)
         
+        # Refinement
+        self.control_panel.sig_set_tool.connect(self._on_set_tool)
+        self.control_panel.sig_brush_size_changed.connect(self._on_brush_size_changed)
+        self.control_panel.sig_target_layer_changed.connect(self._on_target_layer_changed)
+        self.control_panel.sig_sync_masks_clicked.connect(self._on_sync_masks)
+        
+        # Layout Manager Signals
+        # self.layout_manager.sig_mask_edited.connect(self._on_mask_edited)
+
+        
+    def _on_refine_suv(self, threshold):
+        """
+        Refine the current mask using SUV threshold logic (async).
+        """
+        # 1. Sync manual edits first to ensure SessionManager has latest data
+        self._on_sync_masks()
+        
+        if self.session_manager.pet_image is None:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Missing Data", "PET image required for SUV refinement.")
+            return
+            
+        mask_img = None
+        if self.target_layer == "tumor":
+            mask_img = self.session_manager.tumor_mask
+        elif self.target_layer == "organ":
+            mask_img = self.session_manager.organ_mask
+            
+        if mask_img is None:
+            from PyQt6.QtWidgets import QMessageBox
+            QMessageBox.warning(self, "Missing Data", f"No {self.target_layer} mask available to refine.")
+            return
+
+        from .workers import RefinementWorker
+        self.refine_worker = RefinementWorker(
+            self.session_manager.pet_image,
+            mask_img,
+            threshold
+        )
+        self.refine_worker.finished.connect(self._on_refinement_finished)
+        self.refine_worker.error.connect(self._on_refinement_error)
+        
+        self.control_panel.show_refine_progress()
+        self.refine_worker.start()
+
+    def _on_refinement_finished(self, refined_img):
+        # Update SessionManager
+        data = refined_img.get_fdata()
+        if self.target_layer == "tumor":
+            self.session_manager.tumor_mask = refined_img
+        elif self.target_layer == "organ":
+            self.session_manager.organ_mask = refined_img
+            
+        # Update Viewers
+        self._push_mask_to_all(self.target_layer, data)
+        print(f"Refined {self.target_layer} finished.")
+        
+        self.control_panel.hide_refine_progress()
+
+    def _on_refinement_error(self, error_msg):
+        self.control_panel.hide_refine_progress()
+        print(f"Refinement Error: {error_msg}")
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "Refinement Failed", error_msg)
+
     def load_ct_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load CT Image", "", "NIfTI files (*.nii.gz *.nii)"
@@ -194,7 +268,9 @@ class MainWindow(QMainWindow):
 
         self.worker = SegmentationWorker(seg_type, input_data)
         self.worker.finished.connect(self._on_segmentation_finished)
-        self.worker.error.connect(lambda e: print(f"Segmentation Error: {e}"))
+        self.worker.error.connect(self._on_segmentation_error)
+        
+        self.control_panel.show_progress()
         self.worker.start()
         
     def _on_segmentation_finished(self, result_tuple):
@@ -206,28 +282,26 @@ class MainWindow(QMainWindow):
             self.session_manager.set_tumor_mask(data)
             # Update Viewers
             # Iterate all viewers and add mask
-            # For now, simplistic access
-            self.layout_manager.grid_viewers[(0,0)].load_mask(data, "tumor") # Add to all...
             self._push_mask_to_all("tumor", data)
             
         elif seg_type == "organ":
             self.session_manager.set_organ_mask(data)
             self._push_mask_to_all("organ", data)
             
-        print(f"Segmentation {seg_type} finished.")
+        # Auto-save immediately
+        self.session_manager.save_session()
+        print(f"Segmentation {seg_type} finished and saved.")
+        
+        self.control_panel.hide_progress()
         
     def _push_mask_to_all(self, layer_type, data):
-        # Grid
-        # Grid
-        for w in self.layout_manager.grid_viewers.values():
-            w.load_mask(data, layer_type)
-        # Overlay
-        self.layout_manager.overlay_viewer.load_mask(data, layer_type)
-        # Mono
-        for w in self.layout_manager.mono_viewers.values():
-            w.load_mask(data, layer_type)
-        # 3D
-        self.layout_manager.viewer_3d.load_mask(data, layer_type)
+        self.layout_manager.update_mask(data, layer_type)
+
+    def _on_segmentation_error(self, error_msg):
+        self.control_panel.hide_progress()
+        print(f"Segmentation Error: {error_msg}")
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "Segmentation Failed", error_msg)
 
     def save_session(self):
         self.session_manager.save_session()
@@ -238,3 +312,47 @@ class MainWindow(QMainWindow):
         # Close all viewers properly if needed
         # self.layout_manager.close_all()
         super().closeEvent(event)
+
+    # Refinement Slots
+    def _on_set_tool(self, tool):
+        self.current_tool = tool
+        self._update_all_tools()
+        
+    def _on_brush_size_changed(self, size):
+        self.brush_size = size
+        self._update_all_tools()
+        
+    def _on_target_layer_changed(self, layer):
+        self.target_layer = layer
+        self._update_all_tools()
+        
+    def _update_all_tools(self):
+        # Push tool settings to Layout Manager
+        self.layout_manager.set_drawing_tool(
+            self.current_tool, 
+            self.brush_size, 
+            self.target_layer
+        )
+
+    def _on_sync_masks(self):
+        """
+        Pull mask from active viewer and sync to all others + session.
+        """
+        # 1. Get current mask data from active viewer
+        mask_data = self.layout_manager.get_active_mask_data(self.target_layer)
+        if mask_data is None:
+            print("No mask data found to sync.")
+            return
+
+        # 2. Update Session Manager
+        if self.target_layer == "tumor":
+            self.session_manager.set_tumor_mask(mask_data)
+        elif self.target_layer == "organ":
+            self.session_manager.set_organ_mask(mask_data)
+        
+        # 3. Push back to all viewers (sync)
+        self._push_mask_to_all(self.target_layer, mask_data)
+        print(f"Synced {self.target_layer} mask from active viewer to all.")
+
+
+

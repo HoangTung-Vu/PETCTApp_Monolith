@@ -7,6 +7,7 @@ from .file_manager import FileManager
 from ..database.models import Session
 from ..database.session_repository import SessionRepository
 # We will import engines dynamically or inject them to avoid circular imports if any
+from .refinement_engine import RefinementEngine
 
 class SessionManager:
     """
@@ -138,7 +139,7 @@ class SessionManager:
             organ_path = str(path)
             
         # Update DB with mask paths
-        self.repository.update_mask_paths(self.current_session_id, tumor_path, organ_path)
+        self.repository.update(self.current_session_id, tumor_seg_path=tumor_path, organ_seg_path=organ_path)
         print(f"[SessionManager] Saved session {self.current_session_id}")
 
     def set_tumor_mask(self, mask_array: np.ndarray):
@@ -184,3 +185,35 @@ class SessionManager:
     def get_all_sessions(self):
         """Returns all sessions ordered by creation time."""
         return self.repository.get_all()
+
+    def refine_mask(self, mask_type: str, threshold: float) -> Optional[np.ndarray]:
+        """
+        Refines the specified mask using SUV thresholding.
+        Updates the internal mask state and returns the refined data.
+        """
+        if self.pet_image is None:
+            raise ValueError("PET image required for refinement.")
+            
+        # Get NIfTI objects directly
+        pet_img = self.pet_image
+        
+        if mask_type == "tumor":
+            current_mask_img = self.tumor_mask
+        elif mask_type == "organ":
+            current_mask_img = self.organ_mask
+        else:
+            raise ValueError(f"Unknown mask type: {mask_type}")
+            
+        if current_mask_img is None:
+            raise ValueError(f"No {mask_type} mask available to refine.")
+
+        # Run Refinement (returns NIfTI image)
+        refined_img = RefinementEngine.refine_suv(pet_img, current_mask_img, threshold)
+        
+        # Update Internal State
+        if mask_type == "tumor":
+            self.tumor_mask = refined_img
+        elif mask_type == "organ":
+            self.organ_mask = refined_img
+            
+        return refined_img.get_fdata()

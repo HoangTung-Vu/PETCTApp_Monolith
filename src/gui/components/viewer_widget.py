@@ -4,6 +4,8 @@ import numpy as np
 from typing import Optional, Tuple
 import nibabel as nib
 
+from ...utils.nifti_utils import to_napari, from_napari
+
 class ViewerWidget(QWidget):
     """
     A unified widget containing a single Napari viewer.
@@ -27,7 +29,17 @@ class ViewerWidget(QWidget):
             "tumor": "Tumor Mask",
             "organ": "Organ Mask"
         }
-        
+        self.is_3d = False
+    
+    # helper proxies for compatibility (optional, or just use imported functions)
+    @staticmethod
+    def to_napari(data: np.ndarray) -> np.ndarray:
+        return to_napari(data)
+
+    @staticmethod
+    def from_napari(data_zyx: np.ndarray) -> np.ndarray:
+        return from_napari(data_zyx)
+
     def load_image(self, image_data: np.ndarray, affine: np.ndarray, 
                    layer_type: str, colormap: str = "gray", 
                    blending: str = "translucent",
@@ -35,30 +47,16 @@ class ViewerWidget(QWidget):
         """
         Loads an image into the viewer.
         image_data: (X, Y, Z) array from nibabel
-        affine: (4, 4) affine matrix
         """
-        # Transpose/Rotate for Napari (ZYX)
-        # Nibabel (X, Y, Z) -> Napari usually expects (Z, Y, X)
-        # But we also need to respect the affine. 
-        # For simplicity in this specific app logic as requested:
-        # "Warnings: NAPARI USE NUMPY WITH AXES (Z,Y,X)"
-        
-        # Transpose to (Z, Y, X)
-        data_zyx = np.transpose(image_data, (2, 1, 0))
-        
-        # FIX: The views are currently inverted vertically. 
-        # Flip Z (axis 0) and Y (axis 1) to correct this.
-        # Axial (Y-X plane): Flipping Y flips it vertically.
-        # Coronal (Z-X plane): Flipping Z flips it vertically.
-        # Sagittal (Z-Y plane): Flipping Z flips it vertically. 
-        # Note: Flipping Y also flips Sagittal horizontally, effectively rotating it 180 degrees if both are flipped.
-        # This seems to be the desired correction for "all 3 views inverted".
-        data_zyx = np.flip(data_zyx, axis=(0, 1))
+        data_zyx = self.to_napari(image_data)
         
         name = self.LAYER_NAMES.get(layer_type, layer_type)
         
         if name in self.viewer.layers:
             self.viewer.layers[name].data = data_zyx
+            self.viewer.layers[name].colormap = colormap
+            self.viewer.layers[name].blending = blending
+            self.viewer.layers[name].opacity = opacity
         else:
             self.viewer.add_image(
                 data_zyx,
@@ -66,7 +64,6 @@ class ViewerWidget(QWidget):
                 colormap=colormap,
                 blending=blending,
                 opacity=opacity,
-                # scale=... # Helper might be needed for spacing
             )
             
     def load_mask(self, mask_data: np.ndarray, layer_type: str, color: Optional[int] = None):
@@ -75,23 +72,70 @@ class ViewerWidget(QWidget):
         """
         # Ensure integer type for Labels layer
         mask_data = mask_data.astype(np.uint8)
-        
-        data_zyx = np.transpose(mask_data, (2, 1, 0))
-        
-        # Apply the same flip as the image to keep alignment
-        data_zyx = np.flip(data_zyx, axis=(0, 1))
-        
+        data_zyx = self.to_napari(mask_data)
+        self.load_mask_zyx(data_zyx, layer_type)
+            
+    def load_mask_zyx(self, data_zyx: np.ndarray, layer_type: str):
+        """
+        Loads a label mask already in Napari space (Z, Y, X).
+        """
         name = self.LAYER_NAMES.get(layer_type, layer_type)
         
         if name in self.viewer.layers:
-            self.viewer.layers[name].data = data_zyx
+            layer = self.viewer.layers[name]
+            # If the data is already the same object, setting it might still trigger a refresh
+            # But let's check if we can avoid redundant updates
+            if layer.data is not data_zyx:
+                layer.data = data_zyx
         else:
-            self.viewer.add_labels(
+            layer = self.viewer.add_labels(
                 data_zyx,
                 name=name,
                 opacity=0.7
             )
             
+        # Lock editing if this is a 3D viewer
+        if self.is_3d:
+            layer.editable = False
+            
+    def get_layer_data(self, layer_type: str) -> Optional[np.ndarray]:
+        """
+        Returns the underlying data of a layer in Nibabel (X, Y, Z) format.
+        Useful for retrieving manually drawn masks.
+        """
+        name = self.LAYER_NAMES.get(layer_type, layer_type)
+        if name in self.viewer.layers:
+            data_zyx = self.viewer.layers[name].data
+            return self.from_napari(data_zyx)
+        return None
+
+    def set_drawing_mode(self, layer_type: str, mode: str, brush_size: float = 10):
+        """
+        Sets the interaction mode for a specific layer.
+        mode: 'pan_zoom', 'paint', 'erase', 'fill'
+        """
+        name = self.LAYER_NAMES.get(layer_type, layer_type)
+        
+        # Ensure layer exists and is selected
+        if name in self.viewer.layers:
+            layer = self.viewer.layers[name]
+            self.viewer.layers.selection.active = layer
+            
+            if mode == "pan_zoom":
+                layer.mode = "pan_zoom"
+            elif mode == "paint":
+                layer.mode = "paint"
+                layer.brush_size = brush_size
+                layer.n_edit_dimensions = 3 # Enable 3D spherical brush
+            elif mode == "erase":
+                layer.mode = "erase"
+                layer.brush_size = brush_size
+                layer.n_edit_dimensions = 3 # Enable 3D spherical eraser
+            elif mode == "fill":
+                layer.mode = "fill"
+        else:
+            print(f"Layer {name} not found in viewer.")
+
     def set_camera_view(self, axis: int):
         """
         Sets the camera to look along a specific axis.
@@ -99,11 +143,7 @@ class ViewerWidget(QWidget):
         1: Coronal (Y)
         2: Sagittal (X)
         """
-        # In Napari (Z, Y, X) -> (0, 1, 2)
-        # This sets the dimension that is SLICED, i.e. the viewing plane normal.
         self.viewer.dims.ndisplay = 2
-        # Order the dimensions so 'axis' is the first one (the slider)
-        # Default is (0, 1, 2) -> Z is slider (Axial view)
         
         if axis == 0: # Axial (Z-axis is slice)
             self.viewer.dims.order = (0, 1, 2)
@@ -116,6 +156,11 @@ class ViewerWidget(QWidget):
 
     def set_3d_view(self):
         self.viewer.dims.ndisplay = 3
+        self.is_3d = True
+        # Also ensure existing layers are locked
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Labels):
+                layer.editable = False
         
     def close(self):
         self.viewer.close()

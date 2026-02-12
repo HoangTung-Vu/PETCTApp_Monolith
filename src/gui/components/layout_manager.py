@@ -1,4 +1,6 @@
 from PyQt6.QtWidgets import QWidget, QGridLayout, QStackedWidget, QVBoxLayout, QLabel
+from PyQt6.QtCore import pyqtSignal
+import numpy as np
 from .viewer_widget import ViewerWidget
 
 class LayoutManager(QWidget):
@@ -6,6 +8,8 @@ class LayoutManager(QWidget):
     Manages switching between Grid, Overlay, and 3D layouts.
     Synchronizes viewers.
     """
+
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
@@ -23,7 +27,19 @@ class LayoutManager(QWidget):
         # Setup Synchronization
         self._sync_grid_views()
         self._sync_mono_views()
-        # For now, we assume we push data to all viewers when loaded.
+        self._sync_all_layouts()
+        
+        # Data Caching for Lazy Loading
+        self._cached_data = {
+            "ct": None, "pet": None, "affine": None,
+            "tumor": None, "organ": None
+        }
+        # Centralized Napari-space data for sharing across viewers
+        self._cached_data_zyx = {
+            "tumor": None,
+            "organ": None
+        }
+        self._is_3d_loaded = False
         
     def _init_grid_view(self):
         """
@@ -151,9 +167,24 @@ class LayoutManager(QWidget):
 
     def load_data(self, ct_data, pet_data, affine, tumor_mask=None, organ_mask=None):
         """
-        Push data to ALL viewers. Only loads if data is not None.
+        Push data to 2D viewers. Cache for 3D viewer (lazy load).
         """
-        # Grid Viewers
+        # Cache data
+        self._cached_data["ct"] = ct_data
+        self._cached_data["pet"] = pet_data
+        self._cached_data["affine"] = affine
+        self._cached_data["tumor"] = tumor_mask
+        self._cached_data["organ"] = organ_mask
+        self._is_3d_loaded = False # Reset 3D loaded state
+
+        # 0. Convert masks to Napari space ONCE for sharing
+        from ...utils.nifti_utils import to_napari
+        if tumor_mask is not None:
+            self._cached_data_zyx["tumor"] = to_napari(tumor_mask.astype(np.uint8))
+        if organ_mask is not None:
+            self._cached_data_zyx["organ"] = to_napari(organ_mask.astype(np.uint8))
+
+        # 1. Grid Viewers
         for (r, c), widget in self.grid_viewers.items():
             if c == 0:
                 if ct_data is not None:
@@ -162,64 +193,90 @@ class LayoutManager(QWidget):
                 if pet_data is not None:
                     widget.load_image(pet_data, affine, "pet", "jet")
             
-            # Load Masks
-            if tumor_mask is not None:
-                widget.load_mask(tumor_mask, "tumor")
-            if organ_mask is not None:
-                widget.load_mask(organ_mask, "organ")
-
-            # Only reset view if the primary image for this widget was loaded?
-            # Or just reset always? Resetting helps center the image.
-            # But if we just loaded CT, resetting PET viewer (which might be empty) is fine.
-            # However, if PET is empty, reset_view might do nothing or error.
-            # Let's trust Napari.
+            # Load Masks using shared Napari-space data
+            if self._cached_data_zyx["tumor"] is not None:
+                widget.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+            if self._cached_data_zyx["organ"] is not None:
+                widget.load_mask_zyx(self._cached_data_zyx["organ"], "organ")
             
-            # Re-apply camera view to ensure it's not reset by add_image
-            # Row 0=Axial(0), Row 1=Sagittal(2), Row 2=Coronal(1)
+            # Re-apply camera view and reset
             if r == 0: widget.set_camera_view(0)
             elif r == 1: widget.set_camera_view(2)
             elif r == 2: widget.set_camera_view(1)
             
             widget.viewer.reset_view()
                 
-        # Overlay Viewer
+        # 2. Overlay Viewer
         if ct_data is not None:
             self.overlay_viewer.load_image(ct_data, affine, "ct", "gray")
         if pet_data is not None:
             self.overlay_viewer.load_image(pet_data, affine, "pet", "jet", opacity=0.5)
         
-        if tumor_mask is not None:
-            self.overlay_viewer.load_mask(tumor_mask, "tumor")
-        if organ_mask is not None:
-            self.overlay_viewer.load_mask(organ_mask, "organ")
+        if self._cached_data_zyx["tumor"] is not None:
+            self.overlay_viewer.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+        if self._cached_data_zyx["organ"] is not None:
+            self.overlay_viewer.load_mask_zyx(self._cached_data_zyx["organ"], "organ")
 
         self.overlay_viewer.viewer.reset_view()
         
-        # 3D Viewer
-        if ct_data is not None:
-            self.viewer_3d.load_image(ct_data, affine, "ct", "gray")
-        if pet_data is not None:
-            self.viewer_3d.load_image(pet_data, affine, "pet", "jet", opacity=0.7) 
-        
-        if tumor_mask is not None:
-            self.viewer_3d.load_mask(tumor_mask, "tumor")
-        if organ_mask is not None:
-            self.viewer_3d.load_mask(organ_mask, "organ")
-
-        self.viewer_3d.viewer.dims.ndisplay = 3
-
-        # Mono Viewers
+        # 3. Mono Viewers
         if ct_data is not None:
             self.mono_viewers[0].load_image(ct_data, affine, "ct", "gray")
         if pet_data is not None:
-            self.mono_viewers[1].load_image(pet_data, affine, "pet", "jet") # No opacity needed on separate view
+            self.mono_viewers[1].load_image(pet_data, affine, "pet", "jet")
             
         for v in self.mono_viewers.values():
-            if tumor_mask is not None:
-                v.load_mask(tumor_mask, "tumor")
-            if organ_mask is not None:
-                v.load_mask(organ_mask, "organ")
+            if self._cached_data_zyx["tumor"] is not None:
+                v.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+            if self._cached_data_zyx["organ"] is not None:
+                v.load_mask_zyx(self._cached_data_zyx["organ"], "organ")
             v.viewer.reset_view()
+
+        # 4. Connect Event Listeners for Synchronization
+        self._connect_all_mask_events()
+
+    def _load_3d_data(self):
+        """Lazy load data into 3D viewer."""
+        if self._is_3d_loaded:
+            return
+            
+        ct = self._cached_data["ct"]
+        pet = self._cached_data["pet"]
+        affine = self._cached_data["affine"]
+        tumor = self._cached_data["tumor"]
+        organ = self._cached_data["organ"]
+        
+        if ct is not None:
+            self.viewer_3d.load_image(ct, affine, "ct", "gray")
+        if pet is not None:
+            self.viewer_3d.load_image(pet, affine, "pet", "jet", opacity=0.7) 
+        
+        if self._cached_data_zyx["tumor"] is not None:
+            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+        if self._cached_data_zyx["organ"] is not None:
+            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["organ"], "organ")
+
+        self.viewer_3d.viewer.dims.ndisplay = 3
+        # self.viewer_3d.viewer.reset_view() # Optional
+        
+        self._is_3d_loaded = True
+
+    def reset_zoom(self):
+        """Reset view for currently active viewers."""
+        # We can just reset all 2D viewers, it's cheap.
+        
+        # Grid
+        for v in self.grid_viewers.values():
+            v.viewer.reset_view()
+            
+        # Overlay
+        self.overlay_viewer.viewer.reset_view()
+        
+        # Mono
+        for v in self.mono_viewers.values():
+            v.viewer.reset_view()
+            
+        print("Zoom reset for all 2D viewers.")
         
     def _sync_grid_views(self):
         """
@@ -255,6 +312,35 @@ class LayoutManager(QWidget):
         v2 = self.mono_viewers[1].viewer
         self._link_dims(v1, v2)
         self._link_camera(v1, v2)
+
+    def _sync_all_layouts(self):
+        """
+        Links all 2D viewers across different layouts to share the same 3D crosshair position.
+        This provides 'Robust Sync': clicking on a point in Axial moves Coronal/Sagittal slices.
+        """
+        viewers = []
+        for v in self.grid_viewers.values(): viewers.append(v.viewer)
+        viewers.append(self.overlay_viewer.viewer)
+        for v in self.mono_viewers.values(): viewers.append(v.viewer)
+        
+        # We create a chain of links for current_step (Z, Y, X)
+        for i in range(len(viewers) - 1):
+            self._link_dims_full(viewers[i], viewers[i+1])
+            
+    def _link_dims_full(self, v1, v2):
+        """Links the full 3D position (current_step) between two viewers."""
+        def sync_v1_to_v2(event):
+            step1 = v1.dims.current_step
+            if v2.dims.current_step != step1:
+                v2.dims.current_step = step1
+                
+        def sync_v2_to_v1(event):
+            step2 = v2.dims.current_step
+            if v1.dims.current_step != step2:
+                v1.dims.current_step = step2
+
+        v1.dims.events.current_step.connect(sync_v1_to_v2)
+        v2.dims.events.current_step.connect(sync_v2_to_v1)
 
     def set_pet_opacity(self, value: float):
         """Update opacity for 'pet' layer in all viewers."""
@@ -376,9 +462,157 @@ class LayoutManager(QWidget):
             
         elif mode == "3d":
             self.stack.setCurrentWidget(self.view_3d_widget)
+            self._load_3d_data()
             
+    def update_mask(self, mask_data, mask_type):
+        """
+        Update mask in all active viewers and cache it.
+        Respects lazy loading for 3D viewer.
+        """
+        # Update Cache
+        self._cached_data[mask_type] = mask_data
+        
+        from ...utils.nifti_utils import to_napari
+        data_zyx = to_napari(mask_data.astype(np.uint8))
+        self._cached_data_zyx[mask_type] = data_zyx
+        
+        # Helper to push to a viewer list
+        def push_to_viewers(viewers, m_zyx, m_type):
+            for v in viewers:
+                v.load_mask_zyx(m_zyx, m_type)
+
+        # 0.5. Disconnect events to prevent recursion
+        self._disconnect_all_mask_events()
+
+        # 1. Grid
+        push_to_viewers(self.grid_viewers.values(), data_zyx, mask_type)
+        
+        # 2. Overlay
+        self.overlay_viewer.load_mask_zyx(data_zyx, mask_type)
+        
+        # 3. Mono
+        push_to_viewers(self.mono_viewers.values(), data_zyx, mask_type)
+        
+        # 4. 3D (Lazy)
+        if self._is_3d_loaded:
+            self.viewer_3d.load_mask_zyx(data_zyx, mask_type)
+            
+        # Re-connect events in case layers were recreated (load_mask_zyx handles updates but safer)
+        self._connect_all_mask_events()
+
+    def _connect_all_mask_events(self):
+        """Connect all mask layers across all viewers to a centralized sync handler."""
+        self._disconnect_all_mask_events() # Safety first
+
+        viewers = []
+        for v in self.grid_viewers.values(): viewers.append(v)
+        viewers.append(self.overlay_viewer)
+        for v in self.mono_viewers.values(): viewers.append(v)
+        if self._is_3d_loaded:
+            viewers.append(self.viewer_3d)
+
+        for v in viewers:
+            for layer_name in ["Tumor Mask", "Organ Mask"]:
+                if layer_name in v.viewer.layers:
+                    layer = v.viewer.layers[layer_name]
+                    layer.events.data.connect(self._on_mask_data_changed)
+
+    def _disconnect_all_mask_events(self):
+        """Disconnect all mask layers across all viewers."""
+        viewers = []
+        for v in self.grid_viewers.values(): viewers.append(v)
+        viewers.append(self.overlay_viewer)
+        for v in self.mono_viewers.values(): viewers.append(v)
+        if self._is_3d_loaded:
+            viewers.append(self.viewer_3d)
+
+        for v in viewers:
+            for layer_name in ["Tumor Mask", "Organ Mask"]:
+                if layer_name in v.viewer.layers:
+                    layer = v.viewer.layers[layer_name]
+                    try:
+                        layer.events.data.disconnect(self._on_mask_data_changed)
+                    except:
+                        pass
+
+
+    def _on_mask_data_changed(self, event):
+        """Called when any mask layer's data is modified (e.g. painted/erased)."""
+        trigger_layer = event.source
+        layer_name = trigger_layer.name
+        
+        # Refresh all OTHER viewers that share this data
+        viewers = []
+        for v in self.grid_viewers.values(): viewers.append(v)
+        viewers.append(self.overlay_viewer)
+        for v in self.mono_viewers.values(): viewers.append(v)
+        if self._is_3d_loaded:
+            viewers.append(self.viewer_3d)
+
+        for v in viewers:
+            if layer_name in v.viewer.layers:
+                layer = v.viewer.layers[layer_name]
+                if layer is not trigger_layer:
+                    # If sharing the same array, refresh() is enough to redraw
+                    # Napari might not always trigger a visible update if only a few pixels changed
+                    # but refresh() usually works.
+                    layer.refresh()
+                    
+
+
     def toggle_3d_pet(self, visible: bool):
         """Show/Hide PET layer in 3D view."""
+        # Update cache if needed? No, just view toggle.
         for layer in self.viewer_3d.viewer.layers:
              if layer.name == self.viewer_3d.LAYER_NAMES["pet"]:
                  layer.visible = visible
+    def set_drawing_tool(self, tool: str, brush_size: int, layer_type: str):
+        """
+        Sets the drawing tool for all 2D viewers.
+        """
+        # Iterate all 2D viewers
+        viewers = []
+        for v in self.grid_viewers.values(): viewers.append(v)
+        viewers.append(self.overlay_viewer)
+        for v in self.mono_viewers.values(): viewers.append(v)
+        
+        # 3D viewer usually disabled for drawing
+        # self.viewer_3d? No.
+
+        for v in viewers:
+            v.set_drawing_mode(layer_type, tool, brush_size)
+            
+    def get_active_mask_data(self, layer_type: str):
+        """
+        Retrieves the mask data from the currently active/visible viewer.
+        Returns Nibabel-space (X, Y, Z) array.
+        """
+        current_widget = self.stack.currentWidget()
+        
+        # List of all potential source viewers
+        potential_viewers = []
+        
+        # 1. Prioritize current active viewer
+        if current_widget == self.overlay_widget:
+            potential_viewers.append(self.overlay_viewer)
+        elif current_widget == self.mono_widget:
+            potential_viewers.extend(self.mono_viewers.values())
+        elif current_widget == self.grid_widget:
+            # Prioritize current cell if we can find it, but for simplicity just add all grid viewers
+            potential_viewers.extend(self.grid_viewers.values())
+        
+        # 2. If current is 3D or no data found, check ALL other 2D viewers
+        # Since they share the same array, any one of them will work.
+        all_2d = [self.overlay_viewer] + list(self.mono_viewers.values()) + list(self.grid_viewers.values())
+        for v in all_2d:
+            if v not in potential_viewers:
+                potential_viewers.append(v)
+        
+        # 3. Try to get data from the first viewer that has it
+        for viewer in potential_viewers:
+            data = viewer.get_layer_data(layer_type)
+            if data is not None:
+                return data
+                
+        # Fallback to cache if viewer doesn't have it or something failed
+        return self._cached_data.get(layer_type)

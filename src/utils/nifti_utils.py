@@ -94,3 +94,25 @@ def get_shape_for_plane(shape: tuple, plane: str) -> int:
         return shape[1]
     else:
         raise ValueError(f"Unknown plane: {plane}")
+
+
+def to_napari(data: np.ndarray) -> np.ndarray:
+    """
+    Converts Nibabel (X, Y, Z) to Napari (Z, Y, X) with vertical flip.
+    """
+    # 1. Transpose to (Z, Y, X)
+    data_zyx = np.transpose(data, (2, 1, 0))
+    # 2. Flip Z (axis 0) and Y (axis 1)
+    data_zyx = np.flip(data_zyx, axis=(0, 1))
+    return data_zyx
+
+
+def from_napari(data_zyx: np.ndarray) -> np.ndarray:
+    """
+    Converts Napari (Z, Y, X) back to Nibabel (X, Y, Z).
+    """
+    # 1. Undo Flip
+    data_zyx = np.flip(data_zyx, axis=(0, 1))
+    # 2. Undo Transpose (transpose is its own inverse here)
+    data_xyz = np.transpose(data_zyx, (2, 1, 0))
+    return data_xyz

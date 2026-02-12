@@ -1,6 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QTabWidget, 
-    QLabel, QSlider, QFormLayout, QGroupBox, QComboBox, QDoubleSpinBox
+    QLabel, QSlider, QFormLayout, QGroupBox, QComboBox, QDoubleSpinBox,
+    QProgressBar, QHBoxLayout, QGridLayout
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -12,7 +13,8 @@ class ControlPanel(QWidget):
     sig_load_ct_clicked = pyqtSignal()
     sig_load_pet_clicked = pyqtSignal()
     sig_segment_clicked = pyqtSignal()
-    sig_save_clicked = pyqtSignal()
+    sig_segment_clicked = pyqtSignal()
+    # sig_save_clicked = pyqtSignal() # Removed
     sig_layout_changed = pyqtSignal(str)
     sig_toggle_3d_pet = pyqtSignal(bool)
     
@@ -23,10 +25,22 @@ class ControlPanel(QWidget):
     sig_pet_window_level_changed = pyqtSignal(float, float) # window, level
     sig_zoom_changed = pyqtSignal(int)
     sig_toggle_mask = pyqtSignal(str, bool)
+    sig_zoom_to_fit = pyqtSignal()
     
     # Session Signals
     sig_new_session_clicked = pyqtSignal(str, str) # doctor, patient
+    sig_new_session_clicked = pyqtSignal(str, str) # doctor, patient
     sig_load_session_clicked = pyqtSignal(int)     # session_id
+
+    # Refinement Signals
+    sig_set_tool = pyqtSignal(str) # 'pan_zoom', 'paint', 'erase'
+    sig_brush_size_changed = pyqtSignal(int)
+    sig_refine_suv_clicked = pyqtSignal(float) # threshold
+    sig_refine_suv_clicked = pyqtSignal(float) # threshold
+    sig_sync_masks_clicked = pyqtSignal()
+    sig_save_refine_clicked = pyqtSignal()
+    sig_target_layer_changed = pyqtSignal(str) # 'tumor', 'organ'
+    sig_target_layer_changed = pyqtSignal(str) # 'tumor', 'organ'
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -38,6 +52,7 @@ class ControlPanel(QWidget):
         self._init_workflow_tab()
 
         self._init_view_tab()
+        self._init_refine_tab()
         self._init_display_tab()
         
         layout = QVBoxLayout(self)
@@ -86,13 +101,20 @@ class ControlPanel(QWidget):
         self.btn_segment = QPushButton("Run Segmentation")
         self.btn_segment.clicked.connect(self.sig_segment_clicked.emit)
         
-        self.btn_save = QPushButton("Save Session")
-        self.btn_save.clicked.connect(self.sig_save_clicked.emit)
+        # self.btn_save = QPushButton("Save Session")
+        # self.btn_save.clicked.connect(self.sig_save_clicked.emit)
         
         action_layout.addWidget(self.btn_load_ct)
         action_layout.addWidget(self.btn_load_pet)
         action_layout.addWidget(self.btn_segment)
-        action_layout.addWidget(self.btn_save)
+        # action_layout.addWidget(self.btn_save)
+        
+        # Progress Bar
+        self.progress_bar = QProgressBar()
+        self.progress_bar.setRange(0, 0) # Indeterminate
+        self.progress_bar.setVisible(False)
+        action_layout.addWidget(self.progress_bar)
+        
         grp_actions.setLayout(action_layout)
         
         layout.addWidget(grp_actions)
@@ -228,7 +250,14 @@ class ControlPanel(QWidget):
         self.slider_zoom.setValue(20) # 1.0ish
         self.slider_zoom.valueChanged.connect(self.sig_zoom_changed.emit)
         
-        layout.addRow("Zoom:", self.slider_zoom)
+        self.btn_zoom_fit = QPushButton("Zoom to Fit")
+        self.btn_zoom_fit.clicked.connect(self.sig_zoom_to_fit.emit)
+        
+        zoom_layout = QHBoxLayout()
+        zoom_layout.addWidget(self.slider_zoom)
+        zoom_layout.addWidget(self.btn_zoom_fit)
+        
+        layout.addRow("Zoom:", zoom_layout)
         
         # PET Opacity
         self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
@@ -269,3 +298,131 @@ class ControlPanel(QWidget):
         
     def _emit_3d_pet_toggle(self, checked):
         self.sig_toggle_3d_pet.emit(checked)
+
+    def _init_refine_tab(self):
+        tab = QWidget()
+        layout = QVBoxLayout(tab)
+        
+        # 1. Tool Selection
+        grp_tools = QGroupBox("Manual Tools")
+        tools_layout = QGridLayout()
+        
+        self.btn_pan = QPushButton("Pan/Zoom")
+        self.btn_paint = QPushButton("Paint")
+        self.btn_erase = QPushButton("Eraser")
+        
+        self.btn_pan.setCheckable(True)
+        self.btn_paint.setCheckable(True)
+        self.btn_erase.setCheckable(True)
+        
+        # Exclusive check
+        from PyQt6.QtWidgets import QButtonGroup
+        self.tool_group = QButtonGroup(self)
+        self.tool_group.addButton(self.btn_pan)
+        self.tool_group.addButton(self.btn_paint)
+        self.tool_group.addButton(self.btn_erase)
+        
+        self.btn_pan.setChecked(True)
+        
+        self.btn_pan.clicked.connect(lambda: self.sig_set_tool.emit("pan_zoom"))
+        self.btn_paint.clicked.connect(lambda: self.sig_set_tool.emit("paint"))
+        self.btn_erase.clicked.connect(lambda: self.sig_set_tool.emit("erase"))
+        
+        tools_layout.addWidget(self.btn_pan, 0, 0)
+        tools_layout.addWidget(self.btn_paint, 0, 1)
+        tools_layout.addWidget(self.btn_erase, 0, 2)
+        
+        grp_tools.setLayout(tools_layout)
+        layout.addWidget(grp_tools)
+        
+        # 2. Brush Size
+        grp_brush = QGroupBox("Brush Size")
+        brush_layout = QHBoxLayout()
+        self.slider_brush = QSlider(Qt.Orientation.Horizontal)
+        self.slider_brush.setRange(1, 50)
+        self.slider_brush.setValue(10)
+        
+        self.lbl_brush_size = QLabel("10")
+        self.lbl_brush_size.setFixedWidth(30)
+        
+        self.slider_brush.valueChanged.connect(self.sig_brush_size_changed.emit)
+        self.slider_brush.valueChanged.connect(lambda v: self.lbl_brush_size.setText(str(v)))
+        
+        brush_layout.addWidget(self.slider_brush)
+        brush_layout.addWidget(self.lbl_brush_size)
+        grp_brush.setLayout(brush_layout)
+        layout.addWidget(grp_brush)
+        
+        # 3. Target Layer
+        grp_layer = QGroupBox("Target Layer")
+        layer_layout = QHBoxLayout()
+        self.combo_layer = QComboBox()
+        self.combo_layer.addItems(["Tumor Mask", "Organ Mask"])
+        self.combo_layer.currentTextChanged.connect(
+            lambda t: self.sig_target_layer_changed.emit("tumor" if "Tumor" in t else "organ")
+        )
+        layer_layout.addWidget(self.combo_layer)
+        grp_layer.setLayout(layer_layout)
+        layout.addWidget(grp_layer)
+        
+        # 4. Sync/Save Manual
+        self.btn_sync = QPushButton("Sync Modifications")
+        self.btn_sync.setToolTip("Push manual edits to all viewers and save to session.")
+        self.btn_sync.clicked.connect(self.sig_sync_masks_clicked.emit)
+        layout.addWidget(self.btn_sync)
+        
+        layout.addSpacing(10)
+        
+        # 5. SUV Refinement
+        grp_suv = QGroupBox("SUV Refinement")
+        suv_layout = QFormLayout()
+        
+        self.spin_suv = QDoubleSpinBox()
+        self.spin_suv.setRange(0.0, 50.0)
+        self.spin_suv.setValue(2.5)
+        self.spin_suv.setSingleStep(0.1)
+        
+        self.btn_refine = QPushButton("Refine ROI by SUV")
+        self.btn_refine.clicked.connect(self._emit_refine_suv)
+        
+        suv_layout.addRow("Min SUV:", self.spin_suv)
+        suv_layout.addRow(self.btn_refine)
+        
+        suv_layout.addRow("Min SUV:", self.spin_suv)
+        suv_layout.addRow(self.btn_refine)
+        
+        grp_suv.setLayout(suv_layout)
+        layout.addWidget(grp_suv)
+        
+        # 6. Save Refinement
+        self.btn_save_refine = QPushButton("Save Refinement (Overwrite)")
+        self.btn_save_refine.clicked.connect(self.sig_save_refine_clicked.emit)
+        self.btn_save_refine.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold;")
+        layout.addWidget(self.btn_save_refine)
+        
+
+        
+        # 8. Refinement Progress Bar
+        self.refine_progress = QProgressBar()
+        self.refine_progress.setRange(0, 0) # Indeterminate
+        self.refine_progress.setVisible(False)
+        layout.addWidget(self.refine_progress)
+        
+        layout.addStretch()
+        self.tabs.addTab(tab, "Refine")
+
+    def _emit_refine_suv(self):
+        val = self.spin_suv.value()
+        self.sig_refine_suv_clicked.emit(val)
+
+    def show_progress(self):
+        self.progress_bar.setVisible(True)
+        
+    def hide_progress(self):
+        self.progress_bar.setVisible(False)
+
+    def show_refine_progress(self):
+        self.refine_progress.setVisible(True)
+
+    def hide_refine_progress(self):
+        self.refine_progress.setVisible(False)
