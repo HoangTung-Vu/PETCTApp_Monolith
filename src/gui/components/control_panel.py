@@ -13,13 +13,11 @@ class ControlPanel(QWidget):
     sig_load_ct_clicked = pyqtSignal()
     sig_load_pet_clicked = pyqtSignal()
     sig_segment_clicked = pyqtSignal()
-    sig_segment_clicked = pyqtSignal()
-    # sig_save_clicked = pyqtSignal() # Removed
+
     sig_layout_changed = pyqtSignal(str)
     sig_toggle_3d_pet = pyqtSignal(bool)
     
     # Display Settings Signals
-    sig_pet_opacity_changed = pyqtSignal(float)
     sig_pet_opacity_changed = pyqtSignal(float)
     sig_ct_window_level_changed = pyqtSignal(float, float) # window, level
     sig_pet_window_level_changed = pyqtSignal(float, float) # window, level
@@ -29,17 +27,14 @@ class ControlPanel(QWidget):
     
     # Session Signals
     sig_new_session_clicked = pyqtSignal(str, str) # doctor, patient
-    sig_new_session_clicked = pyqtSignal(str, str) # doctor, patient
     sig_load_session_clicked = pyqtSignal(int)     # session_id
 
     # Refinement Signals
     sig_set_tool = pyqtSignal(str) # 'pan_zoom', 'paint', 'erase'
     sig_brush_size_changed = pyqtSignal(int)
     sig_refine_suv_clicked = pyqtSignal(float) # threshold
-    sig_refine_suv_clicked = pyqtSignal(float) # threshold
     sig_sync_masks_clicked = pyqtSignal()
     sig_save_refine_clicked = pyqtSignal()
-    sig_target_layer_changed = pyqtSignal(str) # 'tumor', 'organ'
     sig_target_layer_changed = pyqtSignal(str) # 'tumor', 'organ'
 
     def __init__(self, parent=None):
@@ -101,14 +96,12 @@ class ControlPanel(QWidget):
         self.btn_segment = QPushButton("Run Segmentation")
         self.btn_segment.clicked.connect(self.sig_segment_clicked.emit)
         
-        # self.btn_save = QPushButton("Save Session")
-        # self.btn_save.clicked.connect(self.sig_save_clicked.emit)
+
         
         action_layout.addWidget(self.btn_load_ct)
         action_layout.addWidget(self.btn_load_pet)
         action_layout.addWidget(self.btn_segment)
-        # action_layout.addWidget(self.btn_save)
-        
+
         # Progress Bar
         self.progress_bar = QProgressBar()
         self.progress_bar.setRange(0, 0) # Indeterminate
@@ -388,8 +381,7 @@ class ControlPanel(QWidget):
         suv_layout.addRow("Min SUV:", self.spin_suv)
         suv_layout.addRow(self.btn_refine)
         
-        suv_layout.addRow("Min SUV:", self.spin_suv)
-        suv_layout.addRow(self.btn_refine)
+
         
         grp_suv.setLayout(suv_layout)
         layout.addWidget(grp_suv)

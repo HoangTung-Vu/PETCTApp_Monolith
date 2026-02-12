@@ -1,9 +1,9 @@
-import sys
+
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
     QPushButton, QLabel, QListWidget, QDockWidget, QToolBar, QFileDialog
 )
-from PyQt6.QtCore import Qt
+
 from pathlib import Path
 
 from ..core.session_manager import SessionManager
@@ -34,7 +34,7 @@ class MainWindow(QMainWindow):
         self.current_tool = "pan_zoom"
         self.brush_size = 10
         self.target_layer = "tumor" # Default
-        self.target_layer = "tumor" # Default
+
 
         
         
@@ -57,8 +57,7 @@ class MainWindow(QMainWindow):
         # Control Panel -> Main Window Actions
         self.control_panel.sig_load_ct_clicked.connect(self.load_ct_dialog)
         self.control_panel.sig_load_pet_clicked.connect(self.load_pet_dialog)
-        self.control_panel.sig_segment_clicked.connect(self.run_segmentation_dialog) # Changed to dialog or direct
-        # self.control_panel.sig_save_clicked.connect(self.save_session) # Removed
+        self.control_panel.sig_segment_clicked.connect(self.run_segmentation_dialog)
         self.control_panel.sig_layout_changed.connect(self.layout_manager.set_view_mode)
         self.control_panel.sig_toggle_3d_pet.connect(self.layout_manager.toggle_3d_pet)
         
@@ -79,9 +78,6 @@ class MainWindow(QMainWindow):
         self.control_panel.sig_brush_size_changed.connect(self._on_brush_size_changed)
         self.control_panel.sig_target_layer_changed.connect(self._on_target_layer_changed)
         self.control_panel.sig_sync_masks_clicked.connect(self._on_sync_masks)
-        
-        # Layout Manager Signals
-        # self.layout_manager.sig_mask_edited.connect(self._on_mask_edited)
 
         
     def _on_refine_suv(self, threshold):
@@ -310,7 +306,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         # Close all viewers properly if needed
-        # self.layout_manager.close_all()
+
         super().closeEvent(event)
 
     # Refinement Slots
@@ -353,6 +349,3 @@ class MainWindow(QMainWindow):
         # 3. Push back to all viewers (sync)
         self._push_mask_to_all(self.target_layer, mask_data)
         print(f"Synced {self.target_layer} mask from active viewer to all.")
-
-
-

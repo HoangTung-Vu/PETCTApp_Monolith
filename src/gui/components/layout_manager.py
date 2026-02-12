@@ -257,7 +257,7 @@ class LayoutManager(QWidget):
             self.viewer_3d.load_mask_zyx(self._cached_data_zyx["organ"], "organ")
 
         self.viewer_3d.viewer.dims.ndisplay = 3
-        # self.viewer_3d.viewer.reset_view() # Optional
+
         
         self._is_3d_loaded = True
 
@@ -457,8 +457,7 @@ class LayoutManager(QWidget):
             else:
                 self.overlay_viewer.set_camera_view(0) # Default
                 
-        elif mode == "mono":
-            self.stack.setCurrentWidget(self.mono_widget)
+
             
         elif mode == "3d":
             self.stack.setCurrentWidget(self.view_3d_widget)
@@ -577,7 +576,7 @@ class LayoutManager(QWidget):
         for v in self.mono_viewers.values(): viewers.append(v)
         
         # 3D viewer usually disabled for drawing
-        # self.viewer_3d? No.
+
 
         for v in viewers:
             v.set_drawing_mode(layer_type, tool, brush_size)
