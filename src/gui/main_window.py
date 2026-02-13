@@ -406,15 +406,20 @@ class MainWindow(QMainWindow):
     
     def _on_autopet_finished(self, result_img):
         """Preview the AutoPET result as tumor mask."""
+        import numpy as np
         data = result_img.get_fdata()
         
-        # Update session manager with result (preview, not saved yet)
-        self.session_manager.tumor_mask = result_img
+        print(f"[AutoPET] Inference finished!")
+        print(f"[AutoPET] Result shape: {data.shape}, dtype: {data.dtype}")
+        print(f"[AutoPET] Unique values: {np.unique(data)}")
+        print(f"[AutoPET] Nonzero voxels: {np.count_nonzero(data)}")
+        
+        # Update session manager
         self.session_manager.set_tumor_mask(data)
         
         # Push to all viewers for preview
         self._push_mask_to_all("tumor", data)
-        print("[AutoPET] Inference finished, result previewed.")
+        print("[AutoPET] Result pushed to all viewers.")
         
         self.control_panel.hide_autopet_progress()
     
