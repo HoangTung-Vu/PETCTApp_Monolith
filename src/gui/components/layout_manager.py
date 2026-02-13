@@ -9,6 +9,9 @@ class LayoutManager(QWidget):
     Synchronizes viewers.
     """
 
+    # Signal emitted when user clicks in autopet mode: (coord_zyx_list, label)
+    sig_autopet_click_added = pyqtSignal(list, str)
+
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -615,3 +618,107 @@ class LayoutManager(QWidget):
                 
         # Fallback to cache if viewer doesn't have it or something failed
         return self._cached_data.get(layer_type)
+
+    # ──── AutoPET Interactive Click Handling ────
+    
+    def _get_all_2d_viewers(self):
+        """Collect all 2D viewer widgets."""
+        viewers = list(self.grid_viewers.values())
+        viewers.append(self.overlay_viewer)
+        viewers.extend(self.mono_viewers.values())
+        return viewers
+    
+    def enable_autopet_click_mode(self, label: str):
+        """Install mouse callback on all 2D viewers.
+        label: 'tumor' or 'background'
+        """
+        self._autopet_click_label = label
+        self._remove_autopet_callbacks()
+        
+        for v in self._get_all_2d_viewers():
+            callback = self._make_click_callback()
+            v._autopet_callback = callback
+            v.viewer.mouse_double_click_callbacks.append(callback)
+    
+    def disable_autopet_click_mode(self):
+        """Remove mouse callbacks from all viewers."""
+        self._autopet_click_label = None
+        self._remove_autopet_callbacks()
+    
+    def _remove_autopet_callbacks(self):
+        for v in self._get_all_2d_viewers():
+            if hasattr(v, '_autopet_callback') and v._autopet_callback is not None:
+                try:
+                    v.viewer.mouse_double_click_callbacks.remove(v._autopet_callback)
+                except ValueError:
+                    pass
+                v._autopet_callback = None
+    
+    def _make_click_callback(self):
+        """Create a mouse callback that captures click coordinates."""
+        def on_double_click(viewer, event):
+            label = getattr(self, '_autopet_click_label', None)
+            if label is None:
+                return
+            coord_zyx = [round(c) for c in event.position]
+            print(f"[AutoPET] Click: {label} at ZYX={coord_zyx}")
+            
+            # Paint sphere into shared array
+            self._paint_click_sphere(coord_zyx, label)
+            
+            # Emit signal for main_window to track
+            self.sig_autopet_click_added.emit(coord_zyx, label)
+        
+        return on_double_click
+    
+    def _ensure_click_array(self):
+        """Lazily create the shared click markers array matching image shape."""
+        if not hasattr(self, '_click_markers') or self._click_markers is None:
+            # Get shape from cached data
+            shape = None
+            for key in ("ct", "pet"):
+                d = self._cached_data.get(key)
+                if d is not None:
+                    from ...utils.nifti_utils import to_napari
+                    shape = to_napari(d).shape
+                    break
+            if shape is None:
+                return None
+            self._click_markers = np.zeros(shape, dtype=np.uint8)
+        return self._click_markers
+    
+    def _paint_click_sphere(self, coord_zyx, label: str, radius: int = 3):
+        """Paint a sphere at coord into the shared markers array and push to viewers."""
+        arr = self._ensure_click_array()
+        if arr is None:
+            return
+        
+        val = 1 if label == "tumor" else 2
+        z, y, x = coord_zyx
+        shape = arr.shape
+        
+        # Compute sphere bounds (clipped to array)
+        z0, z1 = max(0, z - radius), min(shape[0], z + radius + 1)
+        y0, y1 = max(0, y - radius), min(shape[1], y + radius + 1)
+        x0, x1 = max(0, x - radius), min(shape[2], x + radius + 1)
+        
+        # Create sphere mask within the bounding box
+        zz, yy, xx = np.ogrid[z0:z1, y0:y1, x0:x1]
+        dist_sq = (zz - z)**2 + (yy - y)**2 + (xx - x)**2
+        arr[z0:z1, y0:y1, x0:x1][dist_sq <= radius**2] = val
+        
+        # Push to all viewers (same array ref → just refresh)
+        self._push_click_markers(arr)
+    
+    def _push_click_markers(self, arr):
+        """Push click markers array to all 2D viewers."""
+        for v in self._get_all_2d_viewers():
+            v.load_click_markers(arr)
+    
+    def clear_autopet_clicks(self):
+        """Clear all click markers from all viewers."""
+        if hasattr(self, '_click_markers') and self._click_markers is not None:
+            self._click_markers[:] = 0
+        for v in self._get_all_2d_viewers():
+            v.remove_click_markers()
+        self._click_markers = None

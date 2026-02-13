@@ -74,3 +74,32 @@ class RefinementWorker(QThread):
             import traceback
             traceback.print_exc()
             self.error.emit(str(e))
+
+
+class AutoPETWorker(QThread):
+    """
+    Runs AutoPET Interactive inference in a background thread.
+    """
+    finished = pyqtSignal(object)  # Emits nib.Nifti1Image
+    error = pyqtSignal(str)
+    
+    def __init__(self, ct_image: nib.Nifti1Image, pet_image: nib.Nifti1Image, clicks: list):
+        super().__init__()
+        self.ct_image = ct_image
+        self.pet_image = pet_image
+        self.clicks = clicks  # [{"point": [z,y,x], "name": "tumor"/"background"}, ...]
+        
+    def run(self):
+        try:
+            from ..core.engine.autopet_interactive_engine import AutoPETInteractiveEngine
+            
+            print(f"[Worker] Starting AutoPET Interactive ({len(self.clicks)} clicks)...")
+            engine = AutoPETInteractiveEngine(device="auto")
+            result = engine.run_nib([self.ct_image, self.pet_image], clicks=self.clicks)
+            
+            self.finished.emit(result)
+            
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))

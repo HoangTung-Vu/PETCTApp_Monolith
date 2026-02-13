@@ -35,6 +35,9 @@ class MainWindow(QMainWindow):
         self.brush_size = 10
         self.target_layer = "tumor" # Default
 
+        # AutoPET Interactive State
+        self.autopet_clicks = []  # [{"point": [z,y,x], "name": "tumor"/"background"}, ...]
+
 
         
         
@@ -80,6 +83,16 @@ class MainWindow(QMainWindow):
         self.control_panel.sig_sync_masks_clicked.connect(self._on_sync_masks)
         self.control_panel.sig_refine_suv_clicked.connect(self._on_refine_suv)
         self.control_panel.sig_save_refine_clicked.connect(self.save_session)
+
+        # AutoPET Interactive
+        self.control_panel.sig_autopet_click_mode_changed.connect(
+            self.layout_manager.enable_autopet_click_mode
+        )
+        self.control_panel.sig_autopet_run_clicked.connect(self._on_autopet_run)
+        self.control_panel.sig_autopet_save_clicked.connect(self.save_session)
+        self.control_panel.sig_autopet_sync_clicked.connect(self._on_sync_masks)
+        self.control_panel.sig_autopet_clear_clicks.connect(self._on_autopet_clear_clicks)
+        self.layout_manager.sig_autopet_click_added.connect(self._on_autopet_click_added)
 
         
     def _on_refine_suv(self, threshold):
@@ -351,3 +364,62 @@ class MainWindow(QMainWindow):
         # 3. Push back to all viewers (sync)
         self._push_mask_to_all(self.target_layer, mask_data)
         print(f"Synced {self.target_layer} mask from active viewer to all.")
+
+    # ──── AutoPET Interactive Slots ────
+    
+    def _on_autopet_click_added(self, coord_zyx, label):
+        """Track a new click and update the UI list."""
+        click = {"point": coord_zyx, "name": label}
+        self.autopet_clicks.append(click)
+        self.control_panel.add_autopet_click_item(coord_zyx, label)
+        print(f"[AutoPET] Added click #{len(self.autopet_clicks)}: {label} at {coord_zyx}")
+    
+    def _on_autopet_clear_clicks(self):
+        """Clear all tracked clicks and viewer markers."""
+        self.autopet_clicks.clear()
+        self.layout_manager.clear_autopet_clicks()
+        print("[AutoPET] Cleared all clicks.")
+    
+    def _on_autopet_run(self):
+        """Run AutoPET Interactive inference with collected clicks."""
+        # Sync manual edits first
+        self._on_sync_masks()
+        
+        ct_img = self.session_manager.ct_image
+        pet_img = self.session_manager.pet_image
+        
+        from PyQt6.QtWidgets import QMessageBox
+        if not ct_img or not pet_img:
+            QMessageBox.warning(self, "Missing Data",
+                                "AutoPET Interactive requires both CT and PET images.")
+            return
+        
+        from .workers import AutoPETWorker
+        self.autopet_worker = AutoPETWorker(
+            ct_img, pet_img, list(self.autopet_clicks)
+        )
+        self.autopet_worker.finished.connect(self._on_autopet_finished)
+        self.autopet_worker.error.connect(self._on_autopet_error)
+        
+        self.control_panel.show_autopet_progress()
+        self.autopet_worker.start()
+    
+    def _on_autopet_finished(self, result_img):
+        """Preview the AutoPET result as tumor mask."""
+        data = result_img.get_fdata()
+        
+        # Update session manager with result (preview, not saved yet)
+        self.session_manager.tumor_mask = result_img
+        self.session_manager.set_tumor_mask(data)
+        
+        # Push to all viewers for preview
+        self._push_mask_to_all("tumor", data)
+        print("[AutoPET] Inference finished, result previewed.")
+        
+        self.control_panel.hide_autopet_progress()
+    
+    def _on_autopet_error(self, error_msg):
+        self.control_panel.hide_autopet_progress()
+        print(f"[AutoPET] Error: {error_msg}")
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "AutoPET Failed", error_msg)

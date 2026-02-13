@@ -161,6 +161,33 @@ class ViewerWidget(QWidget):
         for layer in self.viewer.layers:
             if isinstance(layer, napari.layers.Labels):
                 layer.editable = False
+
+    # ──── AutoPET Click Markers ────
+    CLICK_LAYER_NAME = "Click Markers"
+    
+    def load_click_markers(self, data_zyx: np.ndarray):
+        """Load/update the click markers labels layer (shared array)."""
+        name = self.CLICK_LAYER_NAME
+        if name in self.viewer.layers:
+            layer = self.viewer.layers[name]
+            if layer.data is not data_zyx:
+                layer.data = data_zyx
+            else:
+                layer.refresh()
+        else:
+            # color_map: 0=transparent, 1=red(tumor), 2=blue(background)
+            layer = self.viewer.add_labels(
+                data_zyx,
+                name=name,
+                opacity=0.5,
+            )
+            layer.color = {1: 'red', 2: 'dodgerblue'}
+            layer.editable = False
+    
+    def remove_click_markers(self):
+        """Remove the click markers layer."""
+        if self.CLICK_LAYER_NAME in self.viewer.layers:
+            self.viewer.layers.remove(self.CLICK_LAYER_NAME)
         
     def close(self):
         self.viewer.close()
