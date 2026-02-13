@@ -78,6 +78,8 @@ class MainWindow(QMainWindow):
         self.control_panel.sig_brush_size_changed.connect(self._on_brush_size_changed)
         self.control_panel.sig_target_layer_changed.connect(self._on_target_layer_changed)
         self.control_panel.sig_sync_masks_clicked.connect(self._on_sync_masks)
+        self.control_panel.sig_refine_suv_clicked.connect(self._on_refine_suv)
+        self.control_panel.sig_save_refine_clicked.connect(self.save_session)
 
         
     def _on_refine_suv(self, threshold):
