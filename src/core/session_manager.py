@@ -23,6 +23,9 @@ class SessionManager:
         self.tumor_mask: Optional[nib.Nifti1Image] = None
         self.organ_mask: Optional[nib.Nifti1Image] = None
         
+        # Probability volume for tumor (single-channel, shape X,Y,Z, float32)
+        self.tumor_prob: Optional[np.ndarray] = None
+        
         self.repository = SessionRepository()
 
     def create_session(self, doctor_name: str, patient_name: str, ct_path: Optional[Path] = None, pet_path: Optional[Path] = None) -> int:
@@ -64,6 +67,7 @@ class SessionManager:
         # Reset masks
         self.tumor_mask = None
         self.organ_mask = None
+        self.tumor_prob = None
         
         print(f"[SessionManager] Created session {self.current_session_id}")
         return self.current_session_id
@@ -116,6 +120,12 @@ class SessionManager:
             self.organ_mask = FileManager.load_nifti(session_id, "organ_seg")
         else:
             self.organ_mask = None
+        
+        # Load tumor probability volume if it exists
+        if FileManager.numpy_exists(session_id, "tumor_prob"):
+            self.tumor_prob = FileManager.load_numpy(session_id, "tumor_prob")
+        else:
+            self.tumor_prob = None
             
         print(f"[SessionManager] Loaded session {session_id}")
 
@@ -137,6 +147,10 @@ class SessionManager:
         if self.organ_mask is not None:
             path = FileManager.save_nifti(self.organ_mask, self.current_session_id, "organ_seg")
             organ_path = str(path)
+        
+        # Save tumor probability volume
+        if self.tumor_prob is not None:
+            FileManager.save_numpy(self.tumor_prob, self.current_session_id, "tumor_prob")
             
         # Update DB with mask paths
         self.repository.update(self.current_session_id, tumor_seg_path=tumor_path, organ_seg_path=organ_path)
@@ -181,6 +195,14 @@ class SessionManager:
         if self.organ_mask:
             return self.organ_mask.get_fdata()
         return None
+
+    def set_tumor_prob(self, prob_array: np.ndarray):
+        """Set the tumor probability volume in memory."""
+        self.tumor_prob = prob_array.astype(np.float32)
+
+    def get_tumor_prob(self) -> Optional[np.ndarray]:
+        """Get the tumor probability volume."""
+        return self.tumor_prob
 
     def get_all_sessions(self):
         """Returns all sessions ordered by creation time."""

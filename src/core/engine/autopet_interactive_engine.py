@@ -247,3 +247,125 @@ class AutoPETInteractiveEngine(SegmentationEngine):
         
         print(f"[AutoPET] Output shape: {pred_array.shape}")
         return nib.Nifti1Image(pred_array.astype(np.uint8), ref_img.affine, ref_img.header)
+
+    def run_prob(
+        self,
+        input_paths: Union[str, Path, List[Union[str, Path]]],
+        clicks: Optional[Union[List[Dict], Dict]] = None,
+        single_channel: bool = True,
+    ) -> np.ndarray:
+        """Run interactive segmentation and return probability maps.
+        
+        Args:
+            input_paths: List of [ct_path, pet_path] or a single path.
+            clicks: Click annotations.
+            single_channel: If True, returns only lesion class prob (X,Y,Z).
+                           If False, returns all classes (num_classes, X,Y,Z).
+        
+        Returns:
+            np.ndarray probability map.
+        """
+        self._init_predictor()
+        
+        if isinstance(input_paths, (str, Path)):
+            input_paths = [input_paths]
+        input_paths = [Path(p) for p in input_paths]
+        
+        print(f"[AutoPET] Running prob inference on {[str(p) for p in input_paths]}")
+        
+        # Load images via SimpleITK
+        arrays = []
+        ref_sitk = None
+        for p in input_paths:
+            sitk_img = sitk.ReadImage(str(p))
+            if ref_sitk is None:
+                ref_sitk = sitk_img
+            arrays.append(sitk.GetArrayFromImage(sitk_img))
+        
+        input_array = np.stack(arrays)  # (C, Z, Y, X)
+        spacing_zyx = list(ref_sitk.GetSpacing()[::-1])
+        props = {'spacing': spacing_zyx}
+        formatted_clicks = self._format_clicks(clicks)
+        
+        print(f"[AutoPET] Input shape: {input_array.shape}, spacing: {spacing_zyx}")
+        print(f"[AutoPET] Clicks: {len(formatted_clicks.get('points', []))} points")
+        
+        # Run prediction with probabilities
+        seg, prob = self.predictor.predict_single_npy_array(
+            input_array, props, formatted_clicks, self.point_width, None, None, True
+        )
+        
+        print(f"[AutoPET] Prob output shape: {prob.shape}, dtype: {prob.dtype}")
+        
+        if single_channel:
+            if prob.shape[0] > 1:
+                prob = prob[1]
+            else:
+                prob = prob[0]
+            # Transpose (Z, Y, X) -> (X, Y, Z)
+            prob = np.transpose(prob, (2, 1, 0))
+            print(f"[AutoPET] Single channel prob shape: {prob.shape}")
+        else:
+            # Transpose (num_classes, Z, Y, X) -> (num_classes, X, Y, Z)
+            prob = np.transpose(prob, (0, 3, 2, 1))
+            print(f"[AutoPET] Multi-channel prob shape: {prob.shape}")
+        
+        return prob
+
+    def run_nib_prob(
+        self,
+        images: Union[nib.Nifti1Image, List[nib.Nifti1Image]],
+        clicks: Optional[Union[List[Dict], Dict]] = None,
+        single_channel: bool = True,
+    ) -> np.ndarray:
+        """Run interactive segmentation on nibabel images and return probability maps.
+        
+        Args:
+            images: Single or list of Nifti1Image objects [CT, PET].
+            clicks: Click annotations in [z, y, x] coordinate order.
+            single_channel: If True, returns only lesion class prob (X,Y,Z).
+                           If False, returns all classes (num_classes, X,Y,Z).
+        
+        Returns:
+            np.ndarray probability map.
+        """
+        self._init_predictor()
+        
+        if isinstance(images, nib.Nifti1Image):
+            images = [images]
+        
+        ref_img = images[0]
+        print(f"[AutoPET] Running prob inference on {len(images)} nibabel image(s)")
+        
+        # Convert each image: X,Y,Z -> Z,Y,X for nnUNet
+        arrays = [self._nib_to_sitk_array(img) for img in images]
+        input_array = np.stack(arrays)  # (C, Z, Y, X)
+        
+        spacing_zyx = self._get_spacing_zyx(ref_img)
+        props = {'spacing': spacing_zyx}
+        formatted_clicks = self._format_clicks(clicks)
+        
+        print(f"[AutoPET] Input shape: {input_array.shape}, spacing: {spacing_zyx}")
+        print(f"[AutoPET] Clicks: {len(formatted_clicks.get('points', []))} points")
+        
+        # Run prediction with probabilities
+        seg, prob = self.predictor.predict_single_npy_array(
+            input_array, props, formatted_clicks, self.point_width, None, None, True
+        )
+        
+        print(f"[AutoPET] Prob output shape: {prob.shape}, dtype: {prob.dtype}")
+        
+        if single_channel:
+            if prob.shape[0] > 1:
+                prob = prob[1]
+            else:
+                prob = prob[0]
+            # Transpose (Z, Y, X) -> (X, Y, Z)
+            prob = np.transpose(prob, (2, 1, 0))
+            print(f"[AutoPET] Single channel prob shape: {prob.shape}")
+        else:
+            # Transpose (num_classes, Z, Y, X) -> (num_classes, X, Y, Z)
+            prob = np.transpose(prob, (0, 3, 2, 1))
+            print(f"[AutoPET] Multi-channel prob shape: {prob.shape}")
+        
+        return prob

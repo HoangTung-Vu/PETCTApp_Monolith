@@ -26,18 +26,22 @@ class SegmentationWorker(QThread):
         try:
             print(f"[Worker] Starting {self.engine_type} segmentation...")
             if self.engine_type == "tumor":
-                # Use nnUNet for tumor
-                # Expects list of images [CT, PET]
-                engine = NNUNetEngine(dataset_id=42, device="auto") # Configurable?
-                result = engine.run_nib(self.images)
-                self.finished.emit((result, "tumor"))
+                # Use nnUNet for tumor — get probability volume
+                engine = NNUNetEngine(dataset_id=42, device="auto")
+                prob = engine.run_nib_prob(self.images, single_channel=True)  # shape (X,Y,Z)
+                # Threshold to create binary mask
+                mask_array = (prob >= 0.5).astype(np.uint8)
+                # Wrap as NIfTI using first image's affine
+                ref_img = self.images[0] if isinstance(self.images, list) else self.images
+                mask_nib = nib.Nifti1Image(mask_array, ref_img.affine, ref_img.header)
+                self.finished.emit((mask_nib, prob, "tumor"))
                 
             elif self.engine_type == "organ":
                 # Use TotalSegmentator for organs
                 # Expects single image (CT)
                 engine = TotalSegEngine(task="total", fast=True, device="auto")
                 result = engine.run_nib(self.images)
-                self.finished.emit((result, "organ"))
+                self.finished.emit((result, None, "organ"))
                 
             else:
                 self.error.emit(f"Unknown engine type: {self.engine_type}")
@@ -79,8 +83,9 @@ class RefinementWorker(QThread):
 class AutoPETWorker(QThread):
     """
     Runs AutoPET Interactive inference in a background thread.
+    Emits the probability array (single-channel, shape X,Y,Z).
     """
-    finished = pyqtSignal(object)  # Emits nib.Nifti1Image
+    finished = pyqtSignal(object)  # Emits np.ndarray (prob)
     error = pyqtSignal(str)
     
     def __init__(self, ct_image: nib.Nifti1Image, pet_image: nib.Nifti1Image, clicks: list):
@@ -95,9 +100,13 @@ class AutoPETWorker(QThread):
             
             print(f"[Worker] Starting AutoPET Interactive ({len(self.clicks)} clicks)...")
             engine = AutoPETInteractiveEngine(device="auto")
-            result = engine.run_nib([self.ct_image, self.pet_image], clicks=self.clicks)
+            prob = engine.run_nib_prob(
+                [self.ct_image, self.pet_image],
+                clicks=self.clicks,
+                single_channel=True
+            )
             
-            self.finished.emit(result)
+            self.finished.emit(prob)
             
         except Exception as e:
             import traceback

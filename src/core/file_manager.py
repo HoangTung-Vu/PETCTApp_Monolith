@@ -3,10 +3,13 @@ import shutil
 from pathlib import Path
 from typing import Literal
 
+import numpy as np
+
 from .config import settings
 
 
 FileType = Literal["ct", "pet", "tumor_seg", "organ_seg"]
+NumpyFileType = Literal["tumor_prob"]
 
 
 class FileManager:
@@ -93,3 +96,34 @@ class FileManager:
         if session_dir.exists():
             shutil.rmtree(session_dir)
             print(f"[FileManager] Deleted session dir: {session_dir}")
+
+    # ──── Numpy Volume Storage ────
+
+    @staticmethod
+    def get_numpy_path(session_id: int, file_type: NumpyFileType) -> Path:
+        """Get the standard path for a numpy file in a session."""
+        session_dir = FileManager.get_session_dir(session_id)
+        return session_dir / f"{file_type}.npy"
+
+    @staticmethod
+    def save_numpy(array: np.ndarray, session_id: int, file_type: NumpyFileType) -> Path:
+        """Save a numpy array to session storage."""
+        dest_path = FileManager.get_numpy_path(session_id, file_type)
+        np.save(dest_path, array)
+        print(f"[FileManager] Saved numpy to {dest_path} (shape={array.shape}, dtype={array.dtype})")
+        return dest_path
+
+    @staticmethod
+    def load_numpy(session_id: int, file_type: NumpyFileType) -> np.ndarray:
+        """Load a numpy array from session storage."""
+        file_path = FileManager.get_numpy_path(session_id, file_type)
+        if not file_path.exists():
+            raise FileNotFoundError(f"Numpy file not found: {file_path}")
+        arr = np.load(file_path)
+        print(f"[FileManager] Loaded numpy from {file_path} (shape={arr.shape}, dtype={arr.dtype})")
+        return arr
+
+    @staticmethod
+    def numpy_exists(session_id: int, file_type: NumpyFileType) -> bool:
+        """Check if a numpy file exists in session storage."""
+        return FileManager.get_numpy_path(session_id, file_type).exists()

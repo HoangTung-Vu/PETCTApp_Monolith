@@ -38,6 +38,9 @@ class MainWindow(QMainWindow):
         # AutoPET Interactive State
         self.autopet_clicks = []  # [{"point": [z,y,x], "name": "tumor"/"background"}, ...]
 
+        # Eraser State
+        self._eraser_undo_stack = []  # list of numpy arrays (mask backups in XYZ space)
+
 
         
         
@@ -93,6 +96,12 @@ class MainWindow(QMainWindow):
         self.control_panel.sig_autopet_sync_clicked.connect(self._on_sync_masks)
         self.control_panel.sig_autopet_clear_clicks.connect(self._on_autopet_clear_clicks)
         self.layout_manager.sig_autopet_click_added.connect(self._on_autopet_click_added)
+
+        # Eraser Tool
+        self.control_panel.sig_eraser_mode_toggled.connect(self._on_eraser_mode_toggled)
+        self.control_panel.sig_eraser_undo_clicked.connect(self._on_eraser_undo)
+        self.control_panel.sig_eraser_save_clicked.connect(self.save_session)
+        self.layout_manager.sig_eraser_region_removed.connect(self._on_eraser_region_removed)
 
         
     def _on_refine_suv(self, threshold):
@@ -285,14 +294,16 @@ class MainWindow(QMainWindow):
         self.worker.start()
         
     def _on_segmentation_finished(self, result_tuple):
-        mask_img, seg_type = result_tuple
+        mask_img, prob_array, seg_type = result_tuple
         affine = mask_img.affine
         data = mask_img.get_fdata()
         
         if seg_type == "tumor":
             self.session_manager.set_tumor_mask(data)
+            # Store probability volume if available
+            if prob_array is not None:
+                self.session_manager.set_tumor_prob(prob_array)
             # Update Viewers
-            # Iterate all viewers and add mask
             self._push_mask_to_all("tumor", data)
             
         elif seg_type == "organ":
@@ -404,22 +415,37 @@ class MainWindow(QMainWindow):
         self.control_panel.show_autopet_progress()
         self.autopet_worker.start()
     
-    def _on_autopet_finished(self, result_img):
-        """Preview the AutoPET result as tumor mask."""
+    def _on_autopet_finished(self, refinement_prob):
+        """Combine AutoPET prob with existing nnUNet prob."""
         import numpy as np
-        data = result_img.get_fdata()
         
         print(f"[AutoPET] Inference finished!")
-        print(f"[AutoPET] Result shape: {data.shape}, dtype: {data.dtype}")
-        print(f"[AutoPET] Unique values: {np.unique(data)}")
-        print(f"[AutoPET] Nonzero voxels: {np.count_nonzero(data)}")
+        print(f"[AutoPET] Refinement prob shape: {refinement_prob.shape}, dtype: {refinement_prob.dtype}")
+        
+        # Combine with existing probability
+        old_prob = self.session_manager.get_tumor_prob()
+        if old_prob is not None:
+            combined_prob = (old_prob + refinement_prob) / 2.0
+            print(f"[AutoPET] Combined prob (avg) shape: {combined_prob.shape}")
+        else:
+            combined_prob = refinement_prob
+            print(f"[AutoPET] No existing prob, using refinement prob directly")
+        
+        # Threshold to create binary mask
+        new_mask = (combined_prob >= 0.5).astype(np.uint8)
+        print(f"[AutoPET] New mask nonzero voxels: {np.count_nonzero(new_mask)}")
         
         # Update session manager
-        self.session_manager.set_tumor_mask(data)
+        self.session_manager.set_tumor_mask(new_mask)
+        self.session_manager.set_tumor_prob(combined_prob)
         
         # Push to all viewers for preview
-        self._push_mask_to_all("tumor", data)
+        self._push_mask_to_all("tumor", new_mask)
         print("[AutoPET] Result pushed to all viewers.")
+        
+        # Auto-save
+        self.session_manager.save_session()
+        print("[AutoPET] Session saved.")
         
         self.control_panel.hide_autopet_progress()
     
@@ -428,3 +454,55 @@ class MainWindow(QMainWindow):
         print(f"[AutoPET] Error: {error_msg}")
         from PyQt6.QtWidgets import QMessageBox
         QMessageBox.critical(self, "AutoPET Failed", error_msg)
+
+    # ──── Eraser Tool Slots ────
+
+    def _on_eraser_mode_toggled(self, enabled: bool):
+        """Enable or disable eraser click mode on viewers."""
+        if enabled:
+            self.layout_manager.enable_eraser_click_mode()
+            print("[Eraser] Mode enabled.")
+        else:
+            self.layout_manager.disable_eraser_click_mode()
+            print("[Eraser] Mode disabled.")
+
+    def _on_eraser_region_removed(self, mask_xyz):
+        """Called after eraser removes a connected component. Preview only (no save)."""
+        import numpy as np
+
+        # Store backup for undo (deep copy of mask + prob)
+        old_mask_data = self.session_manager.get_tumor_mask_data()
+        old_prob_data = self.session_manager.get_tumor_prob()
+        backup = {
+            "mask": old_mask_data.copy() if old_mask_data is not None else None,
+            "prob": old_prob_data.copy() if old_prob_data is not None else None,
+        }
+        self._eraser_undo_stack.append(backup)
+
+        # Find erased voxels (were 1, now 0) and zero out prob
+        if old_mask_data is not None and old_prob_data is not None:
+            erased = (old_mask_data > 0) & (mask_xyz == 0)
+            old_prob_data[erased] = 0.0
+            self.session_manager.set_tumor_prob(old_prob_data)
+            print(f"[Eraser] Zeroed {int(np.sum(erased))} prob voxels.")
+
+        # Update session manager with erased mask (in-memory only)
+        self.session_manager.set_tumor_mask(mask_xyz)
+        print(f"[Eraser] Preview updated. Undo stack depth: {len(self._eraser_undo_stack)}")
+
+    def _on_eraser_undo(self):
+        """Restore the mask and prob from before the last erase."""
+        if not self._eraser_undo_stack:
+            print("[Eraser] Nothing to undo.")
+            return
+
+        backup = self._eraser_undo_stack.pop()
+
+        if backup["mask"] is not None:
+            self.session_manager.set_tumor_mask(backup["mask"])
+            self._push_mask_to_all("tumor", backup["mask"])
+
+        if backup["prob"] is not None:
+            self.session_manager.set_tumor_prob(backup["prob"])
+
+        print(f"[Eraser] Undo successful. Undo stack depth: {len(self._eraser_undo_stack)}")

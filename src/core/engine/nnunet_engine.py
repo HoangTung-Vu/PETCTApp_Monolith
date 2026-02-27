@@ -135,3 +135,120 @@ class NNUNetEngine(SegmentationEngine):
         
         print(f"[nnUNet] Output shape: {pred_array.shape}")
         return nib.Nifti1Image(pred_array.astype(np.uint8), ref_img.affine, ref_img.header)
+
+    def run_prob(self, input_paths: Union[str, Path, List[Union[str, Path]]], single_channel: bool = True) -> np.ndarray:
+        """Run segmentation and return probability maps as numpy array.
+        
+        Args:
+            input_paths: Paths to input images.
+            single_channel: If True, returns only the probability map for the lesion class (index 1).
+                           Result shape will be (X, Y, Z).
+                           If False, returns all classes. Result shape will be (num_classes, X, Y, Z).
+
+        Returns:
+            np.ndarray probability map.
+        """
+        self._init_predictor()
+        
+        if isinstance(input_paths, (str, Path)):
+            input_paths = [input_paths]
+        input_paths = [str(p) for p in input_paths]
+        
+        print(f"[nnUNet] Running prob inference on {input_paths}")
+        
+        # Load images and convert to numpy for predict_single_npy_array
+        images = [nib.load(p) for p in input_paths]
+        ref_img = images[0]
+        
+        img_arrays = []
+        for img in images:
+            arr = np.asanyarray(img.dataobj)
+            arr = arr.transpose([2, 1, 0])  # X,Y,Z -> Z,Y,X
+            img_arrays.append(arr)
+        
+        stacked = np.stack(img_arrays, axis=0)  # (C, Z, Y, X)
+        
+        spacing = ref_img.header.get_zooms()[:3]
+        props = {'spacing': spacing[::-1]}
+        
+        print(f"[nnUNet] Input shape: {stacked.shape}, spacing: {props['spacing']}")
+        
+        # predict_single_npy_array returns (segmentation, probabilities) when last arg is True
+        seg, prob = self.predictor.predict_single_npy_array(
+            stacked, props, None, None, True
+        )
+        
+        print(f"[nnUNet] Prob output shape: {prob.shape}, dtype: {prob.dtype}")
+        
+        if single_channel:
+            # Assuming class 0 is background, class 1 is lesion/tumor
+            if prob.shape[0] > 1:
+                prob = prob[1]
+            else:
+                prob = prob[0]
+            # Transpose (Z, Y, X) -> (X, Y, Z)
+            prob = np.transpose(prob, (2, 1, 0))
+            print(f"[nnUNet] Single channel prob shape: {prob.shape}")
+        else:
+            # Transpose (num_classes, Z, Y, X) -> (num_classes, X, Y, Z)
+            prob = np.transpose(prob, (0, 3, 2, 1))
+            print(f"[nnUNet] Multi-channel prob shape: {prob.shape}")
+            
+        return prob
+
+    def run_nib_prob(self, images: Union[nib.Nifti1Image, List[nib.Nifti1Image]], single_channel: bool = True) -> np.ndarray:
+        """Run segmentation on nibabel images and return probability maps.
+        
+        Args:
+            images: List of nibabel images.
+            single_channel: If True, returns only the probability map for the lesion class (index 1).
+                           Result shape will be (X, Y, Z).
+                           If False, returns all classes. Result shape will be (num_classes, X, Y, Z).
+
+        Returns:
+            np.ndarray probability map.
+        """
+        self._init_predictor()
+        
+        if isinstance(images, nib.Nifti1Image):
+            images = [images]
+        
+        ref_img = images[0]
+        print(f"[nnUNet] Running prob inference on {len(images)} nibabel image(s)")
+        
+        # Stack all channels: transpose each from X,Y,Z to Z,Y,X for nnUNet
+        img_arrays = []
+        for img in images:
+            arr = np.asanyarray(img.dataobj)
+            arr = arr.transpose([2, 1, 0])  # X,Y,Z -> Z,Y,X
+            img_arrays.append(arr)
+        
+        stacked = np.stack(img_arrays, axis=0)  # (C, Z, Y, X)
+        
+        spacing = ref_img.header.get_zooms()[:3]
+        props = {'spacing': spacing[::-1]}
+        
+        print(f"[nnUNet] Input shape: {stacked.shape}, spacing: {props['spacing']}")
+        
+        # predict_single_npy_array returns (segmentation, probabilities) when last arg is True
+        seg, prob = self.predictor.predict_single_npy_array(
+            stacked, props, None, None, True
+        )
+        
+        print(f"[nnUNet] Prob output shape: {prob.shape}, dtype: {prob.dtype}")
+        
+        if single_channel:
+            # Assuming class 0 is background, class 1 is lesion/tumor
+            if prob.shape[0] > 1:
+                prob = prob[1]
+            else:
+                prob = prob[0]
+            # Transpose (Z, Y, X) -> (X, Y, Z)
+            prob = np.transpose(prob, (2, 1, 0))
+            print(f"[nnUNet] Single channel prob shape: {prob.shape}")
+        else:
+            # Transpose (num_classes, Z, Y, X) -> (num_classes, X, Y, Z)
+            prob = np.transpose(prob, (0, 3, 2, 1))
+            print(f"[nnUNet] Multi-channel prob shape: {prob.shape}")
+            
+        return prob
