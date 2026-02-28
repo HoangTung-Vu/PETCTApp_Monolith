@@ -115,7 +115,7 @@ class LayoutManager(QWidget):
     def _sync_grid_views(self):
         """
         Sync cursors/slices per row.
-        Sync camera (zoom/pan) across all.
+        Sync camera (zoom/pan) ONLY across the same row.
         """
         # Sync Slices per Row
         for r in range(3):
@@ -212,6 +212,27 @@ class LayoutManager(QWidget):
             
             widget.viewer.reset_view()
                 
+        # Dynamically Adjust Row Stretch based on physical Volume dimensions
+        if ct_data is not None:
+            # ct_data is (X, Y, Z) in nibabel convention
+            D_x, D_y, D_z = ct_data.shape
+            
+            # Extract physical spacing from affine
+            spacing_xyz = np.sqrt((affine[:3, :3] ** 2).sum(axis=0))
+            sx, sy, sz = float(spacing_xyz[0]), float(spacing_xyz[1]), float(spacing_xyz[2])
+            
+            # Row 0: Axial view   → display plane is (X, Y), height direction = Y
+            # Row 1: Sagittal view → display plane is (Y, Z), height direction = Z
+            # Row 2: Coronal view  → display plane is (X, Z), height direction = Z
+            # Use physical extent (voxels × spacing) as stretch factors
+            phys_axial_h  = int(D_y * sy)   # Axial row height ~ Y extent
+            phys_sag_h    = int(D_z * sz)   # Sagittal row height ~ Z extent
+            phys_cor_h    = int(D_z * sz)   # Coronal row height ~ Z extent
+            
+            self.grid_layout.setRowStretch(0, phys_axial_h)
+            self.grid_layout.setRowStretch(1, phys_sag_h)
+            self.grid_layout.setRowStretch(2, phys_cor_h)
+                
         # 2. Overlay Viewer
         if ct_data is not None:
             self.overlay_viewer.load_image(ct_data, affine, "ct", "gray")
@@ -284,35 +305,6 @@ class LayoutManager(QWidget):
             
         print("Zoom reset for all 2D viewers.")
         
-    def _sync_grid_views(self):
-        """
-        Sync cursors/slices per row.
-        Sync camera (zoom/pan) across ALL 2D viewers.
-        """
-        # 1. Sync Slices per Row (dims)
-        for r in range(3):
-            v1 = self.grid_viewers[(r, 0)].viewer
-            v2 = self.grid_viewers[(r, 1)].viewer
-            self._link_dims(v1, v2)
-
-        # 2. Sync Camera across ALL 6 viewers
-        # We pick the first viewer as "master" for connection logic, or link all to each other.
-        # Linking all to all is O(N^2) connections. 
-        # Better: create a chain (0 -> 1 -> 2 ... -> 0) or star (0 -> all).
-        # Let's try chaining (0,0) -> (0,1) -> (1,0) -> (1,1) ...
-        
-        viewers = [param.viewer for param in self.grid_viewers.values()]
-        # Also include overlay viewer? Yes.
-        viewers.append(self.overlay_viewer.viewer)
-        
-        for i in range(len(viewers) - 1):
-             self._link_camera(viewers[i], viewers[i+1])
-             
-        # Also close the loop for robustness? Or just 0->All.
-        # Given manual event linking, we need to be careful.
-        # Let's just stick to "Reference Viewer" approach if possible, but Napari doesn't have a central cam.
-        # The chain approach works if A->B->C... 
-
     def _sync_mono_views(self):
         v1 = self.mono_viewers[0].viewer
         v2 = self.mono_viewers[1].viewer
@@ -408,10 +400,11 @@ class LayoutManager(QWidget):
         # Let's say slider 0-100 maps to 0.1 - 5.0
         zoom_factor = 0.1 + (value / 100.0) * 4.9
         
-        # Update ONE viewer per independent group and let sync handle it?
-        # Or update all?
-        # Grid: Update (0,0)
+        # Grid: Update one viewer per independent row
         self.grid_viewers[(0,0)].viewer.camera.zoom = zoom_factor
+        self.grid_viewers[(1,0)].viewer.camera.zoom = zoom_factor
+        self.grid_viewers[(2,0)].viewer.camera.zoom = zoom_factor
+
         # Overlay
         self.overlay_viewer.viewer.camera.zoom = zoom_factor
         # Mono
@@ -657,13 +650,27 @@ class LayoutManager(QWidget):
                     pass
                 v._autopet_callback = None
     
+    def _world_to_data(self, world_pos):
+        """Convert world-space position to data (voxel) indices using cached scale."""
+        # Get scale from any viewer that has loaded an image
+        scale = None
+        for v in self._get_all_2d_viewers():
+            if v._scale_zyx is not None:
+                scale = v._scale_zyx
+                break
+        
+        if scale is not None:
+            return [round(w / s) for w, s in zip(world_pos, scale)]
+        else:
+            return [round(c) for c in world_pos]
+
     def _make_click_callback(self):
         """Create a mouse callback that captures click coordinates."""
         def on_double_click(viewer, event):
             label = getattr(self, '_autopet_click_label', None)
             if label is None:
                 return
-            coord_zyx = [round(c) for c in event.position]
+            coord_zyx = self._world_to_data(event.position)
             print(f"[AutoPET] Click: {label} at ZYX={coord_zyx}")
             
             # Paint sphere into shared array
@@ -753,7 +760,7 @@ class LayoutManager(QWidget):
     def _make_eraser_callback(self):
         """Create a mouse callback that erases the connected component at click."""
         def on_click(viewer, event):
-            coord_zyx = [round(c) for c in event.position]
+            coord_zyx = self._world_to_data(event.position)
             z, y, x = coord_zyx
             print(f"[Eraser] Click at ZYX={coord_zyx}")
 

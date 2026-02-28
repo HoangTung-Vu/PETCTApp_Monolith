@@ -21,6 +21,11 @@ class ViewerWidget(QWidget):
         self.viewer = napari.Viewer(show=False)
         self.qt_viewer = self.viewer.window.qt_viewer
         self.layout.addWidget(self.qt_viewer)
+
+        # Disable default double click zoom
+        for cb in list(self.viewer.mouse_double_click_callbacks):
+            if cb.__name__ == 'double_click_to_zoom':
+                self.viewer.mouse_double_click_callbacks.remove(cb)
         
         # Keep track of layer names
         self.LAYER_NAMES = {
@@ -30,6 +35,7 @@ class ViewerWidget(QWidget):
             "organ": "Organ Mask"
         }
         self.is_3d = False
+        self._scale_zyx = None  # Physical spacing in Napari (Z, Y, X) order
     
     # helper proxies for compatibility (optional, or just use imported functions)
     @staticmethod
@@ -50,10 +56,16 @@ class ViewerWidget(QWidget):
         """
         data_zyx = self.to_napari(image_data)
         
+        # Extract physical spacing from affine: |col_i| for axes X, Y, Z
+        spacing_xyz = np.sqrt((affine[:3, :3] ** 2).sum(axis=0))  # (sx, sy, sz)
+        # Reorder to Napari (Z, Y, X)
+        self._scale_zyx = (float(spacing_xyz[2]), float(spacing_xyz[1]), float(spacing_xyz[0]))
+        
         name = self.LAYER_NAMES.get(layer_type, layer_type)
         
         if name in self.viewer.layers:
             self.viewer.layers[name].data = data_zyx
+            self.viewer.layers[name].scale = self._scale_zyx
             self.viewer.layers[name].colormap = colormap
             self.viewer.layers[name].blending = blending
             self.viewer.layers[name].opacity = opacity
@@ -61,6 +73,7 @@ class ViewerWidget(QWidget):
             self.viewer.add_image(
                 data_zyx,
                 name=name,
+                scale=self._scale_zyx,
                 colormap=colormap,
                 blending=blending,
                 opacity=opacity,
@@ -88,11 +101,10 @@ class ViewerWidget(QWidget):
             if layer.data is not data_zyx:
                 layer.data = data_zyx
         else:
-            layer = self.viewer.add_labels(
-                data_zyx,
-                name=name,
-                opacity=0.7
-            )
+            kwargs = dict(name=name, opacity=0.7)
+            if self._scale_zyx is not None:
+                kwargs['scale'] = self._scale_zyx
+            layer = self.viewer.add_labels(data_zyx, **kwargs)
             
         # Lock editing if this is a 3D viewer
         if self.is_3d:
@@ -176,11 +188,10 @@ class ViewerWidget(QWidget):
                 layer.refresh()
         else:
             # color_map: 0=transparent, 1=red(tumor), 2=blue(background)
-            layer = self.viewer.add_labels(
-                data_zyx,
-                name=name,
-                opacity=0.5,
-            )
+            kwargs = dict(name=name, opacity=0.5)
+            if self._scale_zyx is not None:
+                kwargs['scale'] = self._scale_zyx
+            layer = self.viewer.add_labels(data_zyx, **kwargs)
             layer.color = {1: 'red', 2: 'dodgerblue'}
             layer.editable = False
     
