@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "httpx>=0.28.1",
     "napari[all,optional,pyqt6]>=0.6.6",
     "nibabel>=5.3.3",
     "numpy>=2.3.5",
@@ -13,12 +14,5 @@ dependencies = [
     "pyqt6>=6.10.2",
     "python-multipart>=0.0.22",
     "scipy>=1.17.0",
-    "simpleitk>=2.5.3",
-    "torch>=2.10.0",
-    "totalsegmentator>=2.12.0",
     "sqlalchemy>=2.0.0",
-    "nnunetv2",
 ]
-
-[tool.uv.sources]
-nnunetv2 = { git = "https://github.com/MIC-DKFZ/autoPET-interactive.git" }

@@ -1,4 +1,5 @@
 """Utility functions for NIfTI image handling."""
+import io
 from pathlib import Path
 from typing import Optional
 import nibabel as nib
@@ -116,3 +117,28 @@ def from_napari(data_zyx: np.ndarray) -> np.ndarray:
     # 2. Undo Transpose (transpose is its own inverse here)
     data_xyz = np.transpose(data_zyx, (2, 1, 0))
     return data_xyz
+
+
+def nifti_to_bytes(img: nib.Nifti1Image) -> bytes:
+    """Serialize a nibabel Nifti1Image to .nii.gz bytes in memory."""
+    bio = io.BytesIO()
+    file_map = img.make_file_map({"image": bio, "header": bio})
+    img.to_file_map(file_map)
+    return bio.getvalue()
+
+
+def bytes_to_nifti(data: bytes) -> nib.Nifti1Image:
+    """Deserialize .nii.gz bytes to a nibabel Nifti1Image."""
+    fh = nib.FileHolder(fileobj=io.BytesIO(data))
+    return nib.Nifti1Image.from_file_map({"header": fh, "image": fh})
+
+
+def bytes_to_npz(data: bytes) -> dict:
+    """Deserialize .npz bytes to dict of numpy arrays."""
+    bio = io.BytesIO(data)
+    return dict(np.load(bio))
+
+
+def make_nifti_upload(img: nib.Nifti1Image, filename: str = "image.nii.gz") -> tuple:
+    """Create a (field_name, (filename, bytes, content_type)) tuple for multipart upload."""
+    return ("files", (filename, nifti_to_bytes(img), "application/octet-stream"))

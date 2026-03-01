@@ -524,6 +524,10 @@ class ControlPanel(QWidget):
         """Add an entry to the click list widget."""
         text = f"[{label}] Z={coord_zyx[0]}, Y={coord_zyx[1]}, X={coord_zyx[2]}"
         self.autopet_click_list.addItem(text)
+
+    def clear_autopet_click_list(self):
+        """Clear the click list widget (called after inference)."""
+        self.autopet_click_list.clear()
     
     def show_autopet_progress(self):
         self.autopet_progress.setVisible(True)

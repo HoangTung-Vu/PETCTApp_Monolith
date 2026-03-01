@@ -447,6 +447,12 @@ class MainWindow(QMainWindow):
         self.session_manager.save_session()
         print("[AutoPET] Session saved.")
         
+        # Clear click markers from viewers after inference
+        self.layout_manager.clear_autopet_clicks()
+        self.autopet_clicks.clear()
+        self.control_panel.clear_autopet_click_list()
+        print("[AutoPET] Click markers cleared.")
+        
         self.control_panel.hide_autopet_progress()
     
     def _on_autopet_error(self, error_msg):
