@@ -1,0 +1,21 @@
+[project]
+name = "engine-autopet"
+version = "0.1.0"
+description = "AutoPET Interactive segmentation engine backend"
+requires-python = ">=3.13"
+dependencies = [
+    "fastapi>=0.134.0",
+    "httpx>=0.28.1",
+    "nibabel>=5.3.3",
+    "nnunetv2",
+    "numpy>=2.4.2",
+    "pytest>=9.0.2",
+    "python-multipart>=0.0.22",
+    "scipy>=1.17.1",
+    "simpleitk>=2.5.3",
+    "torch>=2.10.0",
+    "uvicorn[standard]>=0.41.0",
+]
+
+[tool.uv.sources]
+nnunetv2 = { git = "https://github.com/MIC-DKFZ/autoPET-interactive.git", rev = "0da0e7f18734b6eca16c6a232aecdb8bac793284" }
