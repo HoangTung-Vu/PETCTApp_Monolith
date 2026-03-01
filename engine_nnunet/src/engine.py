@@ -48,7 +48,7 @@ class NNUNetEngine:
             tile_step_size=0.5,
             use_gaussian=True,
             use_mirroring=False,
-            perform_everything_on_device=self.device == "cuda",
+            perform_everything_on_device=True if self.device == "cuda" else False,
             device=torch.device(self.device),
             verbose=True,
             verbose_preprocessing=True,

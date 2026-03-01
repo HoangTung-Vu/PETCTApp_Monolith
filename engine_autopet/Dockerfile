@@ -16,13 +16,16 @@ COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
 WORKDIR /app
 
 COPY pyproject.toml uv.lock .python-version ./
-COPY src/ src/
-COPY main.py .
 
 RUN uv sync --frozen --no-dev
 
-# Weights are mounted at runtime
-VOLUME /app/weights
+COPY weights/ /app/weights/
+
+COPY src/ src/
+COPY main.py .
+
+
+# Copy model weights directly into the image
 
 EXPOSE 8102
 

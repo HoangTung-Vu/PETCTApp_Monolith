@@ -2,6 +2,7 @@
 
 import io
 import gzip
+import traceback
 from typing import List
 
 import nibabel as nib
@@ -106,6 +107,7 @@ async def run_nib_prob(files: List[UploadFile] = File(...), single_channel: bool
         affine = images[0].affine
         return _npz_response(prob, affine)
     except Exception as e:
+        traceback.print_exc()
         raise HTTPException(status_code=500, detail=str(e))
 
 

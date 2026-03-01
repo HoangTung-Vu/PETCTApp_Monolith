@@ -70,7 +70,7 @@ class AutoPETInteractiveEngine:
             tile_step_size=0.5,
             use_gaussian=True,
             use_mirroring=self.use_mirroring,
-            perform_everything_on_device=(self.device == "cuda"),
+            perform_everything_on_device=True if self.device == "cuda" else False,
             device=device,
             verbose=True,
             verbose_preprocessing=False,

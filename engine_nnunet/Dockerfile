@@ -18,14 +18,14 @@ WORKDIR /app
 
 # Copy project files
 COPY pyproject.toml uv.lock .python-version ./
+
+RUN uv sync --frozen --no-dev
+
+COPY weights/ /app/weights/
+
 COPY src/ src/
 COPY main.py .
 
-# Install dependencies
-RUN uv sync --frozen --no-dev
-
-# Weights are mounted at runtime
-VOLUME /app/weights
 
 EXPOSE 8101
 
