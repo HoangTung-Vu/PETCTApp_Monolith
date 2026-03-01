@@ -179,24 +179,30 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Missing Info", "Please enter both Doctor and Patient names.")
             return
             
-        # Create session in DB
-        try:
-            self.session_manager.create_session(doctor, patient)
-            self._refresh_session_list()
-            self._refresh_viewers() # Clear viewers
-            
-            # Trigger file loading? Or wait for user?
-            # User workflow: New Session -> Load CT -> Load PET
-            # So just clear viewers is enough.
-        except Exception as e:
-            print(f"Error creating session: {e}")
+        # Create session in DB via worker
+        from .workers import DataLoaderWorker
+        self.loader_worker = DataLoaderWorker(
+            self.session_manager,
+            action="create",
+            new_doctor=doctor,
+            new_patient=patient
+        )
+        self.loader_worker.finished.connect(self._on_data_loaded)
+        self.loader_worker.error.connect(self._on_data_error)
+        self.control_panel.show_progress() # Show progress in UI
+        self.loader_worker.start()
 
     def load_existing_session(self, session_id: int):
-        try:
-            self.session_manager.load_session(session_id)
-            self._refresh_viewers()
-        except Exception as e:
-            print(f"Error loading session {session_id}: {e}")
+        from .workers import DataLoaderWorker
+        self.loader_worker = DataLoaderWorker(
+            self.session_manager,
+            current_session_id=session_id,
+            action="load"
+        )
+        self.loader_worker.finished.connect(self._on_data_loaded)
+        self.loader_worker.error.connect(self._on_data_error)
+        self.control_panel.show_progress() # Assuming show_progress exists or we use similar UI indication
+        self.loader_worker.start()
 
     def _refresh_session_list(self):
         sessions = self.session_manager.get_all_sessions()
@@ -206,23 +212,31 @@ class MainWindow(QMainWindow):
             self.control_panel.combo_sessions.addItem(label, userData=s.id)
 
     def _update_session_files(self, ct_path: Path = None, pet_path: Path = None):
-        try:
-            if self.session_manager.current_session_id is None:
-                # If no session, prompt to create one? Or create default?
-                # For now, let's create a "Quick Session"
-                self.session_manager.create_session("System", "Anonymous", ct_path=ct_path, pet_path=pet_path)
-            else:
-                # Update existing
-                self.session_manager.update_current_session(ct_path=ct_path, pet_path=pet_path)
-            
-            # Push to Viewer
-            self._refresh_viewers()
-            self._refresh_session_list() # Update list to show file changes if any (not in label though)
-            
-        except Exception as e:
-            print(f"Error updating session files: {e}")
-            import traceback
-            traceback.print_exc()
+        """Spawns worker to load CT/PET natively to prevent UI block."""
+        from .workers import DataLoaderWorker
+        self.loader_worker = DataLoaderWorker(
+            self.session_manager,
+            ct_path=ct_path,
+            pet_path=pet_path,
+            action="update"
+        )
+        self.loader_worker.finished.connect(self._on_data_loaded)
+        self.loader_worker.error.connect(self._on_data_error)
+        
+        self.control_panel.show_progress() 
+        self.loader_worker.start()
+
+    def _on_data_loaded(self, success):
+        self._refresh_viewers()
+        self._refresh_session_list()
+        self.control_panel.hide_progress()
+        print("Async data loading completed.")
+
+    def _on_data_error(self, error_msg):
+        self.control_panel.hide_progress()
+        print(f"Data Loading Error: {error_msg}")
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "Loading Failed", error_msg)
 
     def _refresh_viewers(self):
         ct_data = self.session_manager.get_ct_data()

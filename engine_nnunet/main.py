@@ -28,6 +28,13 @@ def get_engine() -> NNUNetEngine:
 def _load_nifti_from_upload(file: UploadFile) -> nib.Nifti1Image:
     """Read an uploaded .nii.gz file into a nibabel Nifti1Image."""
     data = file.file.read()
+    # Decompress if it's a .nii.gz
+    if file.filename and file.filename.endswith(".gz"):
+        import gzip
+        try:
+            data = gzip.decompress(data)
+        except OSError:
+            pass # Maybe not actually gzipped
     fh = nib.FileHolder(fileobj=io.BytesIO(data))
     return nib.Nifti1Image.from_file_map({"header": fh, "image": fh})
 

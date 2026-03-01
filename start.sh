@@ -12,14 +12,17 @@ fi
 
 # [1] Configuration
 NNUNET_PORT="${ENGINE_NNUNET_PORT:-8101}"
+NNUNET_OLD_PORT="${ENGINE_NNUNET_OLD_PORT:-8104}"
 AUTOPET_PORT="${ENGINE_AUTOPET_PORT:-8102}"
 TOTALSEG_PORT="${ENGINE_TOTALSEG_PORT:-8103}"
 
 NNUNET_IMAGE="${ENGINE_NNUNET_IMAGE:-engine-nnunet}"
+NNUNET_OLD_IMAGE="${ENGINE_NNUNET_OLD_IMAGE:-engine-nnunet-old-ver}"
 AUTOPET_IMAGE="${ENGINE_AUTOPET_IMAGE:-engine-autopet}"
 TOTALSEG_IMAGE="${ENGINE_TOTALSEG_IMAGE:-engine-totalseg}"
 
 NNUNET_CONTAINER="${ENGINE_NNUNET_CONTAINER:-engine-nnunet-container}"
+NNUNET_OLD_CONTAINER="${ENGINE_NNUNET_OLD_CONTAINER:-engine-nnunet-old-ver-container}"
 AUTOPET_CONTAINER="${ENGINE_AUTOPET_CONTAINER:-engine-autopet-container}"
 TOTALSEG_CONTAINER="${ENGINE_TOTALSEG_CONTAINER:-engine-totalseg-container}"
 
@@ -80,8 +83,8 @@ wait_for_health() {
 
 cleanup() {
     echo "Stopping engine containers..."
-    docker stop "$NNUNET_CONTAINER" "$AUTOPET_CONTAINER" "$TOTALSEG_CONTAINER" 2>/dev/null || true
-    docker rm "$NNUNET_CONTAINER" "$AUTOPET_CONTAINER" "$TOTALSEG_CONTAINER" 2>/dev/null || true
+    docker stop "$NNUNET_CONTAINER" "$NNUNET_OLD_CONTAINER" "$AUTOPET_CONTAINER" "$TOTALSEG_CONTAINER" 2>/dev/null || true
+    docker rm "$NNUNET_CONTAINER" "$NNUNET_OLD_CONTAINER" "$AUTOPET_CONTAINER" "$TOTALSEG_CONTAINER" 2>/dev/null || true
     echo "Done."
 }
 
@@ -94,16 +97,19 @@ trap cleanup EXIT
 
 echo -e "\n-- Step 1: Building Docker images --"
 def_build_image "$NNUNET_IMAGE" "$SCRIPT_DIR/engine_nnunet"
+def_build_image "$NNUNET_OLD_IMAGE" "$SCRIPT_DIR/engine_nnunet_old_ver"
 def_build_image "$AUTOPET_IMAGE" "$SCRIPT_DIR/engine_autopet"
 def_build_image "$TOTALSEG_IMAGE" "$SCRIPT_DIR/engine_totalseg"
 
 echo -e "\n-- Step 2: Starting containers --"
 start_container "$NNUNET_CONTAINER" "$NNUNET_IMAGE" "$NNUNET_PORT"
+start_container "$NNUNET_OLD_CONTAINER" "$NNUNET_OLD_IMAGE" "$NNUNET_OLD_PORT"
 start_container "$AUTOPET_CONTAINER" "$AUTOPET_IMAGE" "$AUTOPET_PORT"
 start_container "$TOTALSEG_CONTAINER" "$TOTALSEG_IMAGE" "$TOTALSEG_PORT"
 
 echo -e "\n-- Step 3: Health checks --"
 wait_for_health "$NNUNET_PORT" "nnUNet Engine"
+wait_for_health "$NNUNET_OLD_PORT" "nnUNet Old Engine"
 wait_for_health "$AUTOPET_PORT" "AutoPET Engine"
 wait_for_health "$TOTALSEG_PORT" "TotalSeg Engine"
 
