@@ -113,9 +113,14 @@ class ReportEngine:
                 "bbox": bbox,
             })
 
-        # Sort lesions by ascending ID (they already come in order from label,
-        # but be explicit)
-        lesions.sort(key=lambda l: l["id"])
+        # Sort lesions by Z position (descending) so IDs go from head to feet.
+        # In nibabel (X, Y, Z) order: bbox indices 2 and 5 are z_min and z_max.
+        lesions.sort(key=lambda l: (l["bbox"][2] + l["bbox"][5]) / 2.0,
+                     reverse=True)
+
+        # Re-assign sequential IDs after sorting
+        for idx, lesion in enumerate(lesions, start=1):
+            lesion["id"] = idx
 
         return {
             "gTLG": round(g_tlg, 2),

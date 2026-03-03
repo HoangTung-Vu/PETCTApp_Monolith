@@ -63,7 +63,7 @@ class NNUNetEngine:
         model_folder = self._find_model_folder()
         folds = self._detect_folds(model_folder)
         print(f"[nnUNet] Loading model from {model_folder}, folds={folds}")
-        self.predictor.initialize_from_trained_model_folder(str(model_folder), use_folds=folds)
+        self.predictor.initialize_from_trained_model_folder(str(model_folder), use_folds=folds, checkpoint_name='checkpoint_best.pth')
 
     # ── run: accepts NIfTI bytes (deserialized as nib images) ──
 
