@@ -819,3 +819,15 @@ class LayoutManager(QWidget):
             self.sig_eraser_region_removed.emit(mask_xyz)
 
         return on_click
+
+    # ──── Lesion ID Labels ────
+
+    def show_lesion_ids(self, bboxes: list, lesion_ids: list):
+        """Push lesion ID labels to all 2D viewers."""
+        for v in self._get_all_2d_viewers():
+            v.show_lesion_ids(bboxes, lesion_ids)
+
+    def hide_lesion_ids(self):
+        """Remove lesion ID labels from all viewers."""
+        for v in self._get_all_2d_viewers():
+            v.hide_lesion_ids()

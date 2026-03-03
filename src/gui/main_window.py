@@ -105,6 +105,7 @@ class MainWindow(QMainWindow):
 
         # Report
         self.control_panel.sig_report_clicked.connect(self._on_report_clicked)
+        self.control_panel.sig_toggle_lesion_ids.connect(self._on_toggle_lesion_ids)
 
         
     def _on_refine_suv(self, threshold):
@@ -559,7 +560,28 @@ class MainWindow(QMainWindow):
     def _on_report_finished(self, metrics: dict):
         self.control_panel.hide_report_progress()
         self.control_panel.show_report_results(metrics)
-        print(f"[Report] Generated: {metrics}")
+
+        # If lesion toggle is already on, push labels immediately
+        if self.control_panel.chk_show_lesion_ids.isChecked():
+            bboxes = self.session_manager.lesion_bboxes
+            ids = self.session_manager.lesion_ids
+            if bboxes:
+                self.layout_manager.show_lesion_ids(bboxes, ids)
+
+        n_lesions = len(metrics.get('lesions', []))
+        print(f"[Report] Generated: gTLG={metrics.get('gTLG')}, {n_lesions} lesions")
+
+    def _on_toggle_lesion_ids(self, checked: bool):
+        """Show or hide lesion ID labels on all viewers."""
+        if checked:
+            bboxes = self.session_manager.lesion_bboxes
+            ids = self.session_manager.lesion_ids
+            if bboxes:
+                self.layout_manager.show_lesion_ids(bboxes, ids)
+            else:
+                print("[Report] No lesion data available. Generate a report first.")
+        else:
+            self.layout_manager.hide_lesion_ids()
 
     def _on_report_error(self, error_msg: str):
         self.control_panel.hide_report_progress()

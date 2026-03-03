@@ -26,7 +26,11 @@ class SessionManager:
         
         # Probability volume for tumor (single-channel, shape X,Y,Z, float32)
         self.tumor_prob: Optional[np.ndarray] = None
-        
+
+        # Per-lesion data from the last report generation
+        self.lesion_bboxes: list = []      # list[tuple] — (d0_min,d1_min,d2_min,d0_max,d1_max,d2_max)
+        self.lesion_ids: list = []         # list[int] — lesion IDs
+
         self.repository = SessionRepository()
 
     def create_session(self, doctor_name: str, patient_name: str, ct_path: Optional[Path] = None, pet_path: Optional[Path] = None) -> int:
@@ -250,7 +254,7 @@ class SessionManager:
         the last-saved (committed) state.
 
         Returns:
-            dict with keys: SUVmax, SUVmean, SUVpeak, MTV, TLG.
+            dict with keys: gTLG, lesions (per-lesion SUVmax, SUVmean, MTV).
         """
         if self.current_session_id is None:
             raise ValueError("No active session.")
@@ -261,4 +265,10 @@ class SessionManager:
                              "Run segmentation and save first.")
 
         disk_mask = FileManager.load_nifti(self.current_session_id, "tumor_seg")
-        return ReportEngine.compute_report(self.pet_image, disk_mask)
+        result = ReportEngine.compute_report(self.pet_image, disk_mask)
+
+        # Store lightweight lesion data in session state for GUI access
+        self.lesion_bboxes = [lesion["bbox"] for lesion in result["lesions"]]
+        self.lesion_ids = [lesion["id"] for lesion in result["lesions"]]
+
+        return result

@@ -1,7 +1,8 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QTabWidget, 
     QLabel, QSlider, QFormLayout, QGroupBox, QComboBox, QDoubleSpinBox,
-    QProgressBar, QHBoxLayout, QGridLayout, QListWidget, QScrollArea
+    QProgressBar, QHBoxLayout, QGridLayout, QListWidget, QScrollArea,
+    QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -51,6 +52,7 @@ class ControlPanel(QWidget):
 
     # Report Signal
     sig_report_clicked = pyqtSignal()
+    sig_toggle_lesion_ids = pyqtSignal(bool)  # Show/hide lesion bounding boxes
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -145,19 +147,26 @@ class ControlPanel(QWidget):
         self.report_progress.setVisible(False)
         report_layout.addWidget(self.report_progress)
 
-        # Result labels
-        result_form = QFormLayout()
-        self.lbl_suvmax = QLabel("—")
-        self.lbl_suvmean = QLabel("—")
-        self.lbl_suvpeak = QLabel("—")
-        self.lbl_mtv = QLabel("—")
-        self.lbl_tlg = QLabel("—")
-        result_form.addRow("SUVmax:", self.lbl_suvmax)
-        result_form.addRow("SUVmean:", self.lbl_suvmean)
-        result_form.addRow("SUVpeak:", self.lbl_suvpeak)
-        result_form.addRow("MTV (mL):", self.lbl_mtv)
-        result_form.addRow("TLG:", self.lbl_tlg)
-        report_layout.addLayout(result_form)
+        # Global gTLG
+        gtlg_form = QFormLayout()
+        self.lbl_gtlg = QLabel("—")
+        gtlg_form.addRow("gTLG:", self.lbl_gtlg)
+        report_layout.addLayout(gtlg_form)
+
+        # Per-lesion table
+        self.tbl_lesions = QTableWidget()
+        self.tbl_lesions.setColumnCount(4)
+        self.tbl_lesions.setHorizontalHeaderLabels(["ID", "SUVmax", "SUVmean", "MTV (mL)"])
+        self.tbl_lesions.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
+        self.tbl_lesions.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_lesions.setMaximumHeight(180)
+        report_layout.addWidget(self.tbl_lesions)
+
+        # Toggle lesion bounding boxes
+        self.chk_show_lesion_ids = QCheckBox("Show Lesion IDs")
+        self.chk_show_lesion_ids.setChecked(False)
+        self.chk_show_lesion_ids.toggled.connect(self.sig_toggle_lesion_ids.emit)
+        report_layout.addWidget(self.chk_show_lesion_ids)
 
         grp_report.setLayout(report_layout)
         layout.addWidget(grp_report)
@@ -239,12 +248,12 @@ class ControlPanel(QWidget):
         # CT Window/Level
         self.spin_ct_window = QDoubleSpinBox()
         self.spin_ct_window.setRange(1, 4000)
-        self.spin_ct_window.setValue(400)
+        self.spin_ct_window.setValue(350)
         self.spin_ct_window.valueChanged.connect(self._emit_ct_wl)
         
         self.spin_ct_level = QDoubleSpinBox()
         self.spin_ct_level.setRange(-2000, 2000)
-        self.spin_ct_level.setValue(40)
+        self.spin_ct_level.setValue(35)
         self.spin_ct_level.valueChanged.connect(self._emit_ct_wl)
         
         display_layout.addRow("CT Window:", self.spin_ct_window)
@@ -253,12 +262,12 @@ class ControlPanel(QWidget):
         # PET Window/Level
         self.spin_pet_window = QDoubleSpinBox()
         self.spin_pet_window.setRange(0.1, 10000)
-        self.spin_pet_window.setValue(20)
+        self.spin_pet_window.setValue(10)
         self.spin_pet_window.valueChanged.connect(self._emit_pet_wl)
         
         self.spin_pet_level = QDoubleSpinBox()
         self.spin_pet_level.setRange(0, 10000)
-        self.spin_pet_level.setValue(10)
+        self.spin_pet_level.setValue(5)
         self.spin_pet_level.valueChanged.connect(self._emit_pet_wl)
 
         display_layout.addRow("PET Window:", self.spin_pet_window)
@@ -480,18 +489,21 @@ class ControlPanel(QWidget):
         self.btn_report.setEnabled(True)
 
     def show_report_results(self, metrics: dict):
-        """Populate the report labels with computed metrics."""
-        self.lbl_suvmax.setText(str(metrics.get("SUVmax", "—")))
-        self.lbl_suvmean.setText(str(metrics.get("SUVmean", "—")))
-        self.lbl_suvpeak.setText(str(metrics.get("SUVpeak", "—")))
-        self.lbl_mtv.setText(str(metrics.get("MTV", "—")))
-        self.lbl_tlg.setText(str(metrics.get("TLG", "—")))
+        """Populate the report labels and table with computed metrics."""
+        self.lbl_gtlg.setText(str(metrics.get("gTLG", "—")))
+
+        lesions = metrics.get("lesions", [])
+        self.tbl_lesions.setRowCount(len(lesions))
+        for row, lesion in enumerate(lesions):
+            self.tbl_lesions.setItem(row, 0, QTableWidgetItem(str(lesion.get("id", ""))))
+            self.tbl_lesions.setItem(row, 1, QTableWidgetItem(str(lesion.get("SUVmax", ""))))
+            self.tbl_lesions.setItem(row, 2, QTableWidgetItem(str(lesion.get("SUVmean", ""))))
+            self.tbl_lesions.setItem(row, 3, QTableWidgetItem(str(lesion.get("MTV", ""))))
 
     def clear_report_results(self):
-        """Reset report labels to placeholder."""
-        for lbl in (self.lbl_suvmax, self.lbl_suvmean, self.lbl_suvpeak,
-                    self.lbl_mtv, self.lbl_tlg):
-            lbl.setText("—")
+        """Reset report labels and table to placeholder."""
+        self.lbl_gtlg.setText("—")
+        self.tbl_lesions.setRowCount(0)
 
     # ──── AutoPET Interactive Tab ────
     
