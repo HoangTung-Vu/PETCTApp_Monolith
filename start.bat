@@ -44,13 +44,13 @@ echo =====================================
 echo.
 echo -- Step 1: Building Docker images --
 echo Building Docker image: %ENGINE_NNUNET_IMAGE% ...
-docker build -t "%ENGINE_NNUNET_IMAGE%" "%SCRIPT_DIR%engine_nnunet"
+docker build -t "%ENGINE_NNUNET_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_nnunet"
 echo Building Docker image: %ENGINE_NNUNET_OLD_IMAGE% ...
-docker build -t "%ENGINE_NNUNET_OLD_IMAGE%" "%SCRIPT_DIR%engine_nnunet_old_ver"
+docker build -t "%ENGINE_NNUNET_OLD_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_nnunet_old_ver"
 echo Building Docker image: %ENGINE_AUTOPET_IMAGE% ...
-docker build -t "%ENGINE_AUTOPET_IMAGE%" "%SCRIPT_DIR%engine_autopet"
+docker build -t "%ENGINE_AUTOPET_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_autopet"
 echo Building Docker image: %ENGINE_TOTALSEG_IMAGE% ...
-docker build -t "%ENGINE_TOTALSEG_IMAGE%" "%SCRIPT_DIR%engine_totalseg"
+docker build -t "%ENGINE_TOTALSEG_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_totalseg"
 
 echo.
 echo -- Step 2: Starting containers --
