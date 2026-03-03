@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QGridLayout, QStackedWidget, QVBoxLayout, QLabel
+from PyQt6.QtWidgets import QWidget, QGridLayout, QStackedWidget, QVBoxLayout, QLabel, QApplication
 from PyQt6.QtCore import pyqtSignal
 import numpy as np
 from .viewer_widget import ViewerWidget
@@ -212,6 +212,9 @@ class LayoutManager(QWidget):
             
             widget.viewer.reset_view()
                 
+        # Let Qt process events after grid loading
+        QApplication.processEvents()
+
         # Dynamically Adjust Row Stretch based on physical Volume dimensions
         if ct_data is not None:
             # ct_data is (X, Y, Z) in nibabel convention
@@ -233,6 +236,9 @@ class LayoutManager(QWidget):
             self.grid_layout.setRowStretch(1, phys_sag_h)
             self.grid_layout.setRowStretch(2, phys_cor_h)
                 
+        # Let Qt process events after row stretch
+        QApplication.processEvents()
+
         # 2. Overlay Viewer
         if ct_data is not None:
             self.overlay_viewer.load_image(ct_data, affine, "ct", "gray")
@@ -246,6 +252,9 @@ class LayoutManager(QWidget):
 
         self.overlay_viewer.viewer.reset_view()
         
+        # Let Qt process events after overlay
+        QApplication.processEvents()
+
         # 3. Mono Viewers
         if ct_data is not None:
             self.mono_viewers[0].load_image(ct_data, affine, "ct", "gray")

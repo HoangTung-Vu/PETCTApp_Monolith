@@ -1,7 +1,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QTabWidget, 
     QLabel, QSlider, QFormLayout, QGroupBox, QComboBox, QDoubleSpinBox,
-    QProgressBar, QHBoxLayout, QGridLayout, QListWidget
+    QProgressBar, QHBoxLayout, QGridLayout, QListWidget, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -57,12 +57,15 @@ class ControlPanel(QWidget):
         self.tabs = QTabWidget()
         
         self._init_workflow_tab()
-
-        self._init_view_tab()
+        self._init_view_display_tab()
         self._init_refine_tab()
         self._init_autopet_tab()
         self._init_eraser_tab()
-        self._init_display_tab()
+
+        # Store tab indices for the tab-change handler
+        self._view_display_tab_index = 1
+        self._refine_tab_index = 2
+        self.tabs.currentChanged.connect(self._on_tab_changed)
         
         layout = QVBoxLayout(self)
         layout.addWidget(self.tabs)
@@ -126,33 +129,19 @@ class ControlPanel(QWidget):
         
         layout.addWidget(grp_actions)
         
-        # Segmentation Toggles
-        from PyQt6.QtWidgets import QCheckBox
-        grp_seg_disp = QGroupBox("Segmentation Visibility")
-        seg_disp_layout = QVBoxLayout()
-        
-        self.chk_tumor = QCheckBox("Show Tumor Mask")
-        self.chk_tumor.setChecked(True)
-        self.chk_tumor.toggled.connect(lambda c: self.sig_toggle_mask.emit("tumor", c))
-        
-        self.chk_body = QCheckBox("Show Body Mask")
-        self.chk_body.setChecked(True)
-        self.chk_body.toggled.connect(lambda c: self.sig_toggle_mask.emit("body", c))
-        
-        seg_disp_layout.addWidget(self.chk_tumor)
-        seg_disp_layout.addWidget(self.chk_body)
-        grp_seg_disp.setLayout(seg_disp_layout)
-        layout.addWidget(grp_seg_disp)
-
         layout.addStretch()
         
         self.tabs.addTab(tab, "Workflow")
 
-    def _init_view_tab(self):
+    def _init_view_display_tab(self):
+        # Use a scroll area so the combined content fits in the sidebar
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        
         tab = QWidget()
         layout = QVBoxLayout(tab)
         
-        # View Selection
+        # ── View Mode ──
         grp_view = QGroupBox("View Mode")
         view_layout = QVBoxLayout()
         
@@ -209,21 +198,15 @@ class ControlPanel(QWidget):
         
         grp_view.setLayout(view_layout)
         layout.addWidget(grp_view)
-        layout.addStretch()
-        
-        self.tabs.addTab(tab, "View")
 
-    def _init_display_tab(self):
-        tab = QWidget()
-        layout = QFormLayout(tab)
+        # ── Display Settings ──
+        grp_display = QGroupBox("Display Settings")
+        display_layout = QFormLayout()
         
         # CT Window/Level
-        # Window (Width) - typically 1 to 3000
-        # Level (Center) - typically -1000 to 1000
-        
         self.spin_ct_window = QDoubleSpinBox()
         self.spin_ct_window.setRange(1, 4000)
-        self.spin_ct_window.setValue(400) # Default Lung/Soft Tissue
+        self.spin_ct_window.setValue(400)
         self.spin_ct_window.valueChanged.connect(self._emit_ct_wl)
         
         self.spin_ct_level = QDoubleSpinBox()
@@ -231,15 +214,12 @@ class ControlPanel(QWidget):
         self.spin_ct_level.setValue(40)
         self.spin_ct_level.valueChanged.connect(self._emit_ct_wl)
         
-        layout.addRow("CT Window (Width):", self.spin_ct_window)
-        layout.addRow("CT Level (Center):", self.spin_ct_level)
+        display_layout.addRow("CT Window:", self.spin_ct_window)
+        display_layout.addRow("CT Level:", self.spin_ct_level)
 
         # PET Window/Level
-        # PET is usually 0 to MAX. Window/Level might be weird but user asked for it.
-        # Window = Range, Level = Middle.
-        
         self.spin_pet_window = QDoubleSpinBox()
-        self.spin_pet_window.setRange(0.1, 10000) # Arbitrary scale, large range
+        self.spin_pet_window.setRange(0.1, 10000)
         self.spin_pet_window.setValue(20)
         self.spin_pet_window.valueChanged.connect(self._emit_pet_wl)
         
@@ -248,13 +228,13 @@ class ControlPanel(QWidget):
         self.spin_pet_level.setValue(10)
         self.spin_pet_level.valueChanged.connect(self._emit_pet_wl)
 
-        layout.addRow("PET Window:", self.spin_pet_window)
-        layout.addRow("PET Level:", self.spin_pet_level)
+        display_layout.addRow("PET Window:", self.spin_pet_window)
+        display_layout.addRow("PET Level:", self.spin_pet_level)
         
         # Zoom
         self.slider_zoom = QSlider(Qt.Orientation.Horizontal)
         self.slider_zoom.setRange(0, 100)
-        self.slider_zoom.setValue(20) # 1.0ish
+        self.slider_zoom.setValue(20)
         self.slider_zoom.valueChanged.connect(self.sig_zoom_changed.emit)
         
         self.btn_zoom_fit = QPushButton("Zoom to Fit")
@@ -264,7 +244,7 @@ class ControlPanel(QWidget):
         zoom_layout.addWidget(self.slider_zoom)
         zoom_layout.addWidget(self.btn_zoom_fit)
         
-        layout.addRow("Zoom:", zoom_layout)
+        display_layout.addRow("Zoom:", zoom_layout)
         
         # PET Opacity
         self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
@@ -273,10 +253,33 @@ class ControlPanel(QWidget):
         self.slider_opacity.valueChanged.connect(
             lambda v: self.sig_pet_opacity_changed.emit(v / 100.0)
         )
+        display_layout.addRow("PET Opacity:", self.slider_opacity)
         
-        layout.addRow("PET Overlay Opacity:", self.slider_opacity)
+        grp_display.setLayout(display_layout)
+        layout.addWidget(grp_display)
+
+        # ── Segmentation Visibility ──
+        from PyQt6.QtWidgets import QCheckBox
+        grp_seg_disp = QGroupBox("Segmentation Visibility")
+        seg_disp_layout = QVBoxLayout()
         
-        self.tabs.addTab(tab, "Display")
+        self.chk_tumor = QCheckBox("Show Tumor Mask")
+        self.chk_tumor.setChecked(True)
+        self.chk_tumor.toggled.connect(lambda c: self.sig_toggle_mask.emit("tumor", c))
+        
+        self.chk_body = QCheckBox("Show Body Mask")
+        self.chk_body.setChecked(True)
+        self.chk_body.toggled.connect(lambda c: self.sig_toggle_mask.emit("body", c))
+        
+        seg_disp_layout.addWidget(self.chk_tumor)
+        seg_disp_layout.addWidget(self.chk_body)
+        grp_seg_disp.setLayout(seg_disp_layout)
+        layout.addWidget(grp_seg_disp)
+
+        layout.addStretch()
+        
+        scroll.setWidget(tab)
+        self.tabs.addTab(scroll, "View & Display")
         
     def _emit_ct_wl(self):
         self.sig_ct_window_level_changed.emit(
@@ -579,3 +582,23 @@ class ControlPanel(QWidget):
     def _on_eraser_toggled(self, checked: bool):
         self.btn_eraser_toggle.setText("Disable Eraser" if checked else "Enable Eraser")
         self.sig_eraser_mode_toggled.emit(checked)
+
+    def _on_tab_changed(self, index: int):
+        """Reset mouse tool to pan/zoom when switching to non-tool tabs.
+        Also disable eraser mode when leaving the Eraser tab."""
+        # Find the eraser tab index dynamically
+        eraser_tab_index = -1
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "Eraser":
+                eraser_tab_index = i
+                break
+
+        # If leaving the Eraser tab, disable eraser mode
+        if eraser_tab_index >= 0 and index != eraser_tab_index:
+            if self.btn_eraser_toggle.isChecked():
+                self.btn_eraser_toggle.setChecked(False)  # triggers _on_eraser_toggled
+
+        # Reset tool to pan/zoom for all tabs except View & Display and Refine
+        if index != self._view_display_tab_index and index != self._refine_tab_index:
+            self.btn_pan.setChecked(True)
+            self.sig_set_tool.emit("pan_zoom")

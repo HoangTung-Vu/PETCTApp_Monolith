@@ -227,9 +227,15 @@ class MainWindow(QMainWindow):
         self.loader_worker.start()
 
     def _on_data_loaded(self, success):
+        self.control_panel.hide_progress()
+        # Defer viewer refresh to next event loop cycle so the UI
+        # finishes painting the progress-bar hide before heavy work begins.
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._do_refresh_after_load)
+
+    def _do_refresh_after_load(self):
         self._refresh_viewers()
         self._refresh_session_list()
-        self.control_panel.hide_progress()
         print("Async data loading completed.")
 
     def _on_data_error(self, error_msg):
