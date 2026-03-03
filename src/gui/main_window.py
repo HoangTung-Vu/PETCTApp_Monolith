@@ -13,7 +13,7 @@ from .components.layout_manager import LayoutManager
 class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("PET/CT Segmentation App")
+        self.setWindowTitle("Metabolic Lesion Quantification on PET/CT")
         self.setGeometry(100, 100, 1600, 900)
 
         # Core Logic
@@ -240,6 +240,11 @@ class MainWindow(QMainWindow):
     def _do_refresh_after_load(self):
         self._refresh_viewers()
         self._refresh_session_list()
+
+        # Apply current W/L defaults from control panel spinboxes
+        self.control_panel._emit_ct_wl()
+        self.control_panel._emit_pet_wl()
+
         print("Async data loading completed.")
 
     def _on_data_error(self, error_msg):
