@@ -103,6 +103,9 @@ class MainWindow(QMainWindow):
         self.control_panel.sig_eraser_save_clicked.connect(self.save_session)
         self.layout_manager.sig_eraser_region_removed.connect(self._on_eraser_region_removed)
 
+        # Report
+        self.control_panel.sig_report_clicked.connect(self._on_report_clicked)
+
         
     def _on_refine_suv(self, threshold):
         """
@@ -532,3 +535,34 @@ class MainWindow(QMainWindow):
             self.session_manager.set_tumor_prob(backup["prob"])
 
         print(f"[Eraser] Undo successful. Undo stack depth: {len(self._eraser_undo_stack)}")
+
+    # ──── Report Slots ────
+
+    def _on_report_clicked(self):
+        """Spawn a worker to compute the clinical report."""
+        from PyQt6.QtWidgets import QMessageBox
+
+        if self.session_manager.current_session_id is None:
+            QMessageBox.warning(self, "No Session", "Please load or create a session first.")
+            return
+        if self.session_manager.pet_image is None:
+            QMessageBox.warning(self, "Missing Data", "PET image must be loaded to generate a report.")
+            return
+
+        from .workers import ReportWorker
+        self.report_worker = ReportWorker(self.session_manager)
+        self.report_worker.finished.connect(self._on_report_finished)
+        self.report_worker.error.connect(self._on_report_error)
+        self.control_panel.show_report_progress()
+        self.report_worker.start()
+
+    def _on_report_finished(self, metrics: dict):
+        self.control_panel.hide_report_progress()
+        self.control_panel.show_report_results(metrics)
+        print(f"[Report] Generated: {metrics}")
+
+    def _on_report_error(self, error_msg: str):
+        self.control_panel.hide_report_progress()
+        print(f"[Report] Error: {error_msg}")
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "Report Failed", error_msg)

@@ -49,6 +49,9 @@ class ControlPanel(QWidget):
     sig_eraser_undo_clicked = pyqtSignal()
     sig_eraser_save_clicked = pyqtSignal()
 
+    # Report Signal
+    sig_report_clicked = pyqtSignal()
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._init_ui()
@@ -128,6 +131,36 @@ class ControlPanel(QWidget):
         grp_actions.setLayout(action_layout)
         
         layout.addWidget(grp_actions)
+
+        # ── Report Section ──
+        grp_report = QGroupBox("Report")
+        report_layout = QVBoxLayout()
+
+        self.btn_report = QPushButton("Generate Report")
+        self.btn_report.clicked.connect(self.sig_report_clicked.emit)
+        report_layout.addWidget(self.btn_report)
+
+        self.report_progress = QProgressBar()
+        self.report_progress.setRange(0, 0)
+        self.report_progress.setVisible(False)
+        report_layout.addWidget(self.report_progress)
+
+        # Result labels
+        result_form = QFormLayout()
+        self.lbl_suvmax = QLabel("—")
+        self.lbl_suvmean = QLabel("—")
+        self.lbl_suvpeak = QLabel("—")
+        self.lbl_mtv = QLabel("—")
+        self.lbl_tlg = QLabel("—")
+        result_form.addRow("SUVmax:", self.lbl_suvmax)
+        result_form.addRow("SUVmean:", self.lbl_suvmean)
+        result_form.addRow("SUVpeak:", self.lbl_suvpeak)
+        result_form.addRow("MTV (mL):", self.lbl_mtv)
+        result_form.addRow("TLG:", self.lbl_tlg)
+        report_layout.addLayout(result_form)
+
+        grp_report.setLayout(report_layout)
+        layout.addWidget(grp_report)
         
         layout.addStretch()
         
@@ -435,6 +468,30 @@ class ControlPanel(QWidget):
 
     def hide_refine_progress(self):
         self.refine_progress.setVisible(False)
+
+    # ──── Report helpers ────
+
+    def show_report_progress(self):
+        self.report_progress.setVisible(True)
+        self.btn_report.setEnabled(False)
+
+    def hide_report_progress(self):
+        self.report_progress.setVisible(False)
+        self.btn_report.setEnabled(True)
+
+    def show_report_results(self, metrics: dict):
+        """Populate the report labels with computed metrics."""
+        self.lbl_suvmax.setText(str(metrics.get("SUVmax", "—")))
+        self.lbl_suvmean.setText(str(metrics.get("SUVmean", "—")))
+        self.lbl_suvpeak.setText(str(metrics.get("SUVpeak", "—")))
+        self.lbl_mtv.setText(str(metrics.get("MTV", "—")))
+        self.lbl_tlg.setText(str(metrics.get("TLG", "—")))
+
+    def clear_report_results(self):
+        """Reset report labels to placeholder."""
+        for lbl in (self.lbl_suvmax, self.lbl_suvmean, self.lbl_suvpeak,
+                    self.lbl_mtv, self.lbl_tlg):
+            lbl.setText("—")
 
     # ──── AutoPET Interactive Tab ────
     

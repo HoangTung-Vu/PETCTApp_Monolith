@@ -8,6 +8,7 @@ from ..database.models import Session
 from ..database.session_repository import SessionRepository
 # We will import engines dynamically or inject them to avoid circular imports if any
 from .refinement_engine import RefinementEngine
+from .engine.report_engine import ReportEngine
 
 class SessionManager:
     """
@@ -239,3 +240,25 @@ class SessionManager:
             self.organ_mask = refined_img
             
         return refined_img.get_fdata()
+
+    def generate_report(self) -> dict:
+        """Generate a clinical report by loading the tumor mask from disk.
+
+        The mask is loaded from the persistent file
+        (``storage/data/{session_id}/tumor_seg.nii.gz``) rather than the
+        in-memory ``self.tumor_mask`` so that the report always reflects
+        the last-saved (committed) state.
+
+        Returns:
+            dict with keys: SUVmax, SUVmean, SUVpeak, MTV, TLG.
+        """
+        if self.current_session_id is None:
+            raise ValueError("No active session.")
+        if self.pet_image is None:
+            raise ValueError("PET image must be loaded to generate a report.")
+        if not FileManager.file_exists(self.current_session_id, "tumor_seg"):
+            raise ValueError("No saved tumor mask found for this session. "
+                             "Run segmentation and save first.")
+
+        disk_mask = FileManager.load_nifti(self.current_session_id, "tumor_seg")
+        return ReportEngine.compute_report(self.pet_image, disk_mask)
