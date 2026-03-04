@@ -42,6 +42,7 @@ class EraserHandlerMixin:
         # Update session manager with erased mask (in-memory only)
         # Note: Session manager also clears lesion ids internally
         self.session_manager.set_tumor_mask(new_mask_xyz)
+        self._push_mask_to_all("tumor", new_mask_xyz)
 
         # BUG-03 FIX: Clear report UI and hide lesion IDs
         self.control_panel.clear_report_results()

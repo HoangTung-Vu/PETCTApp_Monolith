@@ -72,9 +72,9 @@ class RefineTab(QWidget):
         grp_layer = QGroupBox("Target Layer")
         layer_layout = QHBoxLayout()
         self.combo_layer = QComboBox()
-        self.combo_layer.addItems(["Tumor Mask", "Organ Mask"])
+        self.combo_layer.addItems(["Tumor Mask"])
         self.combo_layer.currentTextChanged.connect(
-            lambda t: self.sig_target_layer_changed.emit("tumor" if "Tumor" in t else "organ")
+            lambda t: self.sig_target_layer_changed.emit("tumor")
         )
         layer_layout.addWidget(self.combo_layer)
         grp_layer.setLayout(layer_layout)

@@ -28,14 +28,18 @@ class RefinementHandlerMixin:
             )
             return
 
+        # Compute ROI from snapshot
+        roi_mask = self.session_manager.get_paint_roi(self.target_layer)
+
         from ..workers import RefinementWorker
         self.refine_worker = RefinementWorker(
-            self.session_manager.pet_image, mask_img, threshold
+            self.session_manager.pet_image, mask_img, threshold, roi_mask
         )
         self.refine_worker.finished.connect(self._on_refinement_finished)
         self.refine_worker.error.connect(self._on_refinement_error)
 
         self.control_panel.show_refine_progress()
+        self._set_ui_busy(True)
         self.refine_worker.start()
 
     def _on_refinement_finished(self, refined_img):
@@ -53,13 +57,54 @@ class RefinementHandlerMixin:
         self.layout_manager.hide_lesion_ids()
         self.control_panel.chk_show_lesion_ids.setChecked(False)
         
-        print(f"Refined {self.target_layer} finished.")
+        # COMMIT: Save to disk and clear snapshots so tab switches don't revert
+        self.session_manager.save_session()
+        
+        print(f"Refined {self.target_layer} finished and saved.")
+        self._set_ui_busy(False)
         self.control_panel.hide_refine_progress()
 
     def _on_refinement_error(self, error_msg):
+        self._set_ui_busy(False)
         self.control_panel.hide_refine_progress()
         print(f"Refinement Error: {error_msg}")
         QMessageBox.critical(self, "Refinement Failed", error_msg)
+
+    def _on_refinement_tab_changed(self, index: int):
+        """Handle snapshot/revert logic for Refine (2) and AutoPET (3) tabs."""
+        REFINE_TAB_INDEX = 2
+        AUTOPET_TAB_INDEX = 3
+        
+        is_refine_mode = index in [REFINE_TAB_INDEX, AUTOPET_TAB_INDEX]
+        was_refine_mode = self._last_tab_index in [REFINE_TAB_INDEX, AUTOPET_TAB_INDEX]
+
+        # LEAVING Refine/AutoPET Mode
+        if was_refine_mode and not is_refine_mode:
+            print("[RefineHandler] Leaving Refine/AutoPET. Reverting unsaved tumor paint...")
+            self.session_manager.revert_to_snapshot("tumor")
+            tumor_data = self.session_manager.get_tumor_mask_data()
+            if tumor_data is not None:
+                self._push_mask_to_all("tumor", tumor_data)
+
+        # ENTERING Refine/AutoPET Mode
+        if is_refine_mode and not was_refine_mode:
+            print("[RefineHandler] Entering Refine/AutoPET. Launching async tumor snapshot...")
+            from ..workers import SnapshotWorker
+            self._set_ui_busy(True)
+            self.snapshot_worker = SnapshotWorker(self.session_manager, "tumor")
+            self.snapshot_worker.finished.connect(self._on_snapshot_finished)
+            self.snapshot_worker.start()
+
+        self._last_tab_index = index
+
+    def _on_snapshot_finished(self):
+        self._set_ui_busy(False)
+        print("[RefineHandler] Async snapshot finished. Mask is ready.")
+        # If the snapshot worker created a new zeroed mask, we need to push it
+        # to ensure Napari viewers have the layer.
+        data = self.session_manager.get_tumor_mask_data()
+        if data is not None:
+             self._push_mask_to_all("tumor", data)
 
     # ── Drawing tool slots ──
 
@@ -111,8 +156,9 @@ class RefinementHandlerMixin:
         # This only updates caches and invalidates non-visible layouts.
         self.layout_manager.sync_mask_cache(mask_data, layer_type)
         
-        # Dismiss stale lesion IDs if painting on tumor mask
+        # Dismiss stale lesion data if painting on tumor mask
         if layer_type == "tumor":
+            self.session_manager.clear_lesion_data()
             self.layout_manager.hide_lesion_ids()
             self.control_panel.chk_show_lesion_ids.setChecked(False)
 

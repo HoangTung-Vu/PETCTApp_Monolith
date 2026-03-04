@@ -18,7 +18,7 @@ from ..utils.nifti_utils import nifti_to_bytes, bytes_to_nifti, bytes_to_npz, ma
 
 # ──── Configuration ────
 
-ENGINE_NNUNET_URL = "http://localhost:8101"
+ENGINE_NNUNET_URL_PRETRAINED = "http://localhost:8101"
 ENGINE_NNUNET_URL = "http://localhost:8104/nnUNetTrainerDicewBCELoss_1vs50_150ep__nnUNetPlans__3d_fullres"
 ENGINE_AUTOPET_URL = "http://localhost:8102"
 ENGINE_TOTALSEG_URL = "http://localhost:8103"
@@ -70,6 +70,20 @@ class SegmentationWorker(QThread):
                     mask_nib = nib.Nifti1Image(mask_array, ref_img.affine, ref_img.header)
                     self.finished.emit((mask_nib, prob, "tumor"))
 
+                elif self.engine_type == "tumor_pretrained":
+                    images = self.images if isinstance(self.images, list) else [self.images]
+                    files = [make_nifti_upload(img, f"image_{i}.nii.gz") for i, img in enumerate(images)]
+
+                    with httpx.Client(timeout=HTTP_TIMEOUT) as client:
+                        response = client.post(
+                            f"{ENGINE_NNUNET_URL_PRETRAINED}/run_nib",
+                            files=files,
+                        )
+                        response.raise_for_status()
+
+                    mask_nib = bytes_to_nifti(response.content)
+                    self.finished.emit((mask_nib, None, "tumor_pretrained"))
+
                 elif self.engine_type == "organ":
                     image = self.images if isinstance(self.images, nib.Nifti1Image) else self.images[0]
                     files = [make_nifti_upload(image, "ct.nii.gz")]
@@ -100,18 +114,21 @@ class RefinementWorker(QThread):
     finished = pyqtSignal(object)
     error = pyqtSignal(str)
 
-    def __init__(self, pet_image: nib.Nifti1Image, mask_image: nib.Nifti1Image, threshold: float):
+    def __init__(self, pet_image: nib.Nifti1Image, mask_image: nib.Nifti1Image, threshold: float, roi_mask: np.ndarray = None):
         super().__init__()
         self.pet_image = pet_image
         self.mask_image = mask_image
         self.threshold = threshold
+        self.roi_mask = roi_mask
 
     def run(self):
         try:
-            from ..core.refinement_engine import RefinementEngine
+            from ..core.engine.refinement_engine import RefinementEngine
 
-            print(f"[Worker] Starting SUV Refinement (Threshold {self.threshold})...")
-            refined_image = RefinementEngine.refine_suv(self.pet_image, self.mask_image, self.threshold)
+            print(f"[Worker] Starting SUV Refinement (Threshold {self.threshold}, ROI {'Yes' if self.roi_mask is not None else 'No'})...")
+            refined_image = RefinementEngine.refine_suv(
+                self.pet_image, self.mask_image, self.threshold, self.roi_mask
+            )
 
             self.finished.emit(refined_image)
 
@@ -248,5 +265,30 @@ class ReportWorker(QThread):
             metrics = self.session_manager.generate_report()
             self.finished.emit(metrics)
         except Exception as e:
+            self.error.emit(str(e))
+
+
+class SnapshotWorker(QThread):
+    """
+    Moves the heavy mask.get_fdata().copy() to a background thread
+    to prevent UI lag when entering Refine/AutoPET tabs.
+    """
+    finished = pyqtSignal()
+    error = pyqtSignal(str)
+
+    def __init__(self, session_manager, mask_type: str):
+        super().__init__()
+        self.session_manager = session_manager
+        self.mask_type = mask_type
+
+    def run(self):
+        try:
+            print(f"[SnapshotWorker] Taking async snapshot for {self.mask_type}...")
+            # This calls the SessionManager method which now creates zero-mask if missing
+            self.session_manager.snapshot_current_mask(self.mask_type)
+            self.finished.emit()
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.error.emit(str(e))
 

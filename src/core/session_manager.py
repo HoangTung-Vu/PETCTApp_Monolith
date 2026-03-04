@@ -7,7 +7,7 @@ from .file_manager import FileManager
 from ..database.models import Session
 from ..database.session_repository import SessionRepository
 # We will import engines dynamically or inject them to avoid circular imports if any
-from .refinement_engine import RefinementEngine
+from .engine.refinement_engine import RefinementEngine
 from .engine.report_engine import ReportEngine
 
 class SessionManager:
@@ -23,6 +23,10 @@ class SessionManager:
         # If they don't exist yet, they are None.
         self.tumor_mask: Optional[nib.Nifti1Image] = None
         self.organ_mask: Optional[nib.Nifti1Image] = None
+        
+        # Snapshot for ROI refinement (baseline before painting)
+        self._tumor_mask_snapshot: Optional[np.ndarray] = None
+        self._organ_mask_snapshot: Optional[np.ndarray] = None
         
         # Session Metadata
         self.patient_name: str = ""
@@ -170,7 +174,12 @@ class SessionManager:
             
         # Update DB with mask paths
         self.repository.update(self.current_session_id, tumor_seg_path=tumor_path, organ_seg_path=organ_path)
-        print(f"[SessionManager] Saved session {self.current_session_id}")
+        
+        # Snapshot "commit": clear them so tab switches don't revert
+        self._tumor_mask_snapshot = None
+        self._organ_mask_snapshot = None
+        
+        print(f"[SessionManager] Saved session {self.current_session_id} and cleared snapshots.")
 
     def clear_lesion_data(self):
         """Clear cached lesion report data (bboxes and IDs)."""
@@ -189,10 +198,6 @@ class SessionManager:
         self.tumor_mask = nib.Nifti1Image(mask_array.astype(np.uint8), self.ct_image.affine, self.ct_image.header)
         self.clear_lesion_data()
 
-        # Delete on-disk mask to force save before report
-        if self.current_session_id is not None:
-             FileManager.get_file_path(self.current_session_id, "tumor_seg").unlink(missing_ok=True)
-
     def set_organ_mask(self, mask_array: np.ndarray):
         """
         Updates the organ mask in memory.
@@ -202,10 +207,6 @@ class SessionManager:
             
         self.organ_mask = nib.Nifti1Image(mask_array.astype(np.uint8), self.ct_image.affine, self.ct_image.header)
         self.clear_lesion_data()
-        
-        # Delete on-disk mask
-        if self.current_session_id is not None:
-             FileManager.get_file_path(self.current_session_id, "organ_seg").unlink(missing_ok=True)
 
     def get_ct_data(self) -> Optional[np.ndarray]:
         if self.ct_image:
@@ -239,10 +240,66 @@ class SessionManager:
         """Returns all sessions ordered by creation time."""
         return self.repository.get_all()
 
+    def snapshot_current_mask(self, mask_type: str):
+        """Take a snapshot of the current mask state. 
+        If mask is missing, create a zeroed mask matching CT dimensions.
+        """
+        if mask_type == "tumor":
+            if self.tumor_mask is None and self.ct_image is not None:
+                print(f"[SessionManager] Creating new zeroed Tumor Mask ({self.ct_image.shape})")
+                self.tumor_mask = nib.Nifti1Image(
+                    np.zeros(self.ct_image.shape, dtype=np.uint8),
+                    self.ct_image.affine,
+                    self.ct_image.header
+                )
+            if self.tumor_mask:
+                self._tumor_mask_snapshot = self.tumor_mask.get_fdata().copy()
+                
+        elif mask_type == "organ":
+            if self.organ_mask is None and self.ct_image is not None:
+                print(f"[SessionManager] Creating new zeroed Organ Mask ({self.ct_image.shape})")
+                self.organ_mask = nib.Nifti1Image(
+                    np.zeros(self.ct_image.shape, dtype=np.uint8),
+                    self.ct_image.affine,
+                    self.ct_image.header
+                )
+            if self.organ_mask:
+                self._organ_mask_snapshot = self.organ_mask.get_fdata().copy()
+
+    def revert_to_snapshot(self, mask_type: str):
+        """Discard any unsaved/unrefined changes by reverting to the snapshot."""
+        if mask_type == "tumor" and self._tumor_mask_snapshot is not None:
+            self.set_tumor_mask(self._tumor_mask_snapshot)
+            self._tumor_mask_snapshot = None
+        elif mask_type == "organ" and self._organ_mask_snapshot is not None:
+            self.set_organ_mask(self._organ_mask_snapshot)
+            self._organ_mask_snapshot = None
+
+    def get_paint_roi(self, mask_type: str) -> Optional[np.ndarray]:
+        """Compute the ROI diff between current state and snapshot."""
+        current_data = None
+        snapshot_data = None
+
+        if mask_type == "tumor":
+            if self.tumor_mask:
+                current_data = self.tumor_mask.get_fdata()
+            snapshot_data = self._tumor_mask_snapshot
+        elif mask_type == "organ":
+            if self.organ_mask:
+                current_data = self.organ_mask.get_fdata()
+            snapshot_data = self._organ_mask_snapshot
+
+        if current_data is None or snapshot_data is None:
+            return None
+
+        # ROI is anywhere the mask changed (painted or erased)
+        return (np.abs(current_data - snapshot_data) > 0).astype(np.uint8)
+
     def refine_mask(self, mask_type: str, threshold: float) -> Optional[np.ndarray]:
         """
         Refines the specified mask using SUV thresholding.
         Updates the internal mask state and returns the refined data.
+        Uses the internal snapshot to scope refinement to the painted ROI.
         """
         if self.pet_image is None:
             raise ValueError("PET image required for refinement.")
@@ -260,14 +317,19 @@ class SessionManager:
         if current_mask_img is None:
             raise ValueError(f"No {mask_type} mask available to refine.")
 
+        # Compute ROI
+        roi_mask = self.get_paint_roi(mask_type)
+
         # Run Refinement (returns NIfTI image)
-        refined_img = RefinementEngine.refine_suv(pet_img, current_mask_img, threshold)
+        refined_img = RefinementEngine.refine_suv(pet_img, current_mask_img, threshold, roi_mask)
         
         # Update Internal State
         if mask_type == "tumor":
             self.tumor_mask = refined_img
+            self._tumor_mask_snapshot = None # Clear snapshot after success
         elif mask_type == "organ":
             self.organ_mask = refined_img
+            self._organ_mask_snapshot = None # Clear snapshot after success
             
         return refined_img.get_fdata()
 

@@ -51,6 +51,7 @@ class MainWindow(
         self.current_tool = "pan_zoom"
         self.brush_size = 10
         self.target_layer = "tumor"
+        self._last_tab_index = 0 # Track for snapshot/revert logic
 
         # AutoPET Interactive State
         self.autopet_clicks = []
@@ -118,6 +119,9 @@ class MainWindow(
         cp.sig_report_clicked.connect(self._on_report_clicked)
         cp.sig_toggle_lesion_ids.connect(self._on_toggle_lesion_ids)
 
+        # Tabs
+        cp.sig_tab_changed.connect(self._on_tab_changed)
+
         # Auto-sync: debounced paint → session manager
         lm.sig_mask_painted.connect(self._on_auto_sync)
 
@@ -160,6 +164,7 @@ class MainWindow(
         self.loader_worker.finished.connect(self._on_data_loaded)
         self.loader_worker.error.connect(self._on_data_error)
         self.control_panel.show_progress()
+        self._set_ui_busy(True)
         self.loader_worker.start()
 
     def load_existing_session(self, session_id: int):
@@ -172,6 +177,7 @@ class MainWindow(
         self.loader_worker.finished.connect(self._on_data_loaded)
         self.loader_worker.error.connect(self._on_data_error)
         self.control_panel.show_progress()
+        self._set_ui_busy(True)
         self.loader_worker.start()
 
     def load_ct_dialog(self):
@@ -197,9 +203,11 @@ class MainWindow(
         self.loader_worker.finished.connect(self._on_data_loaded)
         self.loader_worker.error.connect(self._on_data_error)
         self.control_panel.show_progress()
+        self._set_ui_busy(True)
         self.loader_worker.start()
 
     def _on_data_loaded(self, success):
+        self._set_ui_busy(False)
         self.control_panel.hide_progress()
         if not success:
             return
@@ -219,6 +227,7 @@ class MainWindow(
         print(f"Async data loading completed for session {self.session_manager.current_session_id}.")
 
     def _on_data_error(self, error_msg):
+        self._set_ui_busy(False)
         self.control_panel.hide_progress()
         print(f"Data Loading Error: {error_msg}")
         from PyQt6.QtWidgets import QMessageBox
@@ -250,6 +259,18 @@ class MainWindow(
 
     def save_session(self):
         self.session_manager.save_session()
+
+    def _on_tab_changed(self, index: int):
+        """Delegate tab change events to specialized handlers."""
+        # Mixin-based tab handlers (implemented in refinement_handler.py, etc.)
+        self._on_refinement_tab_changed(index)
+
+    def _set_ui_busy(self, busy: bool):
+        """Enable/Disable interactive controls during background tasks."""
+        self.control_panel.tabs.setEnabled(not busy)
+        # Also disable important action buttons specifically if needed, 
+        # but disabling the whole tab widget is safer.
+        print(f"[MainWindow] UI Busy: {busy}")
 
     def closeEvent(self, event):
         # Hide immediately to give feedback to user

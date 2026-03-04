@@ -157,6 +157,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
         # Convert masks to Napari space ONCE
         from ....utils.nifti_utils import to_napari
+        # Only load Tumor Mask into viewers. Organ Mask is kept in cache but hidden.
         if tumor_mask is not None:
             self._cached_data_zyx["tumor"] = to_napari(tumor_mask.astype(np.uint8))
         else:
@@ -201,8 +202,6 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
             if self._cached_data_zyx["tumor"] is not None:
                 widget.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-            if self._cached_data_zyx["organ"] is not None:
-                widget.load_mask_zyx(self._cached_data_zyx["organ"], "organ")
 
             if r == 0: widget.set_camera_view(0)
             elif r == 1: widget.set_camera_view(2)
@@ -252,8 +251,6 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
         if self._cached_data_zyx["tumor"] is not None:
             self.overlay_viewer.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-        if self._cached_data_zyx["organ"] is not None:
-            self.overlay_viewer.load_mask_zyx(self._cached_data_zyx["organ"], "organ")
 
         # Apply persistent contrast
         ct_name = self.overlay_viewer.LAYER_NAMES["ct"]
@@ -288,8 +285,6 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         for v in self.mono_viewers.values():
             if self._cached_data_zyx["tumor"] is not None:
                 v.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-            if self._cached_data_zyx["organ"] is not None:
-                v.load_mask_zyx(self._cached_data_zyx["organ"], "organ")
             
             # Apply persistent contrast
             ct_name = v.LAYER_NAMES["ct"]
@@ -325,8 +320,6 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
         if self._cached_data_zyx["tumor"] is not None:
             self.viewer_3d.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-        if self._cached_data_zyx["organ"] is not None:
-            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["organ"], "organ")
         
         if self._cached_lesion_data:
             self.viewer_3d.show_lesion_ids(*self._cached_lesion_data)
@@ -462,6 +455,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
     def update_mask(self, mask_data, mask_type):
         """Update mask in visible viewers and cache. Lazy-loads others on demand."""
+        if mask_data is None:
+            return
         self._cached_data[mask_type] = mask_data
 
         from ....utils.nifti_utils import to_napari
@@ -526,6 +521,9 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 break
 
         if not synced:
+            if mask_data is None:
+                self._cached_data_zyx[mask_type] = None
+                return
             from ....utils.nifti_utils import to_napari
             self._cached_data_zyx[mask_type] = to_napari(mask_data.astype(np.uint8))
 

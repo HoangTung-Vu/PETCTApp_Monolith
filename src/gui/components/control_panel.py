@@ -28,6 +28,7 @@ class ControlPanel(QWidget):
     sig_load_session_clicked = pyqtSignal(int)
     sig_report_clicked = pyqtSignal()
     sig_toggle_lesion_ids = pyqtSignal(bool)
+    sig_tab_changed = pyqtSignal(int) # index
 
     # View & Display
     sig_layout_changed = pyqtSignal(str)
@@ -217,3 +218,6 @@ class ControlPanel(QWidget):
                 break
         if autopet_tab_index >= 0 and index != autopet_tab_index:
             self.sig_autopet_click_mode_changed.emit("")
+
+        # Emit general tab changed signal for MainWindow/Handlers
+        self.sig_tab_changed.emit(index)

@@ -23,9 +23,11 @@ class ReportHandlerMixin:
         self.report_worker.finished.connect(self._on_report_finished)
         self.report_worker.error.connect(self._on_report_error)
         self.control_panel.show_report_progress()
+        self._set_ui_busy(True)
         self.report_worker.start()
 
     def _on_report_finished(self, metrics: dict):
+        self._set_ui_busy(False)
         self.control_panel.hide_report_progress()
         self.control_panel.show_report_results(metrics)
 
@@ -51,6 +53,7 @@ class ReportHandlerMixin:
             self.layout_manager.hide_lesion_ids()
 
     def _on_report_error(self, error_msg: str):
+        self._set_ui_busy(False)
         self.control_panel.hide_report_progress()
         print(f"[Report] Error: {error_msg}")
         QMessageBox.critical(self, "Report Failed", error_msg)

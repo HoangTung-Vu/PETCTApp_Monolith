@@ -27,7 +27,6 @@ class AutoPETHandlerMixin:
 
     def _on_autopet_run(self):
         """Run AutoPET Interactive inference with collected clicks."""
-        self._on_sync_masks()
 
         ct_img = self.session_manager.ct_image
         pet_img = self.session_manager.pet_image
@@ -45,6 +44,7 @@ class AutoPETHandlerMixin:
         self.autopet_worker.error.connect(self._on_autopet_error)
 
         self.control_panel.show_autopet_progress()
+        self._set_ui_busy(True)
         self.autopet_worker.start()
 
     def _on_autopet_finished(self, refinement_prob):
@@ -65,19 +65,24 @@ class AutoPETHandlerMixin:
         self.session_manager.set_tumor_prob(combined_prob)
         self._push_mask_to_all("tumor", new_mask)
 
-        # BUG-05 FIX: Clear stale report UI
+        # BUG-05 FIX: Clear stale report UI and lesion data
+        self.session_manager.clear_lesion_data()
         self.control_panel.clear_report_results()
 
         self.session_manager.save_session()
-        print("[AutoPET] Session saved.")
+        # BUG-J FIX: Re-snapshot after commit so tab-switch revert uses the new baseline
+        self.session_manager.snapshot_current_mask("tumor")
+        print("[AutoPET] Session saved and snapshot updated.")
 
         self.layout_manager.clear_autopet_clicks()
         self.autopet_clicks.clear()
         self.control_panel.clear_autopet_click_list()
 
         self.control_panel.hide_autopet_progress()
+        self._set_ui_busy(False)
 
     def _on_autopet_error(self, error_msg):
+        self._set_ui_busy(False)
         self.control_panel.hide_autopet_progress()
         print(f"[AutoPET] Error: {error_msg}")
         QMessageBox.critical(self, "AutoPET Failed", error_msg)
