@@ -4,7 +4,7 @@ import numpy as np
 from typing import Optional, Tuple
 import nibabel as nib
 
-from ...utils.nifti_utils import to_napari, from_napari
+from ....utils.nifti_utils import to_napari, from_napari
 
 class ViewerWidget(QWidget):
     """
@@ -259,8 +259,9 @@ class ViewerWidget(QWidget):
         points = np.array(centroids)
 
         kwargs = dict(
-            size=1,
+            size=0,  # Hide the point marker (circle)
             face_color='transparent',
+            border_color='transparent',  
             name=self.LESION_LABEL_LAYER_NAME,
             features={'lesion_id': id_strings},
             text={
@@ -268,7 +269,9 @@ class ViewerWidget(QWidget):
                 'size': 16,
                 'color': 'lime',
                 'anchor': 'upper_left',
+                'translation': [0, 5, 0], # Offset text slightly
             },
+            n_dimensional=False, # Show only on exact slice
         )
         if self._scale_zyx is not None:
             kwargs['scale'] = self._scale_zyx

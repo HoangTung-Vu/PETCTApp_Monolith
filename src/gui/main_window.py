@@ -1,16 +1,33 @@
+"""Main application window.
+
+Slim core (~150 lines): UI setup, signal wiring, session management.
+All handler logic lives in ``handlers/`` as mixins.
+"""
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, 
-    QPushButton, QLabel, QListWidget, QDockWidget, QToolBar, QFileDialog
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog
 )
-
 from pathlib import Path
 
 from ..core.session_manager import SessionManager
 from .components.control_panel import ControlPanel
-from .components.layout_manager import LayoutManager
+from .components.layout import LayoutManager
 
-class MainWindow(QMainWindow):
+from .handlers.segmentation_handler import SegmentationHandlerMixin
+from .handlers.refinement_handler import RefinementHandlerMixin
+from .handlers.autopet_handler import AutoPETHandlerMixin
+from .handlers.eraser_handler import EraserHandlerMixin
+from .handlers.report_handler import ReportHandlerMixin
+
+
+class MainWindow(
+    SegmentationHandlerMixin,
+    RefinementHandlerMixin,
+    AutoPETHandlerMixin,
+    EraserHandlerMixin,
+    ReportHandlerMixin,
+    QMainWindow,
+):
     def __init__(self):
         super().__init__()
         self.setWindowTitle("Metabolic Lesion Quantification on PET/CT")
@@ -22,146 +39,140 @@ class MainWindow(QMainWindow):
         # GUI Components
         self.control_panel = ControlPanel()
         self.layout_manager = LayoutManager()
-        
+
         # Setup UI
         self._init_ui()
         self._connect_signals()
-        
+
         # Load initial data
         self._refresh_session_list()
-        
+
         # Refinement State
         self.current_tool = "pan_zoom"
         self.brush_size = 10
-        self.target_layer = "tumor" # Default
+        self.target_layer = "tumor"
 
         # AutoPET Interactive State
-        self.autopet_clicks = []  # [{"point": [z,y,x], "name": "tumor"/"background"}, ...]
+        self.autopet_clicks = []
 
         # Eraser State
-        self._eraser_undo_stack = []  # list of numpy arrays (mask backups in XYZ space)
+        self._eraser_undo_stack = []
 
-
-        
-        
     def _init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
-        
-        # Left: Control Panel (Sidebar)
+
         sidebar_container = QWidget()
         sidebar_layout = QVBoxLayout(sidebar_container)
         sidebar_layout.addWidget(self.control_panel)
         sidebar_container.setFixedWidth(350)
-        
-        # Center: Layout Manager (Viewers)
+
         main_layout.addWidget(sidebar_container)
         main_layout.addWidget(self.layout_manager)
-        
+
     def _connect_signals(self):
-        # Control Panel -> Main Window Actions
-        self.control_panel.sig_load_ct_clicked.connect(self.load_ct_dialog)
-        self.control_panel.sig_load_pet_clicked.connect(self.load_pet_dialog)
-        self.control_panel.sig_segment_clicked.connect(self.run_segmentation_dialog)
-        self.control_panel.sig_layout_changed.connect(self.layout_manager.set_view_mode)
-        self.control_panel.sig_toggle_3d_pet.connect(self.layout_manager.toggle_3d_pet)
-        
-        # Display settings
-        self.control_panel.sig_pet_opacity_changed.connect(self.layout_manager.set_pet_opacity)
-        self.control_panel.sig_ct_window_level_changed.connect(self.layout_manager.set_ct_window_level)
-        self.control_panel.sig_pet_window_level_changed.connect(self.layout_manager.set_pet_window_level)
-        self.control_panel.sig_zoom_changed.connect(self.layout_manager.set_zoom)
-        self.control_panel.sig_zoom_to_fit.connect(self.layout_manager.reset_zoom)
-        self.control_panel.sig_toggle_mask.connect(self.layout_manager.toggle_mask)
-        
-        # Session Management
-        self.control_panel.sig_new_session_clicked.connect(self.create_new_session)
-        self.control_panel.sig_load_session_clicked.connect(self.load_existing_session)
-        
+        cp = self.control_panel
+        lm = self.layout_manager
+
+        # Workflow
+        cp.sig_load_ct_clicked.connect(self.load_ct_dialog)
+        cp.sig_load_pet_clicked.connect(self.load_pet_dialog)
+        cp.sig_segment_clicked.connect(self.run_segmentation_dialog)
+        cp.sig_layout_changed.connect(lm.set_view_mode)
+        cp.sig_toggle_3d_pet.connect(lm.toggle_3d_pet)
+
+        # Display
+        cp.sig_pet_opacity_changed.connect(lm.set_pet_opacity)
+        cp.sig_ct_window_level_changed.connect(lm.set_ct_window_level)
+        cp.sig_pet_window_level_changed.connect(lm.set_pet_window_level)
+        cp.sig_zoom_changed.connect(lm.set_zoom)
+        cp.sig_zoom_to_fit.connect(lm.reset_zoom)
+        cp.sig_toggle_mask.connect(lm.toggle_mask)
+
+        # Session
+        cp.sig_new_session_clicked.connect(self.create_new_session)
+        cp.sig_load_session_clicked.connect(self.load_existing_session)
+
         # Refinement
-        self.control_panel.sig_set_tool.connect(self._on_set_tool)
-        self.control_panel.sig_brush_size_changed.connect(self._on_brush_size_changed)
-        self.control_panel.sig_target_layer_changed.connect(self._on_target_layer_changed)
-        self.control_panel.sig_sync_masks_clicked.connect(self._on_sync_masks)
-        self.control_panel.sig_refine_suv_clicked.connect(self._on_refine_suv)
-        self.control_panel.sig_save_refine_clicked.connect(self.save_session)
+        cp.sig_set_tool.connect(self._on_set_tool)
+        cp.sig_brush_size_changed.connect(self._on_brush_size_changed)
+        cp.sig_target_layer_changed.connect(self._on_target_layer_changed)
+        cp.sig_refine_suv_clicked.connect(self._on_refine_suv)
+        cp.sig_save_refine_clicked.connect(self.save_session)
 
-        # AutoPET Interactive
-        self.control_panel.sig_autopet_click_mode_changed.connect(
-            self.layout_manager.enable_autopet_click_mode
-        )
-        self.control_panel.sig_autopet_run_clicked.connect(self._on_autopet_run)
-        self.control_panel.sig_autopet_save_clicked.connect(self.save_session)
-        self.control_panel.sig_autopet_sync_clicked.connect(self._on_sync_masks)
-        self.control_panel.sig_autopet_clear_clicks.connect(self._on_autopet_clear_clicks)
-        self.layout_manager.sig_autopet_click_added.connect(self._on_autopet_click_added)
+        # AutoPET
+        cp.sig_autopet_click_mode_changed.connect(lm.enable_autopet_click_mode)
+        cp.sig_autopet_run_clicked.connect(self._on_autopet_run)
+        cp.sig_autopet_save_clicked.connect(self.save_session)
+        cp.sig_autopet_clear_clicks.connect(self._on_autopet_clear_clicks)
+        lm.sig_autopet_click_added.connect(self._on_autopet_click_added)
 
-        # Eraser Tool
-        self.control_panel.sig_eraser_mode_toggled.connect(self._on_eraser_mode_toggled)
-        self.control_panel.sig_eraser_undo_clicked.connect(self._on_eraser_undo)
-        self.control_panel.sig_eraser_save_clicked.connect(self.save_session)
-        self.layout_manager.sig_eraser_region_removed.connect(self._on_eraser_region_removed)
+        # Eraser
+        cp.sig_eraser_mode_toggled.connect(self._on_eraser_mode_toggled)
+        cp.sig_eraser_undo_clicked.connect(self._on_eraser_undo)
+        cp.sig_eraser_save_clicked.connect(self.save_session)
+        lm.sig_eraser_region_removed.connect(self._on_eraser_region_removed)
 
         # Report
-        self.control_panel.sig_report_clicked.connect(self._on_report_clicked)
-        self.control_panel.sig_toggle_lesion_ids.connect(self._on_toggle_lesion_ids)
+        cp.sig_report_clicked.connect(self._on_report_clicked)
+        cp.sig_toggle_lesion_ids.connect(self._on_toggle_lesion_ids)
 
-        
-    def _on_refine_suv(self, threshold):
-        """
-        Refine the current mask using SUV threshold logic (async).
-        """
-        # 1. Sync manual edits first to ensure SessionManager has latest data
-        self._on_sync_masks()
-        
-        if self.session_manager.pet_image is None:
+        # Auto-sync: debounced paint → session manager
+        lm.sig_mask_painted.connect(self._on_auto_sync)
+
+    # ──── Session Management ────
+
+    def _reset_all_state(self):
+        """Clear all viewing and application state before session change."""
+        # Clear viewers
+        self.layout_manager.clear_all_viewers()
+
+        # Clear application state
+        self.autopet_clicks.clear()
+        self._eraser_undo_stack.clear()
+
+        # Clear report display
+        self.control_panel.clear_report_results()
+        self.layout_manager.hide_lesion_ids()
+
+        # Uncheck lesion IDs checkbox
+        self.control_panel.chk_show_lesion_ids.setChecked(False)
+
+        # Reset session label
+        self.control_panel.set_current_session_label("None")
+
+        print("[MainWindow] All state reset.")
+
+    def create_new_session(self, doctor: str, patient: str):
+        if not doctor or not patient:
             from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Data", "PET image required for SUV refinement.")
-            return
-            
-        mask_img = None
-        if self.target_layer == "tumor":
-            mask_img = self.session_manager.tumor_mask
-        elif self.target_layer == "organ":
-            mask_img = self.session_manager.organ_mask
-            
-        if mask_img is None:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Data", f"No {self.target_layer} mask available to refine.")
+            QMessageBox.warning(self, "Missing Info", "Please enter both Doctor and Patient names.")
             return
 
-        from .workers import RefinementWorker
-        self.refine_worker = RefinementWorker(
-            self.session_manager.pet_image,
-            mask_img,
-            threshold
+        self._reset_all_state()
+
+        from .workers import DataLoaderWorker
+        self.loader_worker = DataLoaderWorker(
+            self.session_manager, action="create",
+            new_doctor=doctor, new_patient=patient
         )
-        self.refine_worker.finished.connect(self._on_refinement_finished)
-        self.refine_worker.error.connect(self._on_refinement_error)
-        
-        self.control_panel.show_refine_progress()
-        self.refine_worker.start()
+        self.loader_worker.finished.connect(self._on_data_loaded)
+        self.loader_worker.error.connect(self._on_data_error)
+        self.control_panel.show_progress()
+        self.loader_worker.start()
 
-    def _on_refinement_finished(self, refined_img):
-        # Update SessionManager
-        data = refined_img.get_fdata()
-        if self.target_layer == "tumor":
-            self.session_manager.tumor_mask = refined_img
-        elif self.target_layer == "organ":
-            self.session_manager.organ_mask = refined_img
-            
-        # Update Viewers
-        self._push_mask_to_all(self.target_layer, data)
-        print(f"Refined {self.target_layer} finished.")
-        
-        self.control_panel.hide_refine_progress()
+    def load_existing_session(self, session_id: int):
+        self._reset_all_state()
 
-    def _on_refinement_error(self, error_msg):
-        self.control_panel.hide_refine_progress()
-        print(f"Refinement Error: {error_msg}")
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(self, "Refinement Failed", error_msg)
+        from .workers import DataLoaderWorker
+        self.loader_worker = DataLoaderWorker(
+            self.session_manager, current_session_id=session_id, action="load"
+        )
+        self.loader_worker.finished.connect(self._on_data_loaded)
+        self.loader_worker.error.connect(self._on_data_error)
+        self.control_panel.show_progress()
+        self.loader_worker.start()
 
     def load_ct_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -177,36 +188,41 @@ class MainWindow(QMainWindow):
         if file_path:
             self._update_session_files(pet_path=Path(file_path))
 
-    def create_new_session(self, doctor: str, patient: str):
-        if not doctor or not patient:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Info", "Please enter both Doctor and Patient names.")
-            return
-            
-        # Create session in DB via worker
+    def _update_session_files(self, ct_path=None, pet_path=None):
+        """Spawns worker to load CT/PET to prevent UI block."""
         from .workers import DataLoaderWorker
         self.loader_worker = DataLoaderWorker(
-            self.session_manager,
-            action="create",
-            new_doctor=doctor,
-            new_patient=patient
+            self.session_manager, ct_path=ct_path, pet_path=pet_path, action="update"
         )
         self.loader_worker.finished.connect(self._on_data_loaded)
         self.loader_worker.error.connect(self._on_data_error)
-        self.control_panel.show_progress() # Show progress in UI
+        self.control_panel.show_progress()
         self.loader_worker.start()
 
-    def load_existing_session(self, session_id: int):
-        from .workers import DataLoaderWorker
-        self.loader_worker = DataLoaderWorker(
-            self.session_manager,
-            current_session_id=session_id,
-            action="load"
-        )
-        self.loader_worker.finished.connect(self._on_data_loaded)
-        self.loader_worker.error.connect(self._on_data_error)
-        self.control_panel.show_progress() # Assuming show_progress exists or we use similar UI indication
-        self.loader_worker.start()
+    def _on_data_loaded(self, success):
+        self.control_panel.hide_progress()
+        if not success:
+            return
+        from PyQt6.QtCore import QTimer
+        QTimer.singleShot(0, self._do_refresh_after_load)
+
+    def _do_refresh_after_load(self):
+        self._refresh_viewers()
+        self._refresh_session_list()
+        self.control_panel._emit_ct_wl()
+        self.control_panel._emit_pet_wl()
+
+        # Update session label
+        session_name = f"ID: {self.session_manager.current_session_id} - {self.session_manager.patient_name}"
+        self.control_panel.set_current_session_label(session_name)
+        
+        print(f"Async data loading completed for session {self.session_manager.current_session_id}.")
+
+    def _on_data_error(self, error_msg):
+        self.control_panel.hide_progress()
+        print(f"Data Loading Error: {error_msg}")
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "Loading Failed", error_msg)
 
     def _refresh_session_list(self):
         sessions = self.session_manager.get_all_sessions()
@@ -215,381 +231,41 @@ class MainWindow(QMainWindow):
             label = f"{s.id}: {s.patient_name} ({s.created_at.strftime('%Y-%m-%d %H:%M')})"
             self.control_panel.combo_sessions.addItem(label, userData=s.id)
 
-    def _update_session_files(self, ct_path: Path = None, pet_path: Path = None):
-        """Spawns worker to load CT/PET natively to prevent UI block."""
-        from .workers import DataLoaderWorker
-        self.loader_worker = DataLoaderWorker(
-            self.session_manager,
-            ct_path=ct_path,
-            pet_path=pet_path,
-            action="update"
-        )
-        self.loader_worker.finished.connect(self._on_data_loaded)
-        self.loader_worker.error.connect(self._on_data_error)
-        
-        self.control_panel.show_progress() 
-        self.loader_worker.start()
-
-    def _on_data_loaded(self, success):
-        self.control_panel.hide_progress()
-        # Defer viewer refresh to next event loop cycle so the UI
-        # finishes painting the progress-bar hide before heavy work begins.
-        from PyQt6.QtCore import QTimer
-        QTimer.singleShot(0, self._do_refresh_after_load)
-
-    def _do_refresh_after_load(self):
-        self._refresh_viewers()
-        self._refresh_session_list()
-
-        # Apply current W/L defaults from control panel spinboxes
-        self.control_panel._emit_ct_wl()
-        self.control_panel._emit_pet_wl()
-
-        print("Async data loading completed.")
-
-    def _on_data_error(self, error_msg):
-        self.control_panel.hide_progress()
-        print(f"Data Loading Error: {error_msg}")
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(self, "Loading Failed", error_msg)
-
     def _refresh_viewers(self):
         ct_data = self.session_manager.get_ct_data()
         pet_data = self.session_manager.get_pet_data()
-        
-        # Get affine from whatever is available
+
         affine = None
         if self.session_manager.ct_image:
-             affine = self.session_manager.ct_image.affine
+            affine = self.session_manager.ct_image.affine
         elif self.session_manager.pet_image:
-             affine = self.session_manager.pet_image.affine
-             
+            affine = self.session_manager.pet_image.affine
+
         if affine is not None:
             tumor_mask = self.session_manager.get_tumor_mask_data()
             organ_mask = self.session_manager.get_organ_mask_data()
             self.layout_manager.load_data(ct_data, pet_data, affine, tumor_mask, organ_mask)
         else:
             print("No affine available (no images loaded?)")
-            
-    def run_segmentation_dialog(self):
-        """
-        Ask user which segmentation to run (Tumor or Organ).
-        For now, let's just run Tumor for demo, or add a dialog.
-        """
-        from PyQt6.QtWidgets import QInputDialog
-        items = ["Tumor Segmentation (nnUNet)", "Organ Segmentation (TotalSegmentator)"]
-        item, ok = QInputDialog.getItem(self, "Select Segmentation", 
-                                        "Choose model:", items, 0, False)
-        
-        if ok and item:
-            if "Tumor" in item:
-                self._run_segmentation("tumor")
-            else:
-                self._run_segmentation("organ")
-                
-    def _run_segmentation(self, seg_type: str):
-        ct_img = self.session_manager.ct_image
-        pet_img = self.session_manager.pet_image
-        
-        from ..gui.workers import SegmentationWorker
-        from PyQt6.QtWidgets import QMessageBox
-
-        if seg_type == "tumor":
-             # Tumor requires BOTH CT and PET
-             if not ct_img or not pet_img:
-                 QMessageBox.warning(self, "Missing Data", "Tumor segmentation requires both CT and PET images.")
-                 return
-             
-             # Pass list [ct, pet] as expected by NNUNetEngine
-             input_data = [ct_img, pet_img]
-             
-        elif seg_type == "organ":
-             # Organ requires CT
-             if not ct_img:
-                 QMessageBox.warning(self, "Missing Data", "Organ segmentation requires a CT image.")
-                 return
-                 
-             # Pass single CT image
-             input_data = ct_img
-        
-        else:
-            return
-
-        self.worker = SegmentationWorker(seg_type, input_data)
-        self.worker.finished.connect(self._on_segmentation_finished)
-        self.worker.error.connect(self._on_segmentation_error)
-        
-        self.control_panel.show_progress()
-        self.worker.start()
-        
-    def _on_segmentation_finished(self, result_tuple):
-        mask_img, prob_array, seg_type = result_tuple
-        affine = mask_img.affine
-        data = mask_img.get_fdata()
-        
-        if seg_type == "tumor":
-            self.session_manager.set_tumor_mask(data)
-            # Store probability volume if available
-            if prob_array is not None:
-                self.session_manager.set_tumor_prob(prob_array)
-            # Update Viewers
-            self._push_mask_to_all("tumor", data)
-            
-        elif seg_type == "organ":
-            self.session_manager.set_organ_mask(data)
-            self._push_mask_to_all("organ", data)
-            
-        # Auto-save immediately
-        self.session_manager.save_session()
-        print(f"Segmentation {seg_type} finished and saved.")
-        
-        self.control_panel.hide_progress()
-        
-    def _push_mask_to_all(self, layer_type, data):
-        self.layout_manager.update_mask(data, layer_type)
-
-    def _on_segmentation_error(self, error_msg):
-        self.control_panel.hide_progress()
-        print(f"Segmentation Error: {error_msg}")
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(self, "Segmentation Failed", error_msg)
 
     def save_session(self):
         self.session_manager.save_session()
-        
-
 
     def closeEvent(self, event):
-        # Close all viewers properly if needed
-
+        # Hide immediately to give feedback to user
+        self.hide()
+        
+        # Close all viewers properly
+        all_viewers = (
+            list(self.layout_manager.grid_viewers.values())
+            + [self.layout_manager.overlay_viewer]
+            + list(self.layout_manager.mono_viewers.values())
+            + [self.layout_manager.viewer_3d]
+        )
+        for v in all_viewers:
+            if v is not None:
+                try:
+                    v.close()
+                except Exception:
+                    pass
         super().closeEvent(event)
-
-    # Refinement Slots
-    def _on_set_tool(self, tool):
-        self.current_tool = tool
-        self._update_all_tools()
-        
-    def _on_brush_size_changed(self, size):
-        self.brush_size = size
-        self._update_all_tools()
-        
-    def _on_target_layer_changed(self, layer):
-        self.target_layer = layer
-        self._update_all_tools()
-        
-    def _update_all_tools(self):
-        # Push tool settings to Layout Manager
-        self.layout_manager.set_drawing_tool(
-            self.current_tool, 
-            self.brush_size, 
-            self.target_layer
-        )
-
-    def _on_sync_masks(self):
-        """
-        Pull mask from active viewer and sync to all others + session.
-        """
-        # 1. Get current mask data from active viewer
-        mask_data = self.layout_manager.get_active_mask_data(self.target_layer)
-        if mask_data is None:
-            print("No mask data found to sync.")
-            return
-
-        # 2. Update Session Manager
-        if self.target_layer == "tumor":
-            self.session_manager.set_tumor_mask(mask_data)
-        elif self.target_layer == "organ":
-            self.session_manager.set_organ_mask(mask_data)
-        
-        # 3. Push back to all viewers (sync)
-        self._push_mask_to_all(self.target_layer, mask_data)
-        print(f"Synced {self.target_layer} mask from active viewer to all.")
-
-    # ──── AutoPET Interactive Slots ────
-    
-    def _on_autopet_click_added(self, coord_zyx, label):
-        """Track a new click and update the UI list."""
-        click = {"point": coord_zyx, "name": label}
-        self.autopet_clicks.append(click)
-        self.control_panel.add_autopet_click_item(coord_zyx, label)
-        print(f"[AutoPET] Added click #{len(self.autopet_clicks)}: {label} at {coord_zyx}")
-    
-    def _on_autopet_clear_clicks(self):
-        """Clear all tracked clicks and viewer markers."""
-        self.autopet_clicks.clear()
-        self.layout_manager.clear_autopet_clicks()
-        print("[AutoPET] Cleared all clicks.")
-    
-    def _on_autopet_run(self):
-        """Run AutoPET Interactive inference with collected clicks."""
-        # Sync manual edits first
-        self._on_sync_masks()
-        
-        ct_img = self.session_manager.ct_image
-        pet_img = self.session_manager.pet_image
-        
-        from PyQt6.QtWidgets import QMessageBox
-        if not ct_img or not pet_img:
-            QMessageBox.warning(self, "Missing Data",
-                                "AutoPET Interactive requires both CT and PET images.")
-            return
-        
-        from .workers import AutoPETWorker
-        self.autopet_worker = AutoPETWorker(
-            ct_img, pet_img, list(self.autopet_clicks)
-        )
-        self.autopet_worker.finished.connect(self._on_autopet_finished)
-        self.autopet_worker.error.connect(self._on_autopet_error)
-        
-        self.control_panel.show_autopet_progress()
-        self.autopet_worker.start()
-    
-    def _on_autopet_finished(self, refinement_prob):
-        """Combine AutoPET prob with existing nnUNet prob."""
-        import numpy as np
-        
-        print(f"[AutoPET] Inference finished!")
-        print(f"[AutoPET] Refinement prob shape: {refinement_prob.shape}, dtype: {refinement_prob.dtype}")
-        
-        # Combine with existing probability
-        old_prob = self.session_manager.get_tumor_prob()
-        if old_prob is not None:
-            combined_prob = (old_prob + refinement_prob) / 2.0
-            print(f"[AutoPET] Combined prob (avg) shape: {combined_prob.shape}")
-        else:
-            combined_prob = refinement_prob
-            print(f"[AutoPET] No existing prob, using refinement prob directly")
-        
-        # Threshold to create binary mask
-        new_mask = (combined_prob >= 0.5).astype(np.uint8)
-        print(f"[AutoPET] New mask nonzero voxels: {np.count_nonzero(new_mask)}")
-        
-        # Update session manager
-        self.session_manager.set_tumor_mask(new_mask)
-        self.session_manager.set_tumor_prob(combined_prob)
-        
-        # Push to all viewers for preview
-        self._push_mask_to_all("tumor", new_mask)
-        print("[AutoPET] Result pushed to all viewers.")
-        
-        # Auto-save
-        self.session_manager.save_session()
-        print("[AutoPET] Session saved.")
-        
-        # Clear click markers from viewers after inference
-        self.layout_manager.clear_autopet_clicks()
-        self.autopet_clicks.clear()
-        self.control_panel.clear_autopet_click_list()
-        print("[AutoPET] Click markers cleared.")
-        
-        self.control_panel.hide_autopet_progress()
-    
-    def _on_autopet_error(self, error_msg):
-        self.control_panel.hide_autopet_progress()
-        print(f"[AutoPET] Error: {error_msg}")
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(self, "AutoPET Failed", error_msg)
-
-    # ──── Eraser Tool Slots ────
-
-    def _on_eraser_mode_toggled(self, enabled: bool):
-        """Enable or disable eraser click mode on viewers."""
-        if enabled:
-            self.layout_manager.enable_eraser_click_mode()
-            print("[Eraser] Mode enabled.")
-        else:
-            self.layout_manager.disable_eraser_click_mode()
-            print("[Eraser] Mode disabled.")
-
-    def _on_eraser_region_removed(self, mask_xyz):
-        """Called after eraser removes a connected component. Preview only (no save)."""
-        import numpy as np
-
-        # Store backup for undo (deep copy of mask + prob)
-        old_mask_data = self.session_manager.get_tumor_mask_data()
-        old_prob_data = self.session_manager.get_tumor_prob()
-        backup = {
-            "mask": old_mask_data.copy() if old_mask_data is not None else None,
-            "prob": old_prob_data.copy() if old_prob_data is not None else None,
-        }
-        self._eraser_undo_stack.append(backup)
-
-        # Find erased voxels (were 1, now 0) and zero out prob
-        if old_mask_data is not None and old_prob_data is not None:
-            erased = (old_mask_data > 0) & (mask_xyz == 0)
-            old_prob_data[erased] = 0.0
-            self.session_manager.set_tumor_prob(old_prob_data)
-            print(f"[Eraser] Zeroed {int(np.sum(erased))} prob voxels.")
-
-        # Update session manager with erased mask (in-memory only)
-        self.session_manager.set_tumor_mask(mask_xyz)
-        print(f"[Eraser] Preview updated. Undo stack depth: {len(self._eraser_undo_stack)}")
-
-    def _on_eraser_undo(self):
-        """Restore the mask and prob from before the last erase."""
-        if not self._eraser_undo_stack:
-            print("[Eraser] Nothing to undo.")
-            return
-
-        backup = self._eraser_undo_stack.pop()
-
-        if backup["mask"] is not None:
-            self.session_manager.set_tumor_mask(backup["mask"])
-            self._push_mask_to_all("tumor", backup["mask"])
-
-        if backup["prob"] is not None:
-            self.session_manager.set_tumor_prob(backup["prob"])
-
-        print(f"[Eraser] Undo successful. Undo stack depth: {len(self._eraser_undo_stack)}")
-
-    # ──── Report Slots ────
-
-    def _on_report_clicked(self):
-        """Spawn a worker to compute the clinical report."""
-        from PyQt6.QtWidgets import QMessageBox
-
-        if self.session_manager.current_session_id is None:
-            QMessageBox.warning(self, "No Session", "Please load or create a session first.")
-            return
-        if self.session_manager.pet_image is None:
-            QMessageBox.warning(self, "Missing Data", "PET image must be loaded to generate a report.")
-            return
-
-        from .workers import ReportWorker
-        self.report_worker = ReportWorker(self.session_manager)
-        self.report_worker.finished.connect(self._on_report_finished)
-        self.report_worker.error.connect(self._on_report_error)
-        self.control_panel.show_report_progress()
-        self.report_worker.start()
-
-    def _on_report_finished(self, metrics: dict):
-        self.control_panel.hide_report_progress()
-        self.control_panel.show_report_results(metrics)
-
-        # If lesion toggle is already on, push labels immediately
-        if self.control_panel.chk_show_lesion_ids.isChecked():
-            bboxes = self.session_manager.lesion_bboxes
-            ids = self.session_manager.lesion_ids
-            if bboxes:
-                self.layout_manager.show_lesion_ids(bboxes, ids)
-
-        n_lesions = len(metrics.get('lesions', []))
-        print(f"[Report] Generated: gTLG={metrics.get('gTLG')}, {n_lesions} lesions")
-
-    def _on_toggle_lesion_ids(self, checked: bool):
-        """Show or hide lesion ID labels on all viewers."""
-        if checked:
-            bboxes = self.session_manager.lesion_bboxes
-            ids = self.session_manager.lesion_ids
-            if bboxes:
-                self.layout_manager.show_lesion_ids(bboxes, ids)
-            else:
-                print("[Report] No lesion data available. Generate a report first.")
-        else:
-            self.layout_manager.hide_lesion_ids()
-
-    def _on_report_error(self, error_msg: str):
-        self.control_panel.hide_report_progress()
-        print(f"[Report] Error: {error_msg}")
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(self, "Report Failed", error_msg)

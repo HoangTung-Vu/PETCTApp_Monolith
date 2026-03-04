@@ -24,6 +24,10 @@ class SessionManager:
         self.tumor_mask: Optional[nib.Nifti1Image] = None
         self.organ_mask: Optional[nib.Nifti1Image] = None
         
+        # Session Metadata
+        self.patient_name: str = ""
+        self.doctor_name: str = ""
+        
         # Probability volume for tumor (single-channel, shape X,Y,Z, float32)
         self.tumor_prob: Optional[np.ndarray] = None
 
@@ -45,6 +49,8 @@ class SessionManager:
             pet_path=str(pet_path) if pet_path else None
         )
         self.current_session_id = session.id
+        self.patient_name = patient_name
+        self.doctor_name = doctor_name
         
         # 2. Copy to storage (standardized names)
         ct_dest = None
@@ -73,6 +79,7 @@ class SessionManager:
         self.tumor_mask = None
         self.organ_mask = None
         self.tumor_prob = None
+        self.clear_lesion_data()
         
         print(f"[SessionManager] Created session {self.current_session_id}")
         return self.current_session_id
@@ -105,9 +112,13 @@ class SessionManager:
         Loads an existing session from storage into RAM.
         """
         self.current_session_id = session_id
+        self.clear_lesion_data()
         session = self.repository.get_by_id(session_id)
         if not session:
             raise ValueError(f"Session {session_id} not found")
+        
+        self.patient_name = session.patient_name or ""
+        self.doctor_name = session.doctor_name or ""
         
         # Load CT/PET
         if FileManager.file_exists(session_id, "ct"):
@@ -161,6 +172,11 @@ class SessionManager:
         self.repository.update(self.current_session_id, tumor_seg_path=tumor_path, organ_seg_path=organ_path)
         print(f"[SessionManager] Saved session {self.current_session_id}")
 
+    def clear_lesion_data(self):
+        """Clear cached lesion report data (bboxes and IDs)."""
+        self.lesion_bboxes = []
+        self.lesion_ids = []
+
     def set_tumor_mask(self, mask_array: np.ndarray):
         """
         Updates the tumor mask in memory from a numpy array (e.g. from Napari).
@@ -171,6 +187,11 @@ class SessionManager:
         
         # Create NIfTI image (Ensure type is uint8 or appropriate label type)
         self.tumor_mask = nib.Nifti1Image(mask_array.astype(np.uint8), self.ct_image.affine, self.ct_image.header)
+        self.clear_lesion_data()
+
+        # Delete on-disk mask to force save before report
+        if self.current_session_id is not None:
+             FileManager.get_file_path(self.current_session_id, "tumor_seg").unlink(missing_ok=True)
 
     def set_organ_mask(self, mask_array: np.ndarray):
         """
@@ -180,6 +201,11 @@ class SessionManager:
             raise ValueError("CT Image must be loaded to set mask (need affine).")
             
         self.organ_mask = nib.Nifti1Image(mask_array.astype(np.uint8), self.ct_image.affine, self.ct_image.header)
+        self.clear_lesion_data()
+        
+        # Delete on-disk mask
+        if self.current_session_id is not None:
+             FileManager.get_file_path(self.current_session_id, "organ_seg").unlink(missing_ok=True)
 
     def get_ct_data(self) -> Optional[np.ndarray]:
         if self.ct_image:

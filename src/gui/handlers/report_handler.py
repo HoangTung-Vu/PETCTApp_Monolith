@@ -1,0 +1,56 @@
+"""Report handler mixin for MainWindow."""
+
+from PyQt6.QtWidgets import QMessageBox
+
+
+class ReportHandlerMixin:
+    """Handles report generation, display, and lesion ID toggling."""
+
+    def _on_report_clicked(self):
+        """Spawn a worker to compute the clinical report."""
+        if self.session_manager.current_session_id is None:
+            QMessageBox.warning(self, "No Session", "Please load or create a session first.")
+            return
+        if self.session_manager.pet_image is None:
+            QMessageBox.warning(self, "Missing Data", "PET image must be loaded to generate a report.")
+            return
+
+        # Auto-save session before report (report engine loads from disk)
+        self.save_session()
+
+        from ..workers import ReportWorker
+        self.report_worker = ReportWorker(self.session_manager)
+        self.report_worker.finished.connect(self._on_report_finished)
+        self.report_worker.error.connect(self._on_report_error)
+        self.control_panel.show_report_progress()
+        self.report_worker.start()
+
+    def _on_report_finished(self, metrics: dict):
+        self.control_panel.hide_report_progress()
+        self.control_panel.show_report_results(metrics)
+
+        if self.control_panel.chk_show_lesion_ids.isChecked():
+            bboxes = self.session_manager.lesion_bboxes
+            ids = self.session_manager.lesion_ids
+            if bboxes:
+                self.layout_manager.show_lesion_ids(bboxes, ids)
+
+        n_lesions = len(metrics.get('lesions', []))
+        print(f"[Report] Generated: gTLG={metrics.get('gTLG')}, {n_lesions} lesions")
+
+    def _on_toggle_lesion_ids(self, checked: bool):
+        """Show or hide lesion ID labels on all viewers."""
+        if checked:
+            bboxes = self.session_manager.lesion_bboxes
+            ids = self.session_manager.lesion_ids
+            if bboxes:
+                self.layout_manager.show_lesion_ids(bboxes, ids)
+            else:
+                print("[Report] No lesion data available. Generate a report first.")
+        else:
+            self.layout_manager.hide_lesion_ids()
+
+    def _on_report_error(self, error_msg: str):
+        self.control_panel.hide_report_progress()
+        print(f"[Report] Error: {error_msg}")
+        QMessageBox.critical(self, "Report Failed", error_msg)

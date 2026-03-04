@@ -1,673 +1,219 @@
-from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QTabWidget, 
-    QLabel, QSlider, QFormLayout, QGroupBox, QComboBox, QDoubleSpinBox,
-    QProgressBar, QHBoxLayout, QGridLayout, QListWidget, QScrollArea,
-    QTableWidget, QTableWidgetItem, QHeaderView, QCheckBox
-)
-from PyQt6.QtCore import Qt, pyqtSignal
+"""Control Panel — signal hub that assembles tab sub-modules.
+
+Each tab is defined in ``tabs/`` as its own QWidget with its own signals.
+ControlPanel simply wires them together and exposes a flat signal surface
+so that MainWindow does not need to know about the inner tabs.
+"""
+
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QTabWidget
+from PyQt6.QtCore import pyqtSignal
+
+from .tabs.workflow_tab import WorkflowTab
+from .tabs.view_display_tab import ViewDisplayTab
+from .tabs.refine_tab import RefineTab
+from .tabs.autopet_tab import AutoPETTab
+from .tabs.eraser_tab import EraserTab
+
 
 class ControlPanel(QWidget):
-    """
-    Control Panel with Workflow and Display tabs.
-    """
-    # Signals
+    """Control Panel with Workflow, View & Display, Refine, AutoPET, and Eraser tabs."""
+
+    # ── Re-exported Signals (flat surface for MainWindow) ──
+
+    # Workflow
     sig_load_ct_clicked = pyqtSignal()
     sig_load_pet_clicked = pyqtSignal()
     sig_segment_clicked = pyqtSignal()
+    sig_new_session_clicked = pyqtSignal(str, str)
+    sig_load_session_clicked = pyqtSignal(int)
+    sig_report_clicked = pyqtSignal()
+    sig_toggle_lesion_ids = pyqtSignal(bool)
 
+    # View & Display
     sig_layout_changed = pyqtSignal(str)
     sig_toggle_3d_pet = pyqtSignal(bool)
-    
-    # Display Settings Signals
     sig_pet_opacity_changed = pyqtSignal(float)
-    sig_ct_window_level_changed = pyqtSignal(float, float) # window, level
-    sig_pet_window_level_changed = pyqtSignal(float, float) # window, level
+    sig_ct_window_level_changed = pyqtSignal(float, float)
+    sig_pet_window_level_changed = pyqtSignal(float, float)
     sig_zoom_changed = pyqtSignal(int)
-    sig_toggle_mask = pyqtSignal(str, bool)
     sig_zoom_to_fit = pyqtSignal()
-    
-    # Session Signals
-    sig_new_session_clicked = pyqtSignal(str, str) # doctor, patient
-    sig_load_session_clicked = pyqtSignal(int)     # session_id
+    sig_toggle_mask = pyqtSignal(str, bool)
 
-    # Refinement Signals
-    sig_set_tool = pyqtSignal(str) # 'pan_zoom', 'paint', 'erase'
+    # Refine
+    sig_set_tool = pyqtSignal(str)
     sig_brush_size_changed = pyqtSignal(int)
-    sig_refine_suv_clicked = pyqtSignal(float) # threshold
-    sig_sync_masks_clicked = pyqtSignal()
+    sig_target_layer_changed = pyqtSignal(str)
+    sig_refine_suv_clicked = pyqtSignal(float)
     sig_save_refine_clicked = pyqtSignal()
-    sig_target_layer_changed = pyqtSignal(str) # 'tumor', 'organ'
-    
-    # AutoPET Interactive Signals
-    sig_autopet_click_mode_changed = pyqtSignal(str)  # 'tumor' or 'background'
+
+    # AutoPET
+    sig_autopet_click_mode_changed = pyqtSignal(str)
     sig_autopet_run_clicked = pyqtSignal()
     sig_autopet_save_clicked = pyqtSignal()
-    sig_autopet_sync_clicked = pyqtSignal()
     sig_autopet_clear_clicks = pyqtSignal()
 
-    # Eraser Tool Signals
-    sig_eraser_mode_toggled = pyqtSignal(bool)  # True=enable, False=disable
+    # Eraser
+    sig_eraser_mode_toggled = pyqtSignal(bool)
     sig_eraser_undo_clicked = pyqtSignal()
     sig_eraser_save_clicked = pyqtSignal()
 
-    # Report Signal
-    sig_report_clicked = pyqtSignal()
-    sig_toggle_lesion_ids = pyqtSignal(bool)  # Show/hide lesion bounding boxes
-
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._init_ui()
 
-    def _init_ui(self):
         self.tabs = QTabWidget()
-        
-        self._init_workflow_tab()
-        self._init_view_display_tab()
-        self._init_refine_tab()
-        self._init_autopet_tab()
-        self._init_eraser_tab()
 
-        # Store tab indices for the tab-change handler
+        # Instantiate tabs
+        self.workflow_tab = WorkflowTab()
+        self.view_display_tab = ViewDisplayTab()
+        self.refine_tab = RefineTab()
+        self.autopet_tab = AutoPETTab()
+        self.eraser_tab = EraserTab()
+
+        self.tabs.addTab(self.workflow_tab, "Workflow")
+        self.tabs.addTab(self.view_display_tab, "View & Display")
+        self.tabs.addTab(self.refine_tab, "Refine")
+        self.tabs.addTab(self.autopet_tab, "AutoPET")
+        self.tabs.addTab(self.eraser_tab, "Eraser")
+
+        # Tab indices for the tab-change handler
         self._view_display_tab_index = 1
-        self._refine_tab_index = 2
         self.tabs.currentChanged.connect(self._on_tab_changed)
-        
+
         layout = QVBoxLayout(self)
         layout.addWidget(self.tabs)
-        
-    def _init_workflow_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # Session Management
-        grp_session = QGroupBox("Session")
-        session_layout = QFormLayout()
-        
-        from PyQt6.QtWidgets import QLineEdit
-        self.input_doctor = QLineEdit()
-        self.input_patient = QLineEdit()
-        session_layout.addRow("Doctor:", self.input_doctor)
-        session_layout.addRow("Patient:", self.input_patient)
-        
-        self.btn_new_session = QPushButton("New Session")
-        self.btn_new_session.clicked.connect(self._emit_new_session)
-        session_layout.addRow(self.btn_new_session)
-        
-        self.combo_sessions = QComboBox()
-        # self.combo_sessions.addItem("Select Session...") # Populate later
-        
-        self.btn_load_this_session = QPushButton("Load Selected")
-        self.btn_load_this_session.clicked.connect(self._emit_load_session)
-        
-        session_layout.addRow("Previous:", self.combo_sessions)
-        session_layout.addRow(self.btn_load_this_session)
-        
-        grp_session.setLayout(session_layout)
-        layout.addWidget(grp_session)
-        
-        # Action Buttons
-        grp_actions = QGroupBox("Actions")
-        action_layout = QVBoxLayout()
-        
-        self.btn_load_ct = QPushButton("Load CT")
-        self.btn_load_ct.clicked.connect(self.sig_load_ct_clicked.emit)
-        
-        self.btn_load_pet = QPushButton("Load PET")
-        self.btn_load_pet.clicked.connect(self.sig_load_pet_clicked.emit)
-        
-        self.btn_segment = QPushButton("Run Segmentation")
-        self.btn_segment.clicked.connect(self.sig_segment_clicked.emit)
-        
 
-        
-        action_layout.addWidget(self.btn_load_ct)
-        action_layout.addWidget(self.btn_load_pet)
-        action_layout.addWidget(self.btn_segment)
+        # Wire tab signals → ControlPanel signals
+        self._connect_tab_signals()
 
-        # Progress Bar
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 0) # Indeterminate
-        self.progress_bar.setVisible(False)
-        action_layout.addWidget(self.progress_bar)
-        
-        grp_actions.setLayout(action_layout)
-        
-        layout.addWidget(grp_actions)
+    def _connect_tab_signals(self):
+        """Forward all tab signals through the ControlPanel signal hub."""
 
-        # ── Report Section ──
-        grp_report = QGroupBox("Report")
-        report_layout = QVBoxLayout()
+        # Workflow
+        w = self.workflow_tab
+        w.sig_load_ct_clicked.connect(self.sig_load_ct_clicked)
+        w.sig_load_pet_clicked.connect(self.sig_load_pet_clicked)
+        w.sig_segment_clicked.connect(self.sig_segment_clicked)
+        w.sig_new_session_clicked.connect(self.sig_new_session_clicked)
+        w.sig_load_session_clicked.connect(self.sig_load_session_clicked)
+        w.sig_report_clicked.connect(self.sig_report_clicked)
+        w.sig_toggle_lesion_ids.connect(self.sig_toggle_lesion_ids)
 
-        self.btn_report = QPushButton("Generate Report")
-        self.btn_report.clicked.connect(self.sig_report_clicked.emit)
-        report_layout.addWidget(self.btn_report)
+        # View & Display
+        vd = self.view_display_tab
+        vd.sig_layout_changed.connect(self.sig_layout_changed)
+        vd.sig_toggle_3d_pet.connect(self.sig_toggle_3d_pet)
+        vd.sig_pet_opacity_changed.connect(self.sig_pet_opacity_changed)
+        vd.sig_ct_window_level_changed.connect(self.sig_ct_window_level_changed)
+        vd.sig_pet_window_level_changed.connect(self.sig_pet_window_level_changed)
+        vd.sig_zoom_changed.connect(self.sig_zoom_changed)
+        vd.sig_zoom_to_fit.connect(self.sig_zoom_to_fit)
+        vd.sig_toggle_mask.connect(self.sig_toggle_mask)
 
-        self.report_progress = QProgressBar()
-        self.report_progress.setRange(0, 0)
-        self.report_progress.setVisible(False)
-        report_layout.addWidget(self.report_progress)
+        # Refine
+        r = self.refine_tab
+        r.sig_set_tool.connect(self.sig_set_tool)
+        r.sig_brush_size_changed.connect(self.sig_brush_size_changed)
+        r.sig_target_layer_changed.connect(self.sig_target_layer_changed)
+        r.sig_refine_suv_clicked.connect(self.sig_refine_suv_clicked)
+        r.sig_save_refine_clicked.connect(self.sig_save_refine_clicked)
 
-        # Global gTLG
-        gtlg_form = QFormLayout()
-        self.lbl_gtlg = QLabel("—")
-        gtlg_form.addRow("gTLG:", self.lbl_gtlg)
-        report_layout.addLayout(gtlg_form)
+        # AutoPET
+        a = self.autopet_tab
+        a.sig_autopet_click_mode_changed.connect(self.sig_autopet_click_mode_changed)
+        a.sig_autopet_run_clicked.connect(self.sig_autopet_run_clicked)
+        a.sig_autopet_save_clicked.connect(self.sig_autopet_save_clicked)
+        a.sig_autopet_clear_clicks.connect(self.sig_autopet_clear_clicks)
 
-        # Per-lesion table
-        self.tbl_lesions = QTableWidget()
-        self.tbl_lesions.setColumnCount(4)
-        self.tbl_lesions.setHorizontalHeaderLabels(["ID", "SUVmax", "SUVmean", "MTV (mL)"])
-        self.tbl_lesions.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.tbl_lesions.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.tbl_lesions.setMaximumHeight(180)
-        report_layout.addWidget(self.tbl_lesions)
+        # Eraser
+        e = self.eraser_tab
+        e.sig_eraser_mode_toggled.connect(self.sig_eraser_mode_toggled)
+        e.sig_eraser_undo_clicked.connect(self.sig_eraser_undo_clicked)
+        e.sig_eraser_save_clicked.connect(self.sig_eraser_save_clicked)
 
-        # Toggle lesion bounding boxes
-        self.chk_show_lesion_ids = QCheckBox("Show Lesion IDs")
-        self.chk_show_lesion_ids.setChecked(False)
-        self.chk_show_lesion_ids.toggled.connect(self.sig_toggle_lesion_ids.emit)
-        report_layout.addWidget(self.chk_show_lesion_ids)
+    # ── Proxy accessors (kept for backwards compat with MainWindow) ──
 
-        grp_report.setLayout(report_layout)
-        layout.addWidget(grp_report)
-        
-        layout.addStretch()
-        
-        self.tabs.addTab(tab, "Workflow")
+    @property
+    def combo_sessions(self):
+        return self.workflow_tab.combo_sessions
 
-    def _init_view_display_tab(self):
-        # Use a scroll area so the combined content fits in the sidebar
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # ── View Mode ──
-        grp_view = QGroupBox("View Mode")
-        view_layout = QVBoxLayout()
-        
-        # Mono Section
-        lbl_mono = QLabel("Mono-orthogonal:")
-        view_layout.addWidget(lbl_mono)
-        
-        self.btn_mono_axial = QPushButton("Axial")
-        self.btn_mono_axial.clicked.connect(lambda: self.sig_layout_changed.emit("mono_axial"))
-        view_layout.addWidget(self.btn_mono_axial)
-        
-        self.btn_mono_sag = QPushButton("Sagittal")
-        self.btn_mono_sag.clicked.connect(lambda: self.sig_layout_changed.emit("mono_sagittal"))
-        view_layout.addWidget(self.btn_mono_sag)
-        
-        self.btn_mono_cor = QPushButton("Coronal")
-        self.btn_mono_cor.clicked.connect(lambda: self.sig_layout_changed.emit("mono_coronal"))
-        view_layout.addWidget(self.btn_mono_cor)
+    @property
+    def chk_show_lesion_ids(self):
+        return self.workflow_tab.chk_show_lesion_ids
 
-        # Grid Button
-        self.btn_grid = QPushButton("Grid View (6-Cell)")
-        self.btn_grid.clicked.connect(lambda: self.sig_layout_changed.emit("grid"))
-        view_layout.addWidget(self.btn_grid)
-        
-        # Overlay Section
-        lbl_overlay = QLabel("Overlay Mode:")
-        view_layout.addWidget(lbl_overlay)
-        
-        self.btn_overlay = QPushButton("Axial")
-        self.btn_overlay.clicked.connect(lambda: self.sig_layout_changed.emit("overlay_axial"))
-        view_layout.addWidget(self.btn_overlay)
-        
-        self.btn_overlay_sag = QPushButton("Sagittal")
-        self.btn_overlay_sag.clicked.connect(lambda: self.sig_layout_changed.emit("overlay_sagittal"))
-        view_layout.addWidget(self.btn_overlay_sag)
-        
-        self.btn_overlay_cor = QPushButton("Coronal")
-        self.btn_overlay_cor.clicked.connect(lambda: self.sig_layout_changed.emit("overlay_coronal"))
-        view_layout.addWidget(self.btn_overlay_cor)
-        
-        # 3D Section
-        lbl_3d = QLabel("3D Mode:")
-        view_layout.addWidget(lbl_3d)
-        
-        self.btn_3d = QPushButton("3D View")
-        self.btn_3d.clicked.connect(lambda: self.sig_layout_changed.emit("3d"))
-        view_layout.addWidget(self.btn_3d)
-        
-        self.chk_3d_pet = QPushButton("Toggle 3D PET")
-        self.chk_3d_pet.setCheckable(True)
-        self.chk_3d_pet.setChecked(True)
-        self.chk_3d_pet.clicked.connect(self._emit_3d_pet_toggle)
-        view_layout.addWidget(self.chk_3d_pet)
-        
-        grp_view.setLayout(view_layout)
-        layout.addWidget(grp_view)
+    @property
+    def btn_pan(self):
+        return self.refine_tab.btn_pan
 
-        # ── Display Settings ──
-        grp_display = QGroupBox("Display Settings")
-        display_layout = QFormLayout()
-        
-        # CT Window/Level
-        self.spin_ct_window = QDoubleSpinBox()
-        self.spin_ct_window.setRange(1, 4000)
-        self.spin_ct_window.setValue(350)
-        self.spin_ct_window.valueChanged.connect(self._emit_ct_wl)
-        
-        self.spin_ct_level = QDoubleSpinBox()
-        self.spin_ct_level.setRange(-2000, 2000)
-        self.spin_ct_level.setValue(35)
-        self.spin_ct_level.valueChanged.connect(self._emit_ct_wl)
-        
-        display_layout.addRow("CT Window:", self.spin_ct_window)
-        display_layout.addRow("CT Level:", self.spin_ct_level)
+    @property
+    def btn_eraser_toggle(self):
+        return self.eraser_tab.btn_eraser_toggle
 
-        # PET Window/Level
-        self.spin_pet_window = QDoubleSpinBox()
-        self.spin_pet_window.setRange(0.1, 10000)
-        self.spin_pet_window.setValue(10)
-        self.spin_pet_window.valueChanged.connect(self._emit_pet_wl)
-        
-        self.spin_pet_level = QDoubleSpinBox()
-        self.spin_pet_level.setRange(0, 10000)
-        self.spin_pet_level.setValue(5)
-        self.spin_pet_level.valueChanged.connect(self._emit_pet_wl)
-
-        display_layout.addRow("PET Window:", self.spin_pet_window)
-        display_layout.addRow("PET Level:", self.spin_pet_level)
-        
-        # Zoom
-        self.slider_zoom = QSlider(Qt.Orientation.Horizontal)
-        self.slider_zoom.setRange(0, 100)
-        self.slider_zoom.setValue(20)
-        self.slider_zoom.valueChanged.connect(self.sig_zoom_changed.emit)
-        
-        self.btn_zoom_fit = QPushButton("Zoom to Fit")
-        self.btn_zoom_fit.clicked.connect(self.sig_zoom_to_fit.emit)
-        
-        zoom_layout = QHBoxLayout()
-        zoom_layout.addWidget(self.slider_zoom)
-        zoom_layout.addWidget(self.btn_zoom_fit)
-        
-        display_layout.addRow("Zoom:", zoom_layout)
-        
-        # PET Opacity
-        self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
-        self.slider_opacity.setRange(0, 100)
-        self.slider_opacity.setValue(50)
-        self.slider_opacity.valueChanged.connect(
-            lambda v: self.sig_pet_opacity_changed.emit(v / 100.0)
-        )
-        display_layout.addRow("PET Opacity:", self.slider_opacity)
-        
-        grp_display.setLayout(display_layout)
-        layout.addWidget(grp_display)
-
-        # ── Segmentation Visibility ──
-        from PyQt6.QtWidgets import QCheckBox
-        grp_seg_disp = QGroupBox("Segmentation Visibility")
-        seg_disp_layout = QVBoxLayout()
-        
-        self.chk_tumor = QCheckBox("Show Tumor Mask")
-        self.chk_tumor.setChecked(True)
-        self.chk_tumor.toggled.connect(lambda c: self.sig_toggle_mask.emit("tumor", c))
-        
-        self.chk_body = QCheckBox("Show Body Mask")
-        self.chk_body.setChecked(True)
-        self.chk_body.toggled.connect(lambda c: self.sig_toggle_mask.emit("body", c))
-        
-        seg_disp_layout.addWidget(self.chk_tumor)
-        seg_disp_layout.addWidget(self.chk_body)
-        grp_seg_disp.setLayout(seg_disp_layout)
-        layout.addWidget(grp_seg_disp)
-
-        layout.addStretch()
-        
-        scroll.setWidget(tab)
-        self.tabs.addTab(scroll, "View & Display")
-        
-    def _emit_ct_wl(self):
-        self.sig_ct_window_level_changed.emit(
-            float(self.spin_ct_window.value()),
-            float(self.spin_ct_level.value())
-        )
-        
-    def _emit_pet_wl(self):
-        # We might need to map these slider values to actual intensity units if we want valid rendering
-        # For now, pass raw slider values and let LayoutManager (or Main) scale them?
-        # Or Just pass as is.
-        self.sig_pet_window_level_changed.emit(
-            float(self.spin_pet_window.value()),
-            float(self.spin_pet_level.value())
-        )
-
-    def _emit_new_session(self):
-        doc = self.input_doctor.text()
-        pat = self.input_patient.text()
-        self.sig_new_session_clicked.emit(doc, pat)
-        
-    def _emit_load_session(self):
-        data = self.combo_sessions.currentData()
-        if data is not None:
-             self.sig_load_session_clicked.emit(int(data))
-        
-    def _emit_3d_pet_toggle(self, checked):
-        self.sig_toggle_3d_pet.emit(checked)
-
-    def _init_refine_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # 1. Tool Selection
-        grp_tools = QGroupBox("Manual Tools")
-        tools_layout = QGridLayout()
-        
-        self.btn_pan = QPushButton("Pan/Zoom")
-        self.btn_paint = QPushButton("Paint")
-        self.btn_erase = QPushButton("Eraser")
-        
-        self.btn_pan.setCheckable(True)
-        self.btn_paint.setCheckable(True)
-        self.btn_erase.setCheckable(True)
-        
-        # Exclusive check
-        from PyQt6.QtWidgets import QButtonGroup
-        self.tool_group = QButtonGroup(self)
-        self.tool_group.addButton(self.btn_pan)
-        self.tool_group.addButton(self.btn_paint)
-        self.tool_group.addButton(self.btn_erase)
-        
-        self.btn_pan.setChecked(True)
-        
-        self.btn_pan.clicked.connect(lambda: self.sig_set_tool.emit("pan_zoom"))
-        self.btn_paint.clicked.connect(lambda: self.sig_set_tool.emit("paint"))
-        self.btn_erase.clicked.connect(lambda: self.sig_set_tool.emit("erase"))
-        
-        tools_layout.addWidget(self.btn_pan, 0, 0)
-        tools_layout.addWidget(self.btn_paint, 0, 1)
-        tools_layout.addWidget(self.btn_erase, 0, 2)
-        
-        grp_tools.setLayout(tools_layout)
-        layout.addWidget(grp_tools)
-        
-        # 2. Brush Size
-        grp_brush = QGroupBox("Brush Size")
-        brush_layout = QHBoxLayout()
-        self.slider_brush = QSlider(Qt.Orientation.Horizontal)
-        self.slider_brush.setRange(1, 50)
-        self.slider_brush.setValue(10)
-        
-        self.lbl_brush_size = QLabel("10")
-        self.lbl_brush_size.setFixedWidth(30)
-        
-        self.slider_brush.valueChanged.connect(self.sig_brush_size_changed.emit)
-        self.slider_brush.valueChanged.connect(lambda v: self.lbl_brush_size.setText(str(v)))
-        
-        brush_layout.addWidget(self.slider_brush)
-        brush_layout.addWidget(self.lbl_brush_size)
-        grp_brush.setLayout(brush_layout)
-        layout.addWidget(grp_brush)
-        
-        # 3. Target Layer
-        grp_layer = QGroupBox("Target Layer")
-        layer_layout = QHBoxLayout()
-        self.combo_layer = QComboBox()
-        self.combo_layer.addItems(["Tumor Mask", "Organ Mask"])
-        self.combo_layer.currentTextChanged.connect(
-            lambda t: self.sig_target_layer_changed.emit("tumor" if "Tumor" in t else "organ")
-        )
-        layer_layout.addWidget(self.combo_layer)
-        grp_layer.setLayout(layer_layout)
-        layout.addWidget(grp_layer)
-        
-        # 4. Sync/Save Manual
-        self.btn_sync = QPushButton("Sync Modifications")
-        self.btn_sync.setToolTip("Push manual edits to all viewers and save to session.")
-        self.btn_sync.clicked.connect(self.sig_sync_masks_clicked.emit)
-        layout.addWidget(self.btn_sync)
-        
-        layout.addSpacing(10)
-        
-        # 5. SUV Refinement
-        grp_suv = QGroupBox("SUV Refinement")
-        suv_layout = QFormLayout()
-        
-        self.spin_suv = QDoubleSpinBox()
-        self.spin_suv.setRange(0.0, 50.0)
-        self.spin_suv.setValue(2.5)
-        self.spin_suv.setSingleStep(0.1)
-        
-        self.btn_refine = QPushButton("Refine ROI by SUV")
-        self.btn_refine.clicked.connect(self._emit_refine_suv)
-        
-        suv_layout.addRow("Min SUV:", self.spin_suv)
-        suv_layout.addRow(self.btn_refine)
-        
-
-        
-        grp_suv.setLayout(suv_layout)
-        layout.addWidget(grp_suv)
-        
-        # 6. Save Refinement
-        self.btn_save_refine = QPushButton("Save Refinement (Overwrite)")
-        self.btn_save_refine.clicked.connect(self.sig_save_refine_clicked.emit)
-        self.btn_save_refine.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold;")
-        layout.addWidget(self.btn_save_refine)
-        
-
-        
-        # 8. Refinement Progress Bar
-        self.refine_progress = QProgressBar()
-        self.refine_progress.setRange(0, 0) # Indeterminate
-        self.refine_progress.setVisible(False)
-        layout.addWidget(self.refine_progress)
-        
-        layout.addStretch()
-        self.tabs.addTab(tab, "Refine")
-
-    def _emit_refine_suv(self):
-        val = self.spin_suv.value()
-        self.sig_refine_suv_clicked.emit(val)
+    # ── Progress / report helpers (delegate to tabs) ──
 
     def show_progress(self):
-        self.progress_bar.setVisible(True)
-        
+        self.workflow_tab.show_progress()
+
     def hide_progress(self):
-        self.progress_bar.setVisible(False)
+        self.workflow_tab.hide_progress()
 
     def show_refine_progress(self):
-        self.refine_progress.setVisible(True)
+        self.refine_tab.show_refine_progress()
 
     def hide_refine_progress(self):
-        self.refine_progress.setVisible(False)
-
-    # ──── Report helpers ────
+        self.refine_tab.hide_refine_progress()
 
     def show_report_progress(self):
-        self.report_progress.setVisible(True)
-        self.btn_report.setEnabled(False)
+        self.workflow_tab.show_report_progress()
 
     def hide_report_progress(self):
-        self.report_progress.setVisible(False)
-        self.btn_report.setEnabled(True)
+        self.workflow_tab.hide_report_progress()
 
     def show_report_results(self, metrics: dict):
-        """Populate the report labels and table with computed metrics."""
-        self.lbl_gtlg.setText(str(metrics.get("gTLG", "—")))
-
-        lesions = metrics.get("lesions", [])
-        self.tbl_lesions.setRowCount(len(lesions))
-        for row, lesion in enumerate(lesions):
-            self.tbl_lesions.setItem(row, 0, QTableWidgetItem(str(lesion.get("id", ""))))
-            self.tbl_lesions.setItem(row, 1, QTableWidgetItem(str(lesion.get("SUVmax", ""))))
-            self.tbl_lesions.setItem(row, 2, QTableWidgetItem(str(lesion.get("SUVmean", ""))))
-            self.tbl_lesions.setItem(row, 3, QTableWidgetItem(str(lesion.get("MTV", ""))))
+        self.workflow_tab.show_report_results(metrics)
 
     def clear_report_results(self):
-        """Reset report labels and table to placeholder."""
-        self.lbl_gtlg.setText("—")
-        self.tbl_lesions.setRowCount(0)
+        self.workflow_tab.clear_report_results()
 
-    # ──── AutoPET Interactive Tab ────
-    
-    def _init_autopet_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
-        
-        # 1. Click Mode Selection
-        grp_click = QGroupBox("Click Mode")
-        click_layout = QGridLayout()
-        
-        self.btn_tumor_click = QPushButton("Tumor")
-        self.btn_bg_click = QPushButton("Background")
-        
-        self.btn_tumor_click.setCheckable(True)
-        self.btn_bg_click.setCheckable(True)
-        self.btn_tumor_click.setChecked(True)
-        
-        from PyQt6.QtWidgets import QButtonGroup
-        self.autopet_click_group = QButtonGroup(self)
-        self.autopet_click_group.addButton(self.btn_tumor_click)
-        self.autopet_click_group.addButton(self.btn_bg_click)
-        
-        self.btn_tumor_click.clicked.connect(
-            lambda: self.sig_autopet_click_mode_changed.emit("tumor")
-        )
-        self.btn_bg_click.clicked.connect(
-            lambda: self.sig_autopet_click_mode_changed.emit("background")
-        )
-        
-        click_layout.addWidget(self.btn_tumor_click, 0, 0)
-        click_layout.addWidget(self.btn_bg_click, 0, 1)
-        
-        grp_click.setLayout(click_layout)
-        layout.addWidget(grp_click)
-        
-        # 2. Click List
-        grp_list = QGroupBox("Added Clicks")
-        list_layout = QVBoxLayout()
-        
-        self.autopet_click_list = QListWidget()
-        self.autopet_click_list.setMaximumHeight(120)
-        list_layout.addWidget(self.autopet_click_list)
-        
-        self.btn_clear_clicks = QPushButton("Clear All Clicks")
-        self.btn_clear_clicks.clicked.connect(self._on_clear_autopet_clicks)
-        list_layout.addWidget(self.btn_clear_clicks)
-        
-        grp_list.setLayout(list_layout)
-        layout.addWidget(grp_list)
-        
-        # 3. Info label
-        info_label = QLabel("Double-click on viewer to place points.")
-        info_label.setStyleSheet("color: gray; font-style: italic;")
-        layout.addWidget(info_label)
-        
-        layout.addSpacing(10)
-        
-        # 4. Sync Modifications
-        self.btn_autopet_sync = QPushButton("Sync Modifications")
-        self.btn_autopet_sync.setToolTip("Push manual edits to all viewers and save to session.")
-        self.btn_autopet_sync.clicked.connect(self.sig_autopet_sync_clicked.emit)
-        layout.addWidget(self.btn_autopet_sync)
-        
-        # 5. Run Button
-        self.btn_autopet_run = QPushButton("Run AutoPET Interactive")
-        self.btn_autopet_run.clicked.connect(self.sig_autopet_run_clicked.emit)
-        layout.addWidget(self.btn_autopet_run)
-        
-        # 6. Save (Overwrite)
-        self.btn_autopet_save = QPushButton("Save Result (Overwrite)")
-        self.btn_autopet_save.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold;")
-        self.btn_autopet_save.clicked.connect(self.sig_autopet_save_clicked.emit)
-        layout.addWidget(self.btn_autopet_save)
-        
-        # 7. Progress Bar
-        self.autopet_progress = QProgressBar()
-        self.autopet_progress.setRange(0, 0)  # Indeterminate
-        self.autopet_progress.setVisible(False)
-        layout.addWidget(self.autopet_progress)
-        
-        layout.addStretch()
-        self.tabs.addTab(tab, "AutoPET")
-    
-    def _on_clear_autopet_clicks(self):
-        self.autopet_click_list.clear()
-        self.sig_autopet_clear_clicks.emit()
-    
+    def show_autopet_progress(self):
+        self.autopet_tab.show_autopet_progress()
+
+    def hide_autopet_progress(self):
+        self.autopet_tab.hide_autopet_progress()
+
     def add_autopet_click_item(self, coord_zyx, label):
-        """Add an entry to the click list widget."""
-        text = f"[{label}] Z={coord_zyx[0]}, Y={coord_zyx[1]}, X={coord_zyx[2]}"
-        self.autopet_click_list.addItem(text)
+        self.autopet_tab.add_autopet_click_item(coord_zyx, label)
 
     def clear_autopet_click_list(self):
-        """Clear the click list widget (called after inference)."""
-        self.autopet_click_list.clear()
-    
-    def show_autopet_progress(self):
-        self.autopet_progress.setVisible(True)
-        self.btn_autopet_run.setEnabled(False)
-    
-    def hide_autopet_progress(self):
-        self.autopet_progress.setVisible(False)
-        self.btn_autopet_run.setEnabled(True)
+        self.autopet_tab.clear_autopet_click_list()
 
-    # ──── Eraser Tool Tab ────
+    def set_current_session_label(self, text: str):
+        self.workflow_tab.set_current_session_label(text)
 
-    def _init_eraser_tab(self):
-        tab = QWidget()
-        layout = QVBoxLayout(tab)
+    def _emit_ct_wl(self):
+        self.view_display_tab._emit_ct_wl()
 
-        # 1. Info
-        info = QLabel("Click on a false-positive region to remove\nthe entire connected component (contour).")
-        info.setStyleSheet("color: gray; font-style: italic;")
-        info.setWordWrap(True)
-        layout.addWidget(info)
+    def _emit_pet_wl(self):
+        self.view_display_tab._emit_pet_wl()
 
-        layout.addSpacing(10)
-
-        # 2. Enable / Disable toggle
-        self.btn_eraser_toggle = QPushButton("Enable Eraser")
-        self.btn_eraser_toggle.setCheckable(True)
-        self.btn_eraser_toggle.setChecked(False)
-        self.btn_eraser_toggle.toggled.connect(self._on_eraser_toggled)
-        layout.addWidget(self.btn_eraser_toggle)
-
-        # 3. Undo Last
-        self.btn_eraser_undo = QPushButton("Undo Last Erase")
-        self.btn_eraser_undo.clicked.connect(self.sig_eraser_undo_clicked.emit)
-        layout.addWidget(self.btn_eraser_undo)
-
-        layout.addSpacing(10)
-
-        # 4. Save (Overwrite)
-        self.btn_eraser_save = QPushButton("Save Erased Mask (Overwrite)")
-        self.btn_eraser_save.setStyleSheet(
-            "background-color: #d9534f; color: white; font-weight: bold;"
-        )
-        self.btn_eraser_save.clicked.connect(self.sig_eraser_save_clicked.emit)
-        layout.addWidget(self.btn_eraser_save)
-
-        layout.addStretch()
-        self.tabs.addTab(tab, "Eraser")
-
-    def _on_eraser_toggled(self, checked: bool):
-        self.btn_eraser_toggle.setText("Disable Eraser" if checked else "Enable Eraser")
-        self.sig_eraser_mode_toggled.emit(checked)
+    # ── Tab change handler ──
 
     def _on_tab_changed(self, index: int):
-        """Reset mouse tool to pan/zoom when switching to non-tool tabs.
-        Also disable eraser mode when leaving the Eraser tab."""
-        # Find the eraser tab index dynamically
-        eraser_tab_index = -1
-        for i in range(self.tabs.count()):
-            if self.tabs.tabText(i) == "Eraser":
-                eraser_tab_index = i
-                break
-
-        # If leaving the Eraser tab, disable eraser mode
-        if eraser_tab_index >= 0 and index != eraser_tab_index:
-            if self.btn_eraser_toggle.isChecked():
-                self.btn_eraser_toggle.setChecked(False)  # triggers _on_eraser_toggled
-
-        # Reset tool to pan/zoom for all tabs except View & Display and Refine
-        if index != self._view_display_tab_index and index != self._refine_tab_index:
-            self.btn_pan.setChecked(True)
+        """Reset mouse tool to pan/zoom on EVERY tab switch (except View & Display).
+        Also disable eraser mode and autopet click mode when leaving their tabs."""
+        # Always reset tool to pan/zoom (except View & Display tab)
+        if index != self._view_display_tab_index:
+            self.refine_tab.btn_pan.setChecked(True)
             self.sig_set_tool.emit("pan_zoom")
+
+        # Always disable eraser if it was enabled
+        if self.eraser_tab.btn_eraser_toggle.isChecked():
+            self.eraser_tab.btn_eraser_toggle.setChecked(False)
+
+        # Disable autopet click mode when leaving AutoPET tab
+        autopet_tab_index = -1
+        for i in range(self.tabs.count()):
+            if self.tabs.tabText(i) == "AutoPET":
+                autopet_tab_index = i
+                break
+        if autopet_tab_index >= 0 and index != autopet_tab_index:
+            self.sig_autopet_click_mode_changed.emit("")
