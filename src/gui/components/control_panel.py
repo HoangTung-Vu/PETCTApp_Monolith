@@ -43,8 +43,9 @@ class ControlPanel(QWidget):
     # Refine
     sig_set_tool = pyqtSignal(str)
     sig_brush_size_changed = pyqtSignal(int)
-    sig_target_layer_changed = pyqtSignal(str)
     sig_refine_suv_clicked = pyqtSignal(float)
+    sig_refine_adaptive_clicked = pyqtSignal(float, str, int)
+    sig_confirm_roi_clicked = pyqtSignal()
     sig_save_refine_clicked = pyqtSignal()
 
     # AutoPET
@@ -114,8 +115,9 @@ class ControlPanel(QWidget):
         r = self.refine_tab
         r.sig_set_tool.connect(self.sig_set_tool)
         r.sig_brush_size_changed.connect(self.sig_brush_size_changed)
-        r.sig_target_layer_changed.connect(self.sig_target_layer_changed)
         r.sig_refine_suv_clicked.connect(self.sig_refine_suv_clicked)
+        r.sig_refine_adaptive_clicked.connect(self.sig_refine_adaptive_clicked)
+        r.sig_confirm_roi_clicked.connect(self.sig_confirm_roi_clicked)
         r.sig_save_refine_clicked.connect(self.sig_save_refine_clicked)
 
         # AutoPET

@@ -142,3 +142,26 @@ def bytes_to_npz(data: bytes) -> dict:
 def make_nifti_upload(img: nib.Nifti1Image, filename: str = "image.nii.gz") -> tuple:
     """Create a (field_name, (filename, bytes, content_type)) tuple for multipart upload."""
     return ("files", (filename, nifti_to_bytes(img), "application/octet-stream"))
+
+def point_from_napari(point_zyx: tuple, napari_shape_zyx: tuple) -> list:
+    """
+    Converts a single click coordinate from Napari (Z, Y, X) back to Nibabel (X, Y, Z).
+    
+    Given that `to_napari` does:
+    1. Transpose: (X, Y, Z) -> (Z', Y', X')
+    2. Flip axis (0, 1): Z' -> Z, Y' -> Y
+       Z = shape_z - 1 - Z'
+       Y = shape_y - 1 - Y'
+       
+    This function reverses these operations on a single coordinate.
+    """
+    z_nap, y_nap, x_nap = point_zyx
+    shape_z, shape_y, shape_x = napari_shape_zyx
+    
+    # 1. Undo Flip
+    z_prime = shape_z - 1 - z_nap
+    y_prime = shape_y - 1 - y_nap
+    x_prime = x_nap
+    
+    # 2. Undo Transpose -> (X, Y, Z) == (x_prime, y_prime, z_prime)
+    return [x_prime, y_prime, z_prime]

@@ -34,6 +34,9 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
     # Signal emitted after debounced paint stroke: (layer_type: str)
     sig_mask_painted = pyqtSignal(str)
 
+    # Signal emitted when a shape is committed: (layer_type: str)
+    sig_shape_committed = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
@@ -58,11 +61,10 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         # Data Caching for Lazy Loading
         self._cached_data = {
             "ct": None, "pet": None, "affine": None,
-            "tumor": None, "organ": None
+            "tumor": None
         }
         self._cached_data_zyx = {
-            "tumor": None,
-            "organ": None
+            "tumor": None
         }
         self._is_3d_loaded = False
         self._cached_lesion_data = None  # (bboxes, ids)
@@ -144,28 +146,23 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
     # ──── Data Loading (Lazy) ────
 
-    def load_data(self, ct_data, pet_data, affine, tumor_mask=None, organ_mask=None):
+    def load_data(self, ct_data, pet_data, affine, tumor_mask=None):
         """Cache data and load ONLY into the currently visible layout."""
         # Update cache
         self._cached_data["ct"] = ct_data
         self._cached_data["pet"] = pet_data
         self._cached_data["affine"] = affine
         self._cached_data["tumor"] = tumor_mask
-        self._cached_data["organ"] = organ_mask
         self._is_3d_loaded = False
         self._loaded_layouts.clear()
 
         # Convert masks to Napari space ONCE
         from ....utils.nifti_utils import to_napari
-        # Only load Tumor Mask into viewers. Organ Mask is kept in cache but hidden.
+        # Only load Tumor Mask into viewers.
         if tumor_mask is not None:
             self._cached_data_zyx["tumor"] = to_napari(tumor_mask.astype(np.uint8))
         else:
             self._cached_data_zyx["tumor"] = None
-        if organ_mask is not None:
-            self._cached_data_zyx["organ"] = to_napari(organ_mask.astype(np.uint8))
-        else:
-            self._cached_data_zyx["organ"] = None
 
         # Load only the visible layout
         self._load_current_layout()
@@ -432,7 +429,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
     def toggle_mask(self, mask_type: str, visible: bool):
         all_viewers = self._get_all_loaded_viewers()
-        name_map = {"tumor": "Tumor Mask", "organ": "Organ Mask", "body": "Organ Mask"}
+        name_map = {"tumor": "Tumor Mask", "body": "Organ Mask"}
         target_name = name_map.get(mask_type, mask_type)
 
         for widget in all_viewers:
@@ -449,7 +446,28 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
     def set_drawing_tool(self, tool: str, brush_size: int, layer_type: str):
         """Sets the drawing tool for visible 2D viewers."""
         for v in self._get_visible_viewers():
-            v.set_drawing_mode(layer_type, tool, brush_size)
+            if tool in ("sphere", "square"):
+                # Disable Napari's built-in paint mode and enable shape drag
+                v.set_drawing_mode(layer_type, "pan_zoom", brush_size)
+                v.enable_shape_drag(layer_type, tool)
+            else:
+                # For pan_zoom and paint, disable shape drag first
+                v.disable_shape_drag()
+                v.set_drawing_mode(layer_type, tool, brush_size)
+
+    def disable_shape_drag(self):
+        """Disables shape dragging across all currently visible viewers."""
+        for v in self._get_visible_viewers():
+            v.disable_shape_drag()
+
+    def commit_shape(self, layer_type: str):
+        """Commit all shapes from visibility viewers to the mask."""
+        for v in self._get_visible_viewers():
+            v.commit_shape_to_mask()
+        
+        # After burning shapes into Napari layer, triggered events will sync 
+        # to session via sig_mask_painted, but we might want an explicit sync here.
+        self.sig_shape_committed.emit(layer_type)
 
     # ──── Mask Update ────
 
@@ -555,8 +573,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         for v in all_viewers:
             v.viewer.layers.clear()
 
-        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "organ": None}
-        self._cached_data_zyx = {"tumor": None, "organ": None}
+        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None}
+        self._cached_data_zyx = {"tumor": None}
         self._is_3d_loaded = False
         self._loaded_layouts.clear()
         self._click_markers = None

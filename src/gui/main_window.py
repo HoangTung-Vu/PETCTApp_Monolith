@@ -50,7 +50,6 @@ class MainWindow(
         # Refinement State
         self.current_tool = "pan_zoom"
         self.brush_size = 10
-        self.target_layer = "tumor"
         self._last_tab_index = 0 # Track for snapshot/revert logic
 
         # AutoPET Interactive State
@@ -98,8 +97,9 @@ class MainWindow(
         # Refinement
         cp.sig_set_tool.connect(self._on_set_tool)
         cp.sig_brush_size_changed.connect(self._on_brush_size_changed)
-        cp.sig_target_layer_changed.connect(self._on_target_layer_changed)
         cp.sig_refine_suv_clicked.connect(self._on_refine_suv)
+        cp.sig_refine_adaptive_clicked.connect(self._on_refine_adaptive)
+        cp.sig_confirm_roi_clicked.connect(self._on_confirm_roi)
         cp.sig_save_refine_clicked.connect(self.save_session)
 
         # AutoPET
@@ -252,8 +252,7 @@ class MainWindow(
 
         if affine is not None:
             tumor_mask = self.session_manager.get_tumor_mask_data()
-            organ_mask = self.session_manager.get_organ_mask_data()
-            self.layout_manager.load_data(ct_data, pet_data, affine, tumor_mask, organ_mask)
+            self.layout_manager.load_data(ct_data, pet_data, affine, tumor_mask)
         else:
             print("No affine available (no images loaded?)")
 
@@ -289,4 +288,22 @@ class MainWindow(
                     v.close()
                 except Exception:
                     pass
+                    
+        # SAFELY STOP ANY RUNNING WORKERS SO PYTHON PROCESS EXITS
+        # By quitting the threads safely, we prevent silent QThread destructor segfaults 
+        workers = [
+            getattr(self, 'loader_worker', None),
+            getattr(self, 'snapshot_worker', None),
+            getattr(self, 'refine_worker', None),
+            getattr(self, 'autopet_worker', None),
+            getattr(self, 'report_worker', None),
+            getattr(self, 'worker', None), # segmentation worker
+        ]
+        
+        for worker in workers:
+            if worker is not None and worker.isRunning():
+                print(f"[MainWindow] Forcing background worker {worker.__class__.__name__} to quit...")
+                worker.quit()
+                worker.wait(2000) # Give it 2s to clean up gracefully
+                
         super().closeEvent(event)

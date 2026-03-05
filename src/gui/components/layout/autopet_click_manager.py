@@ -66,13 +66,28 @@ class AutoPETClickMixin:
             if label is None:
                 return
             coord_zyx = self._world_to_data(event.position)
-            print(f"[AutoPET] Click: {label} at ZYX={coord_zyx}")
+            print(f"[AutoPET] Layout Click: {label} at Napari ZYX={coord_zyx}")
 
-            # Paint sphere into shared array
+            # Paint sphere into shared array (uses Napari coordinates)
             self._paint_click_sphere(coord_zyx, label)
+            
+            # The backend AutoPET Engine takes raw NIfTI files and converts them 
+            # to SimpleITK arrays: shape = (Z, Y, X), spacing = (sz, sy, sx).
+            # The NIfTI files were NOT horizontally/vertically flipped like in Napari,
+            # so we must undo the Napari flips before sending the coordinates to the backend.
+            
+            # 1. Convert Napari coord (Z, Y, X) -> Nibabel coord (X, Y, Z)
+            shape_zyx = self._ensure_click_array().shape
+            from ....utils.nifti_utils import point_from_napari
+            coord_xyz_nibabel = point_from_napari(coord_zyx, shape_zyx)
+            
+            # 2. Convert Nibabel coord (X, Y, Z) -> SimpleITK coord (Z, Y, X)
+            # which is what the autoPET-interactive predictor uses internally.
+            coord_zyx_sitk = [coord_xyz_nibabel[2], coord_xyz_nibabel[1], coord_xyz_nibabel[0]]
 
-            # Emit signal for main_window to track
-            self.sig_autopet_click_added.emit(coord_zyx, label)
+            # Emit transformed signal for main_window to track
+            print(f"[AutoPET] Transformed Click sent to worker: {label} at SITK ZYX={coord_zyx_sitk}")
+            self.sig_autopet_click_added.emit(coord_zyx_sitk, label)
 
         return on_double_click
 

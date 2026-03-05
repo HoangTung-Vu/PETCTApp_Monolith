@@ -175,11 +175,7 @@ class SessionManager:
         # Update DB with mask paths
         self.repository.update(self.current_session_id, tumor_seg_path=tumor_path, organ_seg_path=organ_path)
         
-        # Snapshot "commit": clear them so tab switches don't revert
-        self._tumor_mask_snapshot = None
-        self._organ_mask_snapshot = None
-        
-        print(f"[SessionManager] Saved session {self.current_session_id} and cleared snapshots.")
+        print(f"[SessionManager] Saved session {self.current_session_id}.")
 
     def clear_lesion_data(self):
         """Clear cached lesion report data (bboxes and IDs)."""
@@ -240,7 +236,7 @@ class SessionManager:
         """Returns all sessions ordered by creation time."""
         return self.repository.get_all()
 
-    def snapshot_current_mask(self, mask_type: str):
+    def snapshot_current_mask(self, mask_type: str, mask_data_snapshot: Optional[np.ndarray] = None):
         """Take a snapshot of the current mask state. 
         If mask is missing, create a zeroed mask matching CT dimensions.
         """
@@ -253,7 +249,7 @@ class SessionManager:
                     self.ct_image.header
                 )
             if self.tumor_mask:
-                self._tumor_mask_snapshot = self.tumor_mask.get_fdata().copy()
+                self._tumor_mask_snapshot = mask_data_snapshot if mask_data_snapshot is not None else self.tumor_mask.get_fdata().copy()
                 
         elif mask_type == "organ":
             if self.organ_mask is None and self.ct_image is not None:
@@ -264,7 +260,7 @@ class SessionManager:
                     self.ct_image.header
                 )
             if self.organ_mask:
-                self._organ_mask_snapshot = self.organ_mask.get_fdata().copy()
+                self._organ_mask_snapshot = mask_data_snapshot if mask_data_snapshot is not None else self.organ_mask.get_fdata().copy()
 
     def revert_to_snapshot(self, mask_type: str):
         """Discard any unsaved/unrefined changes by reverting to the snapshot."""

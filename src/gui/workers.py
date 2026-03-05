@@ -138,6 +138,60 @@ class RefinementWorker(QThread):
             self.error.emit(str(e))
 
 
+class AdaptiveThresholdingWorker(QThread):
+    """
+    Runs Adaptive Thresholding refinement in a background thread (local, no HTTP needed).
+    """
+    finished = pyqtSignal(object)
+    error = pyqtSignal(str)
+
+    def __init__(
+        self,
+        pet_image: nib.Nifti1Image,
+        mask_image: nib.Nifti1Image,
+        roi_mask: np.ndarray,
+        isocontour_fraction: float = 0.70,
+        background_mode: str = "outside_isocontour",
+        border_thickness: int = 3,
+    ):
+        super().__init__()
+        self.pet_image = pet_image
+        self.mask_image = mask_image
+        self.roi_mask = roi_mask
+        self.isocontour_fraction = isocontour_fraction
+        self.background_mode = background_mode
+        self.border_thickness = border_thickness
+
+    def run(self):
+        try:
+            from ..core.engine.adaptive_thresholding_refinement_engine import (
+                AdaptiveThresholdingRefinementEngine,
+                BackgroundMode,
+            )
+
+            bg_mode = BackgroundMode(self.background_mode)
+
+            print(
+                f"[Worker] Starting Adaptive Thresholding Refinement "
+                f"(iso={self.isocontour_fraction}, bg={self.background_mode}, "
+                f"border={self.border_thickness}, ROI={'Yes' if self.roi_mask is not None else 'No'})..."
+            )
+
+            engine = AdaptiveThresholdingRefinementEngine(
+                isocontour_fraction=self.isocontour_fraction,
+                background_mode=bg_mode,
+                border_thickness=self.border_thickness,
+            )
+
+            refined_image = engine.refine(self.pet_image, self.mask_image, self.roi_mask)
+            self.finished.emit(refined_image)
+
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))
+
+
 class AutoPETWorker(QThread):
     """
     Runs AutoPET Interactive inference via HTTP to the autopet engine backend.
@@ -276,16 +330,27 @@ class SnapshotWorker(QThread):
     finished = pyqtSignal()
     error = pyqtSignal(str)
 
-    def __init__(self, session_manager, mask_type: str):
+    def __init__(self, session_manager, mask_type: str, mask_data_snapshot: np.ndarray = None):
         super().__init__()
         self.session_manager = session_manager
         self.mask_type = mask_type
+        self.mask_data_snapshot = mask_data_snapshot
 
     def run(self):
         try:
             print(f"[SnapshotWorker] Taking async snapshot for {self.mask_type}...")
-            # This calls the SessionManager method which now creates zero-mask if missing
-            self.session_manager.snapshot_current_mask(self.mask_type)
+            # We fetch the mask data here inside the QThread so .get_fdata().copy()
+            # doesn't freeze the main GUI thread.
+            snapshot_data = None
+            if self.mask_type == "tumor":
+                if self.session_manager.tumor_mask:
+                    # Explicit fast copy
+                    snapshot_data = np.array(self.session_manager.tumor_mask.dataobj).copy()
+            elif self.mask_type == "organ":
+                if self.session_manager.organ_mask:
+                    snapshot_data = np.array(self.session_manager.organ_mask.dataobj).copy()
+                    
+            self.session_manager.snapshot_current_mask(self.mask_type, snapshot_data)
             self.finished.emit()
         except Exception as e:
             import traceback

@@ -31,8 +31,7 @@ class ViewerWidget(QWidget):
         self.LAYER_NAMES = {
             "ct": "CT Image",
             "pet": "PET Image",
-            "tumor": "Tumor Mask",
-            "organ": "Organ Mask"
+            "tumor": "Tumor Mask"
         }
         self.is_3d = False
         self._scale_zyx = None  # Physical spacing in Napari (Z, Y, X) order
@@ -283,6 +282,194 @@ class ViewerWidget(QWidget):
         """Remove the lesion ID labels layer."""
         if self.LESION_LABEL_LAYER_NAME in self.viewer.layers:
             self.viewer.layers.remove(self.LESION_LABEL_LAYER_NAME)
+
+    # ──── Sphere / Square Drag Mode ────
+
+    SHAPE_PREVIEW_LAYER = "_shape_preview"
+
+    def enable_shape_drag(self, layer_type: str, shape: str):
+        """Enable sphere or square drag mode.
+
+        Args:
+            layer_type: 'tumor' or 'organ' — target label layer to paint into.
+            shape: 'sphere' or 'square'.
+        """
+        self.disable_shape_drag()  # Clean up any previous state
+
+        self._shape_mode = shape              # 'sphere' | 'square'
+        self._shape_target_layer = layer_type
+        self._shape_dragging = False
+
+        self._ensure_shape_preview_layer(layer_type)
+        shapes_layer = self.viewer.layers[self.SHAPE_PREVIEW_LAYER]
+        
+        # Only set active if it's not already active to avoid potential slice jumps
+        if self.viewer.layers.selection.active != shapes_layer:
+            self.viewer.layers.selection.active = shapes_layer
+            
+        shapes_layer.mode = "add_ellipse" if shape == "sphere" else "add_rectangle"
+        
+        # Connect event to switch to select mode after drawing
+        if not getattr(self, '_shape_added_connected', False):
+            shapes_layer.events.data.connect(self._on_shape_added)
+            self._shape_added_connected = True
+
+        # Set mask layer to pan_zoom first so Napari doesn't intercept
+        name = self.LAYER_NAMES.get(layer_type, layer_type)
+        if name in self.viewer.layers:
+            self.viewer.layers[name].mode = "pan_zoom"
+
+        # Camera mouse pan/zoom should be disabled during ROI drawing to avoid jitter
+        self.viewer.camera.mouse_pan = False
+        self.viewer.camera.mouse_zoom = False
+
+    def disable_shape_drag(self):
+        """Clean up shape drag mode and hide preview."""
+        if hasattr(self, '_shape_mode'):
+            del self._shape_mode
+        if hasattr(self, '_shape_target_layer'):
+            del self._shape_target_layer
+        self._shape_dragging = False
+
+        # Re-enable camera mouse interactions
+        self.viewer.camera.mouse_pan = True
+        self.viewer.camera.mouse_zoom = True
+
+        # Hide preview layer instead of removing to preserve it if needed
+        if self.SHAPE_PREVIEW_LAYER in self.viewer.layers:
+            # BUG-9 FIX: Clear old shapes when switching tools so they don't reappear later
+            self.viewer.layers[self.SHAPE_PREVIEW_LAYER].data = []
+            self.viewer.layers[self.SHAPE_PREVIEW_LAYER].visible = False
+            self.viewer.layers[self.SHAPE_PREVIEW_LAYER].editable = False
+
+    def _ensure_shape_preview_layer(self, layer_type="tumor"):
+        """Create or update the shared shapes layer metadata to match the target layer."""
+        name = self.LAYER_NAMES.get(layer_type, layer_type)
+        if name not in self.viewer.layers:
+            return
+        target_layer = self.viewer.layers[name]
+
+        if self.SHAPE_PREVIEW_LAYER not in self.viewer.layers:
+            kwargs = dict(
+                name=self.SHAPE_PREVIEW_LAYER,
+                edge_color='lime',
+                face_color='transparent',
+                edge_width=2,
+                opacity=0.8,
+                ndim=target_layer.ndim,
+                scale=target_layer.scale,
+                translate=target_layer.translate,
+                rotate=target_layer.rotate,
+                shear=target_layer.shear,
+                affine=target_layer.affine,
+            )
+            self.viewer.add_shapes([], **kwargs)
+        else:
+            # Sync metadata just in case
+            layer = self.viewer.layers[self.SHAPE_PREVIEW_LAYER]
+            layer.scale = target_layer.scale
+            layer.translate = target_layer.translate
+            layer.affine = target_layer.affine
+
+        self.viewer.layers[self.SHAPE_PREVIEW_LAYER].visible = True
+        self.viewer.layers[self.SHAPE_PREVIEW_LAYER].editable = True
+
+    def _on_shape_added(self, event):
+        """Switch to select mode and AUTO-SELECT the new shape so it can be moved immediately."""
+        shapes_layer = self.viewer.layers[self.SHAPE_PREVIEW_LAYER]
+        if shapes_layer.mode in ["add_ellipse", "add_rectangle"]:
+            shapes_layer.mode = "select"
+            # Auto-select the last added shape (the one we just drew)
+            if len(shapes_layer.data) > 0:
+                shapes_layer.selected_data = {len(shapes_layer.data) - 1}
+
+    def commit_shape_to_mask(self):
+        """Paint ALL shapes from the preview layer into the target mask layer using manual 3D volume logic."""
+        if not hasattr(self, '_shape_target_layer') or self.SHAPE_PREVIEW_LAYER not in self.viewer.layers:
+            return
+
+        name = self.LAYER_NAMES.get(self._shape_target_layer, self._shape_target_layer)
+        if name not in self.viewer.layers:
+            return
+        layer = self.viewer.layers[name]
+        shapes_layer = self.viewer.layers[self.SHAPE_PREVIEW_LAYER]
+
+        if len(shapes_layer.data) == 0:
+            return
+
+        data = layer.data  # (Z, Y, X)
+        dims_displayed = list(self.viewer.dims.displayed)
+        slice_dim = [d for d in range(3) if d not in dims_displayed][0]
+
+        committed_count = 0
+        for i, shape_pts in enumerate(shapes_layer.data):
+            # shape_pts is (N, 3) in LAYER coordinates.
+            # Since we synced metadata between Shapes and Mask layer, 
+            # these vertices are ALREADY in data coordinate units.
+            data_pts = np.array(shape_pts)
+            
+            # Determine if it's an ellipse or rectangle via shape_type
+            stype = shapes_layer.shape_type[i]
+            
+            # Bounding box in data coordinates
+            d_min = np.min(data_pts, axis=0)
+            d_max = np.max(data_pts, axis=0)
+            center = (d_min + d_max) / 2
+            
+            if stype == 'ellipse':
+                # Map to sphere logic
+                dy = d_max[dims_displayed[0]] - d_min[dims_displayed[0]]
+                dx = d_max[dims_displayed[1]] - d_min[dims_displayed[1]]
+                radius_voxels = max(dy, dx) / 2
+                self._paint_sphere_logic(data, center, radius_voxels, dims_displayed)
+            else:
+                # Map to box logic
+                self._paint_box_logic(data, d_min, d_max, dims_displayed, slice_dim)
+            committed_count += 1
+
+        layer.data = data
+        layer.refresh()
+        # BUG-4 FIX: Removed manual explicit `layer.events.data(value=data)` because `layer.data = data` 
+        # already automatically triggers it. Prevents double-sync debounce triggers.
+
+        # Clear preview
+        shapes_layer.data = []
+        print(f"[ViewerWidget] Committed {committed_count} shapes to {name} via robust 3D logic.")
+
+    def _paint_sphere_logic(self, data, center, radius, dims_displayed):
+        r_int = int(np.ceil(radius))
+        shape = data.shape
+        z_min = max(0, int(center[0] - r_int))
+        z_max = min(shape[0], int(center[0] + r_int + 1))
+        y_min = max(0, int(center[1] - r_int))
+        y_max = min(shape[1], int(center[1] + r_int + 1))
+        x_min = max(0, int(center[2] - r_int))
+        x_max = min(shape[2], int(center[2] + r_int + 1))
+
+        zz, yy, xx = np.ogrid[z_min:z_max, y_min:y_max, x_min:x_max]
+        dist_sq = (zz - center[0])**2 + (yy - center[1])**2 + (xx - center[2])**2
+        sphere_mask = dist_sq <= radius**2
+        data[z_min:z_max, y_min:y_max, x_min:x_max][sphere_mask] = 1
+
+    def _paint_box_logic(self, data, d_min, d_max, dims_displayed, slice_dim):
+        h = d_max[dims_displayed[0]] - d_min[dims_displayed[0]]
+        w = d_max[dims_displayed[1]] - d_min[dims_displayed[1]]
+        depth = max(1, int(min(h, w) / 2))
+        
+        slice_pos = int((d_min[slice_dim] + d_max[slice_dim]) / 2)
+        s_min = max(0, slice_pos - depth)
+        s_max = min(data.shape[slice_dim], slice_pos + depth + 1)
+
+        slices = [slice(None)] * 3
+        slices[slice_dim] = slice(s_min, s_max)
+        slices[dims_displayed[0]] = slice(int(max(0, d_min[dims_displayed[0]])), int(min(data.shape[dims_displayed[0]], d_max[dims_displayed[0]] + 1)))
+        slices[dims_displayed[1]] = slice(int(max(0, d_min[dims_displayed[1]])), int(min(data.shape[dims_displayed[1]], d_max[dims_displayed[1]] + 1)))
+
+        data[tuple(slices)] = 1
+
+    def _apply_shape(self, layer, start_world, end_world):
+        """Deprecated: replaced by interactive Napari Shapes + commit_shape_to_mask."""
+        pass
 
     def close(self):
         self.viewer.close()
