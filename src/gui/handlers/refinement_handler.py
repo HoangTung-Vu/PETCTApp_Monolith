@@ -147,6 +147,12 @@ class RefinementHandlerMixin:
                 self.snapshot_worker = SnapshotWorker(self.session_manager, "tumor")
                 self.snapshot_worker.finished.connect(self._on_snapshot_finished)
                 self.snapshot_worker.start()
+                
+                # Clear report UI and hide lesion IDs when snapshot is created
+                self.session_manager.clear_lesion_data()
+                self.control_panel.clear_report_results()
+                self.control_panel.chk_show_lesion_ids.setChecked(False)
+                self.layout_manager.hide_lesion_ids()
             else:
                 print("[RefineHandler] Entering Refine/AutoPET. Existing snapshot found, skipping to preserve ROI.")
 

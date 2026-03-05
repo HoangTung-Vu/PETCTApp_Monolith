@@ -346,9 +346,6 @@ class SnapshotWorker(QThread):
                 if self.session_manager.tumor_mask:
                     # Explicit fast copy
                     snapshot_data = np.array(self.session_manager.tumor_mask.dataobj).copy()
-            elif self.mask_type == "organ":
-                if self.session_manager.organ_mask:
-                    snapshot_data = np.array(self.session_manager.organ_mask.dataobj).copy()
                     
             self.session_manager.snapshot_current_mask(self.mask_type, snapshot_data)
             self.finished.emit()

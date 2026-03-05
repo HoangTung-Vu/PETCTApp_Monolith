@@ -157,12 +157,7 @@ class ViewDisplayTab(QWidget):
         self.chk_tumor.setChecked(True)
         self.chk_tumor.toggled.connect(lambda c: self.sig_toggle_mask.emit("tumor", c))
 
-        self.chk_body = QCheckBox("Show Body Mask")
-        self.chk_body.setChecked(True)
-        self.chk_body.toggled.connect(lambda c: self.sig_toggle_mask.emit("body", c))
-
         seg_disp_layout.addWidget(self.chk_tumor)
-        seg_disp_layout.addWidget(self.chk_body)
         grp_seg_disp.setLayout(seg_disp_layout)
         layout.addWidget(grp_seg_disp)
 

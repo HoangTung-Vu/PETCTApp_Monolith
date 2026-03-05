@@ -10,6 +10,13 @@ class EraserHandlerMixin:
         """Enable or disable eraser click mode on viewers."""
         if enabled:
             self.layout_manager.enable_eraser_click_mode()
+            
+            # Clear report UI and hide lesion IDs when eraser is enabled
+            self.session_manager.clear_lesion_data()
+            self.control_panel.clear_report_results()
+            self.control_panel.chk_show_lesion_ids.setChecked(False)
+            self.layout_manager.hide_lesion_ids()
+            
             print("[Eraser] Mode enabled.")
         else:
             self.layout_manager.disable_eraser_click_mode()

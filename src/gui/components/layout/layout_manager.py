@@ -429,7 +429,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
     def toggle_mask(self, mask_type: str, visible: bool):
         all_viewers = self._get_all_loaded_viewers()
-        name_map = {"tumor": "Tumor Mask", "body": "Organ Mask"}
+        name_map = {"tumor": "Tumor Mask"}
         target_name = name_map.get(mask_type, mask_type)
 
         for widget in all_viewers:

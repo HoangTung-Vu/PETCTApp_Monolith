@@ -26,7 +26,6 @@ class SessionManager:
         
         # Snapshot for ROI refinement (baseline before painting)
         self._tumor_mask_snapshot: Optional[np.ndarray] = None
-        self._organ_mask_snapshot: Optional[np.ndarray] = None
         
         # Session Metadata
         self.patient_name: str = ""
@@ -83,6 +82,7 @@ class SessionManager:
         self.tumor_mask = None
         self.organ_mask = None
         self.tumor_prob = None
+        self._tumor_mask_snapshot = None    
         self.clear_lesion_data()
         
         print(f"[SessionManager] Created session {self.current_session_id}")
@@ -146,7 +146,9 @@ class SessionManager:
             self.tumor_prob = FileManager.load_numpy(session_id, "tumor_prob")
         else:
             self.tumor_prob = None
-            
+
+        self._tumor_mask_snapshot = None
+
         print(f"[SessionManager] Loaded session {session_id}")
 
     def save_session(self):
@@ -250,26 +252,12 @@ class SessionManager:
                 )
             if self.tumor_mask:
                 self._tumor_mask_snapshot = mask_data_snapshot if mask_data_snapshot is not None else self.tumor_mask.get_fdata().copy()
-                
-        elif mask_type == "organ":
-            if self.organ_mask is None and self.ct_image is not None:
-                print(f"[SessionManager] Creating new zeroed Organ Mask ({self.ct_image.shape})")
-                self.organ_mask = nib.Nifti1Image(
-                    np.zeros(self.ct_image.shape, dtype=np.uint8),
-                    self.ct_image.affine,
-                    self.ct_image.header
-                )
-            if self.organ_mask:
-                self._organ_mask_snapshot = mask_data_snapshot if mask_data_snapshot is not None else self.organ_mask.get_fdata().copy()
 
     def revert_to_snapshot(self, mask_type: str):
         """Discard any unsaved/unrefined changes by reverting to the snapshot."""
         if mask_type == "tumor" and self._tumor_mask_snapshot is not None:
             self.set_tumor_mask(self._tumor_mask_snapshot)
             self._tumor_mask_snapshot = None
-        elif mask_type == "organ" and self._organ_mask_snapshot is not None:
-            self.set_organ_mask(self._organ_mask_snapshot)
-            self._organ_mask_snapshot = None
 
     def get_paint_roi(self, mask_type: str) -> Optional[np.ndarray]:
         """Compute the ROI diff between current state and snapshot."""
@@ -280,10 +268,6 @@ class SessionManager:
             if self.tumor_mask:
                 current_data = self.tumor_mask.get_fdata()
             snapshot_data = self._tumor_mask_snapshot
-        elif mask_type == "organ":
-            if self.organ_mask:
-                current_data = self.organ_mask.get_fdata()
-            snapshot_data = self._organ_mask_snapshot
 
         if current_data is None or snapshot_data is None:
             return None
@@ -305,8 +289,6 @@ class SessionManager:
         
         if mask_type == "tumor":
             current_mask_img = self.tumor_mask
-        elif mask_type == "organ":
-            current_mask_img = self.organ_mask
         else:
             raise ValueError(f"Unknown mask type: {mask_type}")
             
@@ -323,9 +305,6 @@ class SessionManager:
         if mask_type == "tumor":
             self.tumor_mask = refined_img
             self._tumor_mask_snapshot = None # Clear snapshot after success
-        elif mask_type == "organ":
-            self.organ_mask = refined_img
-            self._organ_mask_snapshot = None # Clear snapshot after success
             
         return refined_img.get_fdata()
 
