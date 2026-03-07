@@ -2,6 +2,7 @@
 import numpy as np
 import nibabel as nib
 from scipy.ndimage import label
+from ...utils.dimension_utils import get_voxel_volume_from_affine
 
 
 class ReportEngine:
@@ -16,19 +17,6 @@ class ReportEngine:
     Global metrics:
         gTLG    Global Total Lesion Glycolysis = Σ(SUVmean_i × MTV_i).
     """
-
-    @staticmethod
-    def _voxel_sizes_from_affine(affine: np.ndarray) -> np.ndarray:
-        """Derive per-axis voxel sizes (mm) from the affine matrix.
-
-        This is the correct approach – it handles shearing, oblique
-        orientations, and non-standard headers that ``header.get_zooms()``
-        may misrepresent.
-
-        Returns:
-            1-D array of shape (3,) with voxel edge lengths in mm.
-        """
-        return np.sqrt(np.sum(affine[:3, :3] ** 2, axis=0))
 
     @staticmethod
     def compute_report(
@@ -71,9 +59,8 @@ class ReportEngine:
         if not np.any(roi):
             raise ValueError("Mask is empty - no voxels to compute report on.")
 
-        # Voxel dimensions derived from the affine (source of truth)
-        voxel_dims = ReportEngine._voxel_sizes_from_affine(pet_image.affine)
-        voxel_vol_mm3 = float(np.prod(voxel_dims))
+        # Voxel volume derived from the affine determinant (source of truth)
+        voxel_vol_mm3 = get_voxel_volume_from_affine(pet_image.affine)
         voxel_vol_ml = voxel_vol_mm3 / 1000.0
 
         # ── Connected component labeling ──

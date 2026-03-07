@@ -5,6 +5,7 @@ from typing import Optional, Tuple
 import nibabel as nib
 
 from ....utils.nifti_utils import to_napari, from_napari
+from ....utils.dimension_utils import get_spacing_from_affine
 
 class ViewerWidget(QWidget):
     """
@@ -56,7 +57,7 @@ class ViewerWidget(QWidget):
         data_zyx = self.to_napari(image_data)
         
         # Extract physical spacing from affine: |col_i| for axes X, Y, Z
-        spacing_xyz = np.sqrt((affine[:3, :3] ** 2).sum(axis=0))  # (sx, sy, sz)
+        spacing_xyz = get_spacing_from_affine(affine)  # (sx, sy, sz)
         # Reorder to Napari (Z, Y, X)
         self._scale_zyx = (float(spacing_xyz[2]), float(spacing_xyz[1]), float(spacing_xyz[0]))
         

@@ -18,6 +18,7 @@ from ..viewers.viewer_sync import link_dims, link_camera, one_shot_sync_step
 from .mask_sync import MaskSyncMixin
 from .autopet_click_manager import AutoPETClickMixin
 from .eraser_manager import EraserMixin
+from ....utils.dimension_utils import get_spacing_from_affine
 
 
 class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
@@ -225,7 +226,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         # Dynamically adjust row stretch
         if ct is not None:
             D_x, D_y, D_z = ct.shape
-            spacing_xyz = np.sqrt((affine[:3, :3] ** 2).sum(axis=0))
+            spacing_xyz = get_spacing_from_affine(affine)
             sx, sy, sz = float(spacing_xyz[0]), float(spacing_xyz[1]), float(spacing_xyz[2])
             self.grid_layout.setRowStretch(0, int(D_y * sy))
             self.grid_layout.setRowStretch(1, int(D_z * sz))
