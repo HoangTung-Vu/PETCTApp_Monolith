@@ -390,6 +390,16 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 if layer.name == widget.LAYER_NAMES["pet"]:
                     layer.opacity = value
 
+    def set_tumor_opacity(self, value: float):
+        """Update opacity for 'tumor' layer in all loaded viewers."""
+        all_viewers = self._get_all_loaded_viewers()
+        for widget in all_viewers:
+            for layer in widget.viewer.layers:
+                # The name in self.LAYER_NAMES or default "Tumor Mask"
+                name = widget.LAYER_NAMES.get("tumor", "tumor")
+                if layer.name == name:
+                    layer.opacity = value
+
     def set_ct_window_level(self, window: float, level: float):
         self._ct_wl = (window, level)
         min_val = level - (window / 2)

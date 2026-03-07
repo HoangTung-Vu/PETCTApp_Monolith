@@ -14,6 +14,7 @@ class ViewDisplayTab(QWidget):
     sig_layout_changed = pyqtSignal(str)
     sig_toggle_3d_pet = pyqtSignal(bool)
     sig_pet_opacity_changed = pyqtSignal(float)
+    sig_tumor_opacity_changed = pyqtSignal(float)
     sig_ct_window_level_changed = pyqtSignal(float, float)
     sig_pet_window_level_changed = pyqtSignal(float, float)
     sig_zoom_changed = pyqtSignal(int)
@@ -28,6 +29,7 @@ class ViewDisplayTab(QWidget):
         # Use a scroll area so the combined content fits in the sidebar
         scroll = QScrollArea()
         scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
         inner = QWidget()
         layout = QVBoxLayout(inner)
@@ -144,7 +146,16 @@ class ViewDisplayTab(QWidget):
         self.slider_opacity.valueChanged.connect(
             lambda v: self.sig_pet_opacity_changed.emit(v / 100.0)
         )
-        display_layout.addRow("PET Opacity:", self.slider_opacity)
+        display_layout.addRow("PET Overlay Opacity:", self.slider_opacity)
+
+        # Tumor Mask Opacity
+        self.slider_tumor_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_tumor_opacity.setRange(0, 100)
+        self.slider_tumor_opacity.setValue(70)
+        self.slider_tumor_opacity.valueChanged.connect(
+            lambda v: self.sig_tumor_opacity_changed.emit(v / 100.0)
+        )
+        display_layout.addRow("Tumor Mask Opacity:", self.slider_tumor_opacity)
 
         grp_display.setLayout(display_layout)
         layout.addWidget(grp_display)
