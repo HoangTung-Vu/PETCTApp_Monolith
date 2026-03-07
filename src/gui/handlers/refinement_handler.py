@@ -86,6 +86,50 @@ class RefinementHandlerMixin:
         self._set_ui_busy(True)
         self.refine_worker.start()
 
+    def _on_refine_iterative(self, m, c1, c0, convergence_tol, max_iterations):
+        """Refine the current mask using Iterative Thresholding logic (async)."""
+        if self.session_manager.pet_image is None:
+            QMessageBox.warning(self, "Missing Data", "PET image required for Iterative Thresholding refinement.")
+            return
+
+        self._on_sync_masks()
+
+        mask_img = self.session_manager.tumor_mask
+        if mask_img is None:
+            QMessageBox.warning(
+                self, "Missing Data",
+                "No tumor mask available to refine."
+            )
+            return
+
+        # Compute ROI from snapshot
+        roi_mask = self.session_manager.get_paint_roi("tumor")
+
+        if roi_mask is None or not roi_mask.any():
+            QMessageBox.warning(
+                self, "No ROI",
+                "Please paint/draw an ROI region first before running iterative thresholding."
+            )
+            return
+
+        from ..workers import IterativeThresholdingWorker
+        self.refine_worker = IterativeThresholdingWorker(
+            self.session_manager.pet_image,
+            mask_img,
+            roi_mask,
+            m=m,
+            c1=c1,
+            c0=c0,
+            convergence_tol=convergence_tol,
+            max_iterations=max_iterations,
+        )
+        self.refine_worker.finished.connect(self._on_refinement_finished)
+        self.refine_worker.error.connect(self._on_refinement_error)
+
+        self.control_panel.show_refine_progress()
+        self._set_ui_busy(True)
+        self.refine_worker.start()
+
     def _on_refinement_finished(self, refined_img):
         # BUG-6 FIX: Use float32 to prevent float64 memory bloat since it will be cast to uint8 later anyway
         data = refined_img.get_fdata(dtype=np.float32)

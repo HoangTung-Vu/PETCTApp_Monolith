@@ -3,7 +3,8 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFormLayout, QGroupBox,
     QSlider, QHBoxLayout, QLabel, QGridLayout, QComboBox,
-    QDoubleSpinBox, QSpinBox, QProgressBar, QButtonGroup
+    QDoubleSpinBox, QSpinBox, QProgressBar, QButtonGroup,
+    QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -16,6 +17,7 @@ class RefineTab(QWidget):
     sig_brush_size_changed = pyqtSignal(int)
     sig_refine_suv_clicked = pyqtSignal(float)  # threshold
     sig_refine_adaptive_clicked = pyqtSignal(float, str, int)  # isocontour_fraction, bg_mode, border_thickness
+    sig_refine_iterative_clicked = pyqtSignal(float, float, float, float, int)  # m, c1, c0, convergence_tol, max_iterations
     sig_confirm_roi_clicked = pyqtSignal()
     sig_save_refine_clicked = pyqtSignal()
 
@@ -24,7 +26,17 @@ class RefineTab(QWidget):
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create a scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        # Create a container widget for the scroll area
+        container = QWidget()
+        layout = QVBoxLayout(container)
 
         # 1. Tool Selection — 4 buttons: Pan/Zoom, Paint, Sphere, Square
         grp_tools = QGroupBox("Manual Tools")
@@ -85,7 +97,7 @@ class RefineTab(QWidget):
         grp_brush.setLayout(brush_layout)
         layout.addWidget(grp_brush)
 
-        layout.addSpacing(10)
+        layout.addSpacing(5)
 
         # 4. SUV Refinement
         grp_suv = QGroupBox("SUV Refinement")
@@ -105,7 +117,7 @@ class RefineTab(QWidget):
         grp_suv.setLayout(suv_layout)
         layout.addWidget(grp_suv)
 
-        layout.addSpacing(10)
+        layout.addSpacing(8)
 
         # 5. Adaptive Thresholding Refinement
         grp_adaptive = QGroupBox("Adaptive Thresholding")
@@ -135,9 +147,53 @@ class RefineTab(QWidget):
         grp_adaptive.setLayout(adaptive_layout)
         layout.addWidget(grp_adaptive)
 
-        layout.addSpacing(10)
+        layout.addSpacing(8)
 
-        # 6. Save Refinement
+        # 6. Iterative Thresholding Refinement
+        grp_iterative = QGroupBox("Iterative Thresholding")
+        iterative_layout = QFormLayout()
+
+        self.spin_m = QDoubleSpinBox()
+        self.spin_m.setRange(0.1, 100.0)
+        self.spin_m.setValue(7.8)
+        self.spin_m.setSingleStep(0.1)
+
+        self.spin_c1 = QDoubleSpinBox()
+        self.spin_c1.setRange(0.0, 100.0)
+        self.spin_c1.setValue(61.7)
+        self.spin_c1.setSingleStep(1.0)
+
+        self.spin_c0 = QDoubleSpinBox()
+        self.spin_c0.setRange(0.0, 100.0)
+        self.spin_c0.setValue(31.6)
+        self.spin_c0.setSingleStep(1.0)
+
+        self.spin_tol = QDoubleSpinBox()
+        self.spin_tol.setRange(0.01, 1.0)
+        self.spin_tol.setValue(0.03)
+        self.spin_tol.setSingleStep(0.01)
+        self.spin_tol.setDecimals(3)
+
+        self.spin_iters = QSpinBox()
+        self.spin_iters.setRange(1, 50)
+        self.spin_iters.setValue(10)
+
+        self.btn_refine_iterative = QPushButton("Refine ROI by Iterative Threshold")
+        self.btn_refine_iterative.clicked.connect(self._emit_refine_iterative)
+
+        iterative_layout.addRow("m (Slope):", self.spin_m)
+        iterative_layout.addRow("c1 (B/S Coeff):", self.spin_c1)
+        iterative_layout.addRow("c0 (Intercept):", self.spin_c0)
+        iterative_layout.addRow("Tolerance:", self.spin_tol)
+        iterative_layout.addRow("Max Iterations:", self.spin_iters)
+        iterative_layout.addRow(self.btn_refine_iterative)
+
+        grp_iterative.setLayout(iterative_layout)
+        layout.addWidget(grp_iterative)
+
+        layout.addSpacing(8)
+
+        # 7. Save Refinement
         self.btn_save_refine = QPushButton("Save Refinement (Overwrite)")
         self.btn_save_refine.clicked.connect(self.sig_save_refine_clicked.emit)
         self.btn_save_refine.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold;")
@@ -151,6 +207,10 @@ class RefineTab(QWidget):
 
         layout.addStretch()
 
+        # Set the container as the scroll area's widget
+        scroll.setWidget(container)
+        main_layout.addWidget(scroll)
+
     def _emit_refine_suv(self):
         val = self.spin_suv.value()
         self.sig_refine_suv_clicked.emit(val)
@@ -160,6 +220,14 @@ class RefineTab(QWidget):
         bg_mode = self.combo_bg_mode.currentText()
         border = self.spin_border_thickness.value()
         self.sig_refine_adaptive_clicked.emit(iso_frac, bg_mode, border)
+
+    def _emit_refine_iterative(self):
+        m = self.spin_m.value()
+        c1 = self.spin_c1.value()
+        c0 = self.spin_c0.value()
+        tol = self.spin_tol.value()
+        iters = self.spin_iters.value()
+        self.sig_refine_iterative_clicked.emit(m, c1, c0, tol, iters)
 
     def _set_tool_and_enable_confirm(self, tool, enabled):
         self.btn_confirm_roi.setEnabled(enabled)

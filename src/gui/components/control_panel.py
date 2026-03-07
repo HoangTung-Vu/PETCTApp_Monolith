@@ -45,6 +45,7 @@ class ControlPanel(QWidget):
     sig_brush_size_changed = pyqtSignal(int)
     sig_refine_suv_clicked = pyqtSignal(float)
     sig_refine_adaptive_clicked = pyqtSignal(float, str, int)
+    sig_refine_iterative_clicked = pyqtSignal(float, float, float, float, int)
     sig_confirm_roi_clicked = pyqtSignal()
     sig_save_refine_clicked = pyqtSignal()
 
@@ -117,6 +118,7 @@ class ControlPanel(QWidget):
         r.sig_brush_size_changed.connect(self.sig_brush_size_changed)
         r.sig_refine_suv_clicked.connect(self.sig_refine_suv_clicked)
         r.sig_refine_adaptive_clicked.connect(self.sig_refine_adaptive_clicked)
+        r.sig_refine_iterative_clicked.connect(self.sig_refine_iterative_clicked)
         r.sig_confirm_roi_clicked.connect(self.sig_confirm_roi_clicked)
         r.sig_save_refine_clicked.connect(self.sig_save_refine_clicked)
 

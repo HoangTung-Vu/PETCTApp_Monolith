@@ -99,6 +99,7 @@ class MainWindow(
         cp.sig_brush_size_changed.connect(self._on_brush_size_changed)
         cp.sig_refine_suv_clicked.connect(self._on_refine_suv)
         cp.sig_refine_adaptive_clicked.connect(self._on_refine_adaptive)
+        cp.sig_refine_iterative_clicked.connect(self._on_refine_iterative)
         cp.sig_confirm_roi_clicked.connect(self._on_confirm_roi)
         cp.sig_save_refine_clicked.connect(self.save_session)
 
