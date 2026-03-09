@@ -113,7 +113,6 @@ class AdaptiveThresholdingRefinementEngine:
     def _compute_i_mean(self, pet_data: np.ndarray, isocontour_mask: np.ndarray, roi: np.ndarray) -> float:
         """Mean PET inside isocontour. Falls back to ROI max if isocontour is empty."""
         if not isocontour_mask.any():
-            # BUG-7 FIX: Fall back to max inside ROI, not the global image max
             return float(pet_data[roi].max())
         return float(pet_data[isocontour_mask].mean())
 

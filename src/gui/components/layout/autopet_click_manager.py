@@ -21,7 +21,7 @@ class AutoPETClickMixin:
             self.disable_autopet_click_mode()
             return
 
-        # BUG-07 FIX: Mutual exclusion — disable eraser when enabling autopet
+        #disable eraser when enabling autopet
         self.disable_eraser_click_mode()
 
         self._autopet_click_label = label

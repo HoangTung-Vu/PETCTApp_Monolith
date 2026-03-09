@@ -1,4 +1,5 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
+from PyQt6.QtCore import QObject, QEvent
 import napari
 import numpy as np
 from typing import Optional, Tuple
@@ -22,6 +23,14 @@ class ViewerWidget(QWidget):
         self.viewer = napari.Viewer(show=False)
         self.qt_viewer = self.viewer.window.qt_viewer
         self.layout.addWidget(self.qt_viewer)
+
+        self.viewer.camera.mouse_zoom = False
+        
+        # Add custom mouse wheel callback to swap scroll/zoom
+        # Napari native callbacks still let some events through or double fire,
+        # so we intercept the raw Qt wheel event on the canvas directly.
+        if hasattr(self.qt_viewer, 'canvas') and hasattr(self.qt_viewer.canvas, 'native'):
+            self.qt_viewer.canvas.native.installEventFilter(self)
 
         # Disable default double click zoom
         for cb in list(self.viewer.mouse_double_click_callbacks):
@@ -173,6 +182,49 @@ class ViewerWidget(QWidget):
         for layer in self.viewer.layers:
             if isinstance(layer, napari.layers.Labels):
                 layer.editable = False
+
+    def eventFilter(self, source, event: QEvent):
+        """Intercept raw Qt events on the Napari canvas before Vispy handles them."""
+        # Check if we have the canvas widget and it's a Wheel event
+        if hasattr(self, 'qt_viewer') and hasattr(self.qt_viewer, 'canvas'):
+            if hasattr(self.qt_viewer.canvas, 'native') and source == self.qt_viewer.canvas.native:
+                if event.type() == QEvent.Type.Wheel:
+                    from PyQt6.QtCore import Qt
+                    
+                    # Positive angle_delta is forward/up, negative is back/down
+                    delta = event.angleDelta().y() 
+                    if delta == 0:
+                        return False
+
+                    # Check for Ctrl modifier
+                    modifiers = event.modifiers()
+                    is_ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)
+
+                    if is_ctrl:
+                        # Zoom behavior
+                        zoom_factor = 1.1 if delta > 0 else 0.9
+                        self.viewer.camera.zoom *= zoom_factor
+                    else:
+                        # Scroll behavior
+                        dims_displayed = self.viewer.dims.displayed
+                        all_dims = list(range(self.viewer.dims.ndim))
+                        slice_dims = [d for d in all_dims if d not in dims_displayed]
+                        
+                        if slice_dims:
+                            dim = slice_dims[0]
+                            current_step = list(self.viewer.dims.current_step)
+                            step_size = -1 if delta > 0 else 1 
+                            
+                            new_step = current_step[dim] + step_size
+                            limit = self.viewer.dims.range[dim][1]
+                            new_step = max(0, min(int(limit) - 1, new_step))
+                            
+                            current_step[dim] = new_step
+                            self.viewer.dims.current_step = tuple(current_step)
+                            
+                    return True
+                    
+        return super().eventFilter(source, event)
 
     # ──── AutoPET Click Markers ────
     CLICK_LAYER_NAME = "Click Markers"

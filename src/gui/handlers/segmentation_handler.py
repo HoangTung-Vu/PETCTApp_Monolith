@@ -54,7 +54,7 @@ class SegmentationHandlerMixin:
         self.worker.finished.connect(self._on_segmentation_finished)
         self.worker.error.connect(self._on_segmentation_error)
 
-        # BUG-13 FIX: Disable segment button during inference
+        # Disable segment button during inference
         self.control_panel.workflow_tab.btn_segment.setEnabled(False)
         self.control_panel.show_progress()
         self._set_ui_busy(True)
@@ -74,7 +74,7 @@ class SegmentationHandlerMixin:
             self.session_manager.set_organ_mask(data)
             self._push_mask_to_all("organ", data)
 
-        # BUG-05 FIX: Clear stale report UI and lesion data since mask changed
+        # Clear stale report UI and lesion data since mask changed
         self.session_manager.clear_lesion_data()
         self.control_panel.clear_report_results()
 

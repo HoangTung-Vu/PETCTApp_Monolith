@@ -7,6 +7,7 @@ All handler logic lives in ``handlers/`` as mixins.
 from PyQt6.QtWidgets import (
     QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog
 )
+from PyQt6.QtGui import QShortcut, QKeySequence
 from pathlib import Path
 
 from ..core.session_manager import SessionManager
@@ -126,6 +127,16 @@ class MainWindow(
 
         # Auto-sync: debounced paint → session manager
         lm.sig_mask_painted.connect(self._on_auto_sync)
+
+        # Global Shortcuts
+        self.shortcut_toggle_mask = QShortcut(QKeySequence("s"), self)
+        self.shortcut_toggle_mask.activated.connect(self._on_shortcut_toggle_tumor_mask)
+
+    def _on_shortcut_toggle_tumor_mask(self):
+        """Toggle tumor mask visibility via 's' hotkey."""
+        chk = self.control_panel.view_display_tab.chk_tumor
+        chk.setChecked(not chk.isChecked())
+        print(f"[MainWindow] Shortcut 's' toggled tumor mask visibility to {chk.isChecked()}")
 
     # ──── Session Management ────
 

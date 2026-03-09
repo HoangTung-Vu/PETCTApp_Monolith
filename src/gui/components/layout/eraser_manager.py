@@ -8,7 +8,6 @@ class EraserMixin:
 
     def enable_eraser_click_mode(self):
         """Install single-click callback on all 2D viewers for contour erasing."""
-        # BUG-07 FIX: Mutual exclusion — disable autopet when enabling eraser
         self.disable_autopet_click_mode()
 
         self._remove_eraser_callbacks()
@@ -54,14 +53,11 @@ class EraserMixin:
                 return
 
             # Identify connected component at the click point
-            # Use skimage.morphology.flood(mask, (z, y, x)) for extreme speed
-            # if skimage is available. Otherwise fallback to local region labeling.
             try:
                 from skimage.morphology import flood
                 component_mask = flood(mask_zyx, (z, y, x))
                 num_voxels = int(np.sum(component_mask))
             except ImportError:
-                # Fallback to scipy.ndimage.label (re-labeling whole volume is slower)
                 from scipy.ndimage import label as nd_label
                 labeled, num_features = nd_label(mask_zyx)
                 component_id = labeled[z, y, x]
@@ -75,15 +71,11 @@ class EraserMixin:
             mask_zyx[component_mask] = 0
             print(f"[Eraser] Removed component at {coord_zyx} ({num_voxels} voxels).")
 
-            # BUG-02 FIX: Refresh ALL loaded viewers (not just visible)
-            # so layout switching shows updated data.
             for v in self._get_all_loaded_viewers():
                 tumor_name = v.LAYER_NAMES.get("tumor", "Tumor Mask")
                 if tumor_name in v.viewer.layers:
                     v.viewer.layers[tumor_name].refresh()
 
-            # BUG-02 FIX: Update XYZ cache so non-loaded layouts
-            # get correct data when they load.
             new_mask_xyz = from_napari(mask_zyx).copy()
             self._cached_data["tumor"] = new_mask_xyz
 

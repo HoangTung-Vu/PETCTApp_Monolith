@@ -131,13 +131,13 @@ class RefinementHandlerMixin:
         self.refine_worker.start()
 
     def _on_refinement_finished(self, refined_img):
-        # BUG-6 FIX: Use float32 to prevent float64 memory bloat since it will be cast to uint8 later anyway
+        # Use float32 to prevent float64 memory bloat since it will be cast to uint8 later anyway
         data = refined_img.get_fdata(dtype=np.float32)
-        # BUG-05 FIX: Use set_*_mask() to properly trigger report invalidation
+        # Use set_*_mask() to properly trigger report invalidation
         self.session_manager.set_tumor_mask(data)
 
         self._push_mask_to_all("tumor", data)
-        # BUG-05 FIX: Clear stale report UI and cached data
+        # Clear stale report UI and cached data
         self.session_manager.clear_lesion_data()
         self.control_panel.clear_report_results()
         self.layout_manager.hide_lesion_ids()
@@ -177,7 +177,7 @@ class RefinementHandlerMixin:
 
         # ENTERING Refine/AutoPET Mode
         if is_refine_mode and not was_refine_mode:
-            # BUG-FIX: Only snapshot if there isn't one already (e.g. from previous paint session)
+            # Only snapshot if there isn't one already (e.g. from previous paint session)
             # If a snapshot exists, it means the doctor started painting and switched tabs,
             # so we want to keep the old snapshot so the ROI diff is still valid against the current painted mask.
             if self.session_manager._tumor_mask_snapshot is None:
