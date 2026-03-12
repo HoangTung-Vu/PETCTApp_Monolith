@@ -24,7 +24,7 @@ class EraserHandlerMixin:
 
     def _on_eraser_region_removed(self, old_mask_xyz, new_mask_xyz):
         """Called after eraser removes a connected component. Preview only (no save)."""
-        # BUG-16 FIX: Copy prob BEFORE mutation to avoid in-place corruption
+        # Copy prob BEFORE mutation to avoid in-place corruption
         old_prob_data = self.session_manager.get_tumor_prob()
         prob_backup = old_prob_data.copy() if old_prob_data is not None else None
 
@@ -38,7 +38,7 @@ class EraserHandlerMixin:
         self._eraser_undo_stack.append(backup)
 
         # Find erased voxels (were 1, now 0) and zero out prob
-        # BUG-16 FIX: Mutate a copy, then set it on the session manager
+        # Mutate a copy, then set it on the session manager
         if old_mask_xyz is not None and old_prob_data is not None:
             erased = (old_mask_xyz > 0) & (new_mask_xyz == 0)
             new_prob = old_prob_data.copy()

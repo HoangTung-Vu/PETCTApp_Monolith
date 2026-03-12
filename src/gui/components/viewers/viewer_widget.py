@@ -255,67 +255,26 @@ class ViewerWidget(QWidget):
     # ──── Lesion ID Labels ────
     LESION_LABEL_LAYER_NAME = "Lesion IDs"
 
-    def show_lesion_ids(self, bboxes: list, lesion_ids: list):
+    def show_lesion_ids(self, points: list, lesion_ids: list):
         """Show lesion ID labels as points at each lesion's centroid.
 
-        The bboxes come from the report engine in nibabel array order
-        (dim0, dim1, dim2). ``to_napari`` converts (X,Y,Z) → (Z,Y,X) and
-        then flips Z (axis 0) and Y (axis 1).  We replicate the same
-        transform so the Points align with image data.
-
         Args:
-            bboxes:     list of (d0_min, d1_min, d2_min, d0_max, d1_max, d2_max)
-            lesion_ids: list of int IDs
+            points:     list of pre-calculated [z, y, x] coordinates in Napari space.
+            lesion_ids: list of str IDs
         """
         self.hide_lesion_ids()
 
-        if not bboxes:
+        if not points:
             return
 
-        # Get the nibabel-space shape so we can mirror the flip
-        # Shape in nibabel order (X, Y, Z)
-        nib_shape = None
-        for name in ("CT Image", "PET Image"):
-            if name in self.viewer.layers:
-                zyx_shape = self.viewer.layers[name].data.shape
-                # to_napari produced (Z', Y', X') from (X, Y, Z)
-                # So nibabel shape = (X, Y, Z) = (zyx[2], zyx[1], zyx[0])
-                nib_shape = (zyx_shape[2], zyx_shape[1], zyx_shape[0])
-                break
-
-        if nib_shape is None:
-            return
-
-        centroids = []
-        id_strings = []
-
-        for bbox, lid in zip(bboxes, lesion_ids):
-            # Centroid in nibabel array order
-            d0_c = (bbox[0] + bbox[3]) / 2.0  # X center
-            d1_c = (bbox[1] + bbox[4]) / 2.0  # Y center
-            d2_c = (bbox[2] + bbox[5]) / 2.0  # Z center
-
-            # Step 1: transpose — napari = (Z, Y, X) = (d2_c, d1_c, d0_c)
-            z_nap = d2_c
-            y_nap = d1_c
-            x_nap = d0_c
-
-            # Step 2: flip Z (axis 0 of ZYX space, range 0..Z_size-1)
-            z_nap = (nib_shape[2] - 1) - z_nap
-            # Step 3: flip Y (axis 1 of ZYX space, range 0..Y_size-1)
-            y_nap = (nib_shape[1] - 1) - y_nap
-
-            centroids.append([z_nap, y_nap, x_nap])
-            id_strings.append(str(lid))
-
-        points = np.array(centroids)
+        points = np.array(points)
 
         kwargs = dict(
             size=0,  # Hide the point marker (circle)
             face_color='transparent',
             border_color='transparent',  
             name=self.LESION_LABEL_LAYER_NAME,
-            features={'lesion_id': id_strings},
+            features={'lesion_id': lesion_ids},
             text={
                 'string': '{lesion_id}',
                 'size': 16,

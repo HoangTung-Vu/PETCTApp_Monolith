@@ -97,7 +97,7 @@ trap cleanup EXIT
 
 echo -e "\n-- Step 1: Building Docker images --"
 # def_build_image "$NNUNET_IMAGE" "$SCRIPT_DIR/AI_engines/engine_nnunet"
-# def_build_image "$NNUNET_OLD_IMAGE" "$SCRIPT_DIR/AI_engines/engine_nnunet_old_ver"
+def_build_image "$NNUNET_OLD_IMAGE" "$SCRIPT_DIR/AI_engines/engine_nnunet_old_ver"
 # def_build_image "$AUTOPET_IMAGE" "$SCRIPT_DIR/AI_engines/engine_autopet"
 # def_build_image "$TOTALSEG_IMAGE" "$SCRIPT_DIR/AI_engines/engine_totalseg"
 

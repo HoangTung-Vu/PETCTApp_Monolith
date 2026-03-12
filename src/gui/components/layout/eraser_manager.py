@@ -82,17 +82,3 @@ class EraserMixin:
             self.sig_eraser_region_removed.emit(old_mask_xyz, new_mask_xyz)
 
         return on_click
-
-    # ──── Lesion ID Labels ────
-
-    def show_lesion_ids(self, bboxes: list, lesion_ids: list):
-        """Push lesion ID labels to all LOADED viewers (including 3D)."""
-        self._cached_lesion_data = (bboxes, lesion_ids)
-        for v in self._get_all_loaded_viewers():
-            v.show_lesion_ids(bboxes, lesion_ids)
-
-    def hide_lesion_ids(self):
-        """Remove lesion ID labels from all viewers."""
-        self._cached_lesion_data = None
-        for v in self._get_all_loaded_viewers():
-            v.hide_lesion_ids()

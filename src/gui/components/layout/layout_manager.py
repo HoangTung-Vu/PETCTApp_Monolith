@@ -605,3 +605,55 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         if self._is_3d_loaded:
             viewers.append(self.viewer_3d)
         return viewers
+
+    # ──── Lesion ID Labels ────
+
+    def show_lesion_ids(self, bboxes: list, lesion_ids: list):
+        """Push lesion ID labels to all LOADED viewers (including 3D)."""
+        if not bboxes:
+            self._cached_lesion_data = ([], [])
+            for v in self._get_all_loaded_viewers():
+                v.show_lesion_ids([], [])
+            return
+
+        # Perform the coordinate transformation ONCE for all viewers
+        # Get shape from cached CT or PET
+        nib_shape = None
+        if self._cached_data.get("ct") is not None:
+            nib_shape = self._cached_data["ct"].shape
+        elif self._cached_data.get("pet") is not None:
+            nib_shape = self._cached_data["pet"].shape
+            
+        points = []
+        id_strings = []
+        
+        if nib_shape is not None:
+            for bbox, lid in zip(bboxes, lesion_ids):
+                # Centroid in nibabel array order
+                d0_c = (bbox[0] + bbox[3]) / 2.0  # X center
+                d1_c = (bbox[1] + bbox[4]) / 2.0  # Y center
+                d2_c = (bbox[2] + bbox[5]) / 2.0  # Z center
+    
+                # Step 1: transpose — napari = (Z, Y, X) = (d2_c, d1_c, d0_c)
+                z_nap = d2_c
+                y_nap = d1_c
+                x_nap = d0_c
+    
+                # Step 2: flip Z (axis 0 of ZYX space, range 0..Z_size-1)
+                z_nap = (nib_shape[2] - 1) - z_nap
+                # Step 3: flip Y (axis 1 of ZYX space, range 0..Y_size-1)
+                y_nap = (nib_shape[1] - 1) - y_nap
+    
+                points.append([z_nap, y_nap, x_nap])
+                id_strings.append(str(lid))
+
+        self._cached_lesion_data = (points, id_strings)
+
+        for v in self._get_all_loaded_viewers():
+            v.show_lesion_ids(points, id_strings)
+
+    def hide_lesion_ids(self):
+        """Remove lesion ID labels from all viewers."""
+        self._cached_lesion_data = None
+        for v in self._get_all_loaded_viewers():
+            v.hide_lesion_ids()
