@@ -74,11 +74,15 @@ class SegmentationHandlerMixin:
             self.session_manager.set_organ_mask(data)
             self._push_mask_to_all("organ", data)
 
-        # Clear stale report UI and lesion data since mask changed
+        # Clear stale report UI and lesion
         self.session_manager.clear_lesion_data()
         self.control_panel.clear_report_results()
 
-        self.session_manager.save_session()
+        # 6. Save immediately
+        self.save_session()
+
+        # 7. Snapshot for refine/autopet tabs
+        self.session_manager.snapshot_current_mask(seg_type)
         print(f"Segmentation {seg_type} finished and saved.")
 
         self.control_panel.hide_progress()

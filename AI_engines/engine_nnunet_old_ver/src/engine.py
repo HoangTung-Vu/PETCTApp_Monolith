@@ -52,11 +52,11 @@ class NNUNetEngine:
         self.predictor = nnUNetPredictor(
             tile_step_size=0.5,
             use_gaussian=True,
-            use_mirroring=False,
+            use_mirroring=True,
             perform_everything_on_gpu=True if self.device == "cuda" else False,
             device=torch.device(self.device),
-            verbose=True,
-            verbose_preprocessing=True,
+            verbose=False,
+            verbose_preprocessing=False,
             allow_tqdm=True
         )
 

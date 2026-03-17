@@ -144,9 +144,10 @@ class RefinementHandlerMixin:
         self.control_panel.chk_show_lesion_ids.setChecked(False)
         
         # COMMIT: Save to disk
-        self.session_manager.save_session()
+        self.save_session()
         
-        # RE-SNAPSHOT: Very important! After refinement is committed, we need a 
+        # We also need to re-snapshot so that another refinement
+        # will only apply to the newly refined state. 
         # NEW baseline for the NEXT ROI drawing, otherwise diff logic fails.
         self.session_manager.snapshot_current_mask("tumor")
         

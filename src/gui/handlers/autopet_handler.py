@@ -67,9 +67,8 @@ class AutoPETHandlerMixin:
 
         # Clear stale report UI and lesion data
         self.session_manager.clear_lesion_data()
-        self.control_panel.clear_report_results()
-
-        self.session_manager.save_session()
+        # Only save if explicitly clicked using Save button
+        # self.save_session()
         # Re-snapshot after commit so tab-switch revert uses the new baseline
         self.session_manager.snapshot_current_mask("tumor")
         print("[AutoPET] Session saved and snapshot updated.")

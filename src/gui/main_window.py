@@ -270,7 +270,25 @@ class MainWindow(
             print("No affine available (no images loaded?)")
 
     def save_session(self):
-        self.session_manager.save_session()
+        from .workers import SaveWorker
+        self.save_worker = SaveWorker(self.session_manager)
+        self.save_worker.finished.connect(self._on_save_finished)
+        self.save_worker.error.connect(self._on_save_error)
+        self.control_panel.show_progress()
+        self._set_ui_busy(True)
+        self.save_worker.start()
+
+    def _on_save_finished(self):
+        self._set_ui_busy(False)
+        self.control_panel.hide_progress()
+        print("[MainWindow] Session saved asynchronously.")
+
+    def _on_save_error(self, error_msg):
+        self._set_ui_busy(False)
+        self.control_panel.hide_progress()
+        print(f"Save Error: {error_msg}")
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.critical(self, "Save Failed", error_msg)
 
     def _on_tab_changed(self, index: int):
         """Delegate tab change events to specialized handlers."""
@@ -305,6 +323,7 @@ class MainWindow(
         # SAFELY STOP ANY RUNNING WORKERS SO PYTHON PROCESS EXITS
         # By quitting the threads safely, we prevent silent QThread destructor segfaults 
         workers = [
+            getattr(self, 'save_worker', None),
             getattr(self, 'loader_worker', None),
             getattr(self, 'snapshot_worker', None),
             getattr(self, 'refine_worker', None),
