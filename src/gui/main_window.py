@@ -59,6 +59,9 @@ class MainWindow(
         # Eraser State
         self._eraser_undo_stack = []
 
+        # Last refinement info for threshold notification
+        self._last_refine_info = None
+
     def _init_ui(self):
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
@@ -91,6 +94,13 @@ class MainWindow(
         cp.sig_zoom_changed.connect(lm.set_zoom)
         cp.sig_zoom_to_fit.connect(lm.reset_zoom)
         cp.sig_toggle_mask.connect(lm.toggle_mask)
+        cp.sig_ct_colormap_changed.connect(lm.set_ct_colormap)
+        cp.sig_pet_colormap_changed.connect(lm.set_pet_colormap)
+        cp.sig_pan_mode_toggled.connect(self._on_pan_mode_toggled)
+        cp.sig_interpolation_toggled.connect(lm.set_interpolation)
+
+        # Cursor intensity: relay from layout_manager → cursor label in sidebar
+        lm.sig_cursor_intensity.connect(cp.view_display_tab.update_cursor_info)
 
         # Session
         cp.sig_new_session_clicked.connect(self.create_new_session)
@@ -117,6 +127,7 @@ class MainWindow(
         cp.sig_eraser_undo_clicked.connect(self._on_eraser_undo)
         cp.sig_eraser_save_clicked.connect(self.save_session)
         lm.sig_eraser_region_removed.connect(self._on_eraser_region_removed)
+        lm.sig_eraser_background_click.connect(self._on_eraser_background_click)
 
         # Report
         cp.sig_report_clicked.connect(self._on_report_clicked)
@@ -137,6 +148,23 @@ class MainWindow(
         chk = self.control_panel.view_display_tab.chk_tumor
         chk.setChecked(not chk.isChecked())
         print(f"[MainWindow] Shortcut 's' toggled tumor mask visibility to {chk.isChecked()}")
+
+    def _on_eraser_background_click(self):
+        """Notify the user they clicked on background (no tumor voxel there)."""
+        from PyQt6.QtWidgets import QMessageBox
+        QMessageBox.warning(
+            self,
+            "Eraser — Background Clicked",
+            "No tumor voxel found at the clicked position.\n\n"
+            "Double-click directly on a highlighted lesion region to erase it.",
+        )
+
+    def _on_pan_mode_toggled(self, pan_mode_on: bool):
+        """Switch between crosshair (default) and pan cursor modes."""
+        if pan_mode_on:
+            self.layout_manager.disable_crosshair_mode()
+        else:
+            self.layout_manager.enable_crosshair_mode()
 
     # ──── Session Management ────
 
@@ -236,7 +264,20 @@ class MainWindow(
         # Update session label
         session_name = f"ID: {self.session_manager.current_session_id} - {self.session_manager.patient_name}"
         self.control_panel.set_current_session_label(session_name)
-        
+
+        # Pre-snapshot in background so Refine tab entry has zero lag.
+        # Only if we don't already have a snapshot from a prior paint session.
+        if self.session_manager._tumor_mask_snapshot is None:
+            from .workers import SnapshotWorker
+            self.snapshot_worker = SnapshotWorker(self.session_manager, "tumor")
+            self.snapshot_worker.finished.connect(
+                lambda: print("[MainWindow] Pre-snapshot complete — Refine tab ready.")
+            )
+            self.snapshot_worker.start()
+
+        # Crosshair is on by default — enable after viewers are populated
+        self.layout_manager.enable_crosshair_mode()
+
         print(f"Async data loading completed for session {self.session_manager.current_session_id}.")
 
     def _on_data_error(self, error_msg):

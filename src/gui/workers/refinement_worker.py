@@ -5,8 +5,9 @@ from PyQt6.QtCore import QThread, pyqtSignal
 class RefinementWorker(QThread):
     """
     Runs SUV refinement in a background thread (local, no HTTP needed).
+    finished emits (refined_image, computed_threshold) — threshold is the user-supplied SUV value.
     """
-    finished = pyqtSignal(object)
+    finished = pyqtSignal(object, float)
     error = pyqtSignal(str)
 
     def __init__(self, pet_image: nib.Nifti1Image, mask_image: nib.Nifti1Image, threshold: float, roi_mask: np.ndarray = None):
@@ -25,7 +26,7 @@ class RefinementWorker(QThread):
                 self.pet_image, self.mask_image, self.threshold, self.roi_mask
             )
 
-            self.finished.emit(refined_image)
+            self.finished.emit(refined_image, float(self.threshold))
 
         except Exception as e:
             import traceback
@@ -36,8 +37,9 @@ class RefinementWorker(QThread):
 class AdaptiveThresholdingWorker(QThread):
     """
     Runs Adaptive Thresholding refinement in a background thread (local, no HTTP needed).
+    finished emits (refined_image, computed_threshold_suv).
     """
-    finished = pyqtSignal(object)
+    finished = pyqtSignal(object, float)
     error = pyqtSignal(str)
 
     def __init__(
@@ -79,7 +81,7 @@ class AdaptiveThresholdingWorker(QThread):
             )
 
             refined_image = engine.refine(self.pet_image, self.mask_image, self.roi_mask)
-            self.finished.emit(refined_image)
+            self.finished.emit(refined_image, float(getattr(engine, "last_threshold", 0.0)))
 
         except Exception as e:
             import traceback
@@ -90,8 +92,9 @@ class AdaptiveThresholdingWorker(QThread):
 class IterativeThresholdingWorker(QThread):
     """
     Runs Iterative Thresholding refinement in a background thread (local, no HTTP needed).
+    finished emits (refined_image, computed_threshold_abs_suv).
     """
-    finished = pyqtSignal(object)
+    finished = pyqtSignal(object, float)
     error = pyqtSignal(str)
 
     def __init__(
@@ -134,7 +137,7 @@ class IterativeThresholdingWorker(QThread):
             )
 
             refined_image = engine.refine(self.pet_image, self.mask_image, self.roi_mask)
-            self.finished.emit(refined_image)
+            self.finished.emit(refined_image, float(getattr(engine, "last_threshold_abs", 0.0)))
 
         except Exception as e:
             import traceback

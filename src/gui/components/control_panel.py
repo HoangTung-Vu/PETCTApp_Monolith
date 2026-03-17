@@ -40,6 +40,10 @@ class ControlPanel(QWidget):
     sig_zoom_changed = pyqtSignal(int)
     sig_zoom_to_fit = pyqtSignal()
     sig_toggle_mask = pyqtSignal(str, bool)
+    sig_ct_colormap_changed = pyqtSignal(str)
+    sig_pet_colormap_changed = pyqtSignal(str)
+    sig_pan_mode_toggled = pyqtSignal(bool)
+    sig_interpolation_toggled = pyqtSignal(bool)
 
     # Refine
     sig_set_tool = pyqtSignal(str)
@@ -113,6 +117,10 @@ class ControlPanel(QWidget):
         vd.sig_zoom_changed.connect(self.sig_zoom_changed)
         vd.sig_zoom_to_fit.connect(self.sig_zoom_to_fit)
         vd.sig_toggle_mask.connect(self.sig_toggle_mask)
+        vd.sig_ct_colormap_changed.connect(self.sig_ct_colormap_changed)
+        vd.sig_pet_colormap_changed.connect(self.sig_pet_colormap_changed)
+        vd.sig_pan_mode_toggled.connect(self.sig_pan_mode_toggled)
+        vd.sig_interpolation_toggled.connect(self.sig_interpolation_toggled)
 
         # Refine
         r = self.refine_tab

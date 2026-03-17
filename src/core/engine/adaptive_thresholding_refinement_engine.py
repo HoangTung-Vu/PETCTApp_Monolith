@@ -95,6 +95,12 @@ class AdaptiveThresholdingRefinementEngine:
         i_background = self._compute_i_background(pet_data, roi, isocontour_mask)
         i_threshold = 0.15 * i_mean + i_background
 
+        # Expose computed values for the GUI notification
+        self.last_threshold = float(i_threshold)
+        self.last_i_max = float(i_max)
+        self.last_i_mean = float(i_mean)
+        self.last_i_background = float(i_background)
+
         refined = self._apply_threshold(mask_data, pet_data, roi, i_threshold)
         return nib.Nifti1Image(refined, mask_image.affine, mask_image.header)
 

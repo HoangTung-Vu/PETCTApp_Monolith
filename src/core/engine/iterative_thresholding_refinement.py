@@ -169,6 +169,10 @@ class IterativeThresholdingEngine:
         output = (mask_data > 0).astype(np.uint8)
         output[roi] = refined_mask[roi].astype(np.uint8)
 
+        # Expose the final threshold for the GUI notification
+        self.last_threshold_abs = float(t_current)
+        self.last_threshold_pct = float((t_current / i_source) * 100.0) if i_source > 0 else 0.0
+
         return nib.Nifti1Image(output, mask_image.affine, mask_image.header)
 
     @staticmethod

@@ -50,6 +50,7 @@ class EraserMixin:
 
             if mask_zyx[z, y, x] == 0:
                 print("[Eraser] Clicked on background (label=0), nothing to erase.")
+                self.sig_eraser_background_click.emit()
                 return
 
             # Identify connected component at the click point

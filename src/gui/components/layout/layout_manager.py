@@ -10,7 +10,7 @@ Performance optimizations:
 """
 
 from PyQt6.QtWidgets import QWidget, QGridLayout, QStackedWidget, QVBoxLayout, QApplication
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import pyqtSignal, QTimer
 import numpy as np
 
 from ..viewers.viewer_widget import ViewerWidget
@@ -32,11 +32,17 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
     # Signal emitted when eraser removes a connected component: (old_mask_xyz, new_mask_xyz)
     sig_eraser_region_removed = pyqtSignal(object, object)
 
+    # Signal emitted when user double-clicks on background with eraser active
+    sig_eraser_background_click = pyqtSignal()
+
     # Signal emitted after debounced paint stroke: (layer_type: str)
     sig_mask_painted = pyqtSignal(str)
 
     # Signal emitted when a shape is committed: (layer_type: str)
     sig_shape_committed = pyqtSignal(str)
+
+    # Signal emitted with cursor intensity text when crosshair mode is active
+    sig_cursor_intensity = pyqtSignal(str)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -76,6 +82,16 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         # Contrast states (Window, Level)
         self._ct_wl = (350.0, 35.0)
         self._pet_wl = (10.0, 5.0)
+
+        # Colormap state (per modality)
+        self._ct_colormap = "gray"
+        self._pet_colormap = "hot"
+
+        # Crosshair mode: enabled by default (matches viewer_widget default)
+        self._crosshair_enabled = True
+
+        # Pre-load queue for background layout preloading
+        self._preload_queue = []
 
     # ──── View Initialization ────
 
@@ -171,6 +187,9 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         # Connect mask events for the visible layout
         self._connect_mask_events()
 
+        # Schedule preloading of other layouts to eliminate first-switch lag
+        self._schedule_preload()
+
     def _load_current_layout(self):
         """Load cached data into whichever layout is currently visible."""
         current = self.stack.currentWidget()
@@ -194,9 +213,9 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
         for (r, c), widget in self.grid_viewers.items():
             if c == 0 and ct is not None:
-                widget.load_image(ct, affine, "ct", "gray")
+                widget.load_image(ct, affine, "ct", self._ct_colormap)
             elif c == 1 and pet is not None:
-                widget.load_image(pet, affine, "pet", "jet")
+                widget.load_image(pet, affine, "pet", self._pet_colormap)
 
             if self._cached_data_zyx["tumor"] is not None:
                 widget.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
@@ -243,9 +262,9 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         affine = self._cached_data["affine"]
 
         if ct is not None:
-            self.overlay_viewer.load_image(ct, affine, "ct", "gray")
+            self.overlay_viewer.load_image(ct, affine, "ct", self._ct_colormap)
         if pet is not None:
-            self.overlay_viewer.load_image(pet, affine, "pet", "jet", opacity=0.5)
+            self.overlay_viewer.load_image(pet, affine, "pet", self._pet_colormap, opacity=0.5)
 
         if self._cached_data_zyx["tumor"] is not None:
             self.overlay_viewer.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
@@ -276,9 +295,9 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         affine = self._cached_data["affine"]
 
         if ct is not None:
-            self.mono_viewers[0].load_image(ct, affine, "ct", "gray")
+            self.mono_viewers[0].load_image(ct, affine, "ct", self._ct_colormap)
         if pet is not None:
-            self.mono_viewers[1].load_image(pet, affine, "pet", "jet")
+            self.mono_viewers[1].load_image(pet, affine, "pet", self._pet_colormap)
 
         for v in self.mono_viewers.values():
             if self._cached_data_zyx["tumor"] is not None:
@@ -312,15 +331,31 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         affine = self._cached_data["affine"]
 
         if ct is not None:
-            self.viewer_3d.load_image(ct, affine, "ct", "gray")
+            self.viewer_3d.load_image(ct, affine, "ct", self._ct_colormap)
         if pet is not None:
-            self.viewer_3d.load_image(pet, affine, "pet", "jet", opacity=0.7)
+            self.viewer_3d.load_image(pet, affine, "pet", self._pet_colormap, opacity=1.0)
 
         if self._cached_data_zyx["tumor"] is not None:
             self.viewer_3d.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-        
+
         if self._cached_lesion_data:
             self.viewer_3d.show_lesion_ids(*self._cached_lesion_data)
+
+        # Apply persistent contrast limits (same as 2D loaders)
+        ct_name = self.viewer_3d.LAYER_NAMES["ct"]
+        pet_name = self.viewer_3d.LAYER_NAMES["pet"]
+        if ct is not None and ct_name in self.viewer_3d.viewer.layers:
+            c_min = self._ct_wl[1] - (self._ct_wl[0] / 2)
+            c_max = self._ct_wl[1] + (self._ct_wl[0] / 2)
+            self.viewer_3d.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
+        if pet is not None and pet_name in self.viewer_3d.viewer.layers:
+            p_min = max(0, self._pet_wl[1] - (self._pet_wl[0] / 2))
+            p_max = self._pet_wl[1] + (self._pet_wl[0] / 2)
+            self.viewer_3d.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
+
+        # Default: CT mode — PET hidden until user toggles
+        if pet is not None and pet_name in self.viewer_3d.viewer.layers:
+            self.viewer_3d.viewer.layers[pet_name].visible = False
 
         self.viewer_3d.viewer.dims.ndisplay = 3
         self._is_3d_loaded = True
@@ -374,6 +409,10 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
         # Reconnect mask events for the new layout
         self._connect_mask_events()
+
+        # Reconnect crosshair if it was active
+        if self._crosshair_enabled:
+            self.enable_crosshair_mode()
 
     # ──── Display Settings ────
 
@@ -448,11 +487,15 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 if layer.name == target_name:
                     layer.visible = visible
 
-    def toggle_3d_pet(self, visible: bool):
-        """Show/Hide PET layer in 3D view."""
+    def toggle_3d_pet(self, pet_mode: bool):
+        """Switch 3D view between CT-only (pet_mode=False) and PET-only (pet_mode=True)."""
+        ct_name = self.viewer_3d.LAYER_NAMES["ct"]
+        pet_name = self.viewer_3d.LAYER_NAMES["pet"]
         for layer in self.viewer_3d.viewer.layers:
-            if layer.name == self.viewer_3d.LAYER_NAMES["pet"]:
-                layer.visible = visible
+            if layer.name == ct_name:
+                layer.visible = not pet_mode
+            elif layer.name == pet_name:
+                layer.visible = pet_mode
 
     def set_drawing_tool(self, tool: str, brush_size: int, layer_type: str):
         """Sets the drawing tool for visible 2D viewers."""
@@ -657,3 +700,97 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         self._cached_lesion_data = None
         for v in self._get_all_loaded_viewers():
             v.hide_lesion_ids()
+
+    # ──── Colormap ────
+
+    def set_ct_colormap(self, colormap: str):
+        """Change CT colormap for all loaded viewers."""
+        self._ct_colormap = colormap
+        ct_name_key = "ct"
+        for widget in self._get_all_loaded_viewers():
+            name = widget.LAYER_NAMES.get(ct_name_key, "CT Image")
+            if name in widget.viewer.layers:
+                widget.viewer.layers[name].colormap = colormap
+
+    def set_pet_colormap(self, colormap: str):
+        """Change PET colormap for all loaded viewers."""
+        self._pet_colormap = colormap
+        pet_name_key = "pet"
+        for widget in self._get_all_loaded_viewers():
+            name = widget.LAYER_NAMES.get(pet_name_key, "PET Image")
+            if name in widget.viewer.layers:
+                widget.viewer.layers[name].colormap = colormap
+
+    # ──── Crosshair mode ────
+
+    def enable_crosshair_mode(self):
+        """Enable crosshair cursor and intensity readout on visible viewers."""
+        self._crosshair_enabled = True
+        # Disconnect from all first to avoid duplicates
+        for v in self._get_all_2d_viewers():
+            v.disable_crosshair_mode()
+            try:
+                v.sig_cursor_intensity.disconnect(self._on_viewer_cursor_intensity)
+            except (TypeError, RuntimeError):
+                pass
+        # Enable only on visible viewers
+        for v in self._get_visible_viewers():
+            if not v.is_3d:
+                v.enable_crosshair_mode()
+                v.sig_cursor_intensity.connect(self._on_viewer_cursor_intensity)
+
+    def disable_crosshair_mode(self):
+        """Disable crosshair cursor on all viewers."""
+        self._crosshair_enabled = False
+        for v in self._get_all_2d_viewers():
+            v.disable_crosshair_mode()
+            try:
+                v.sig_cursor_intensity.disconnect(self._on_viewer_cursor_intensity)
+            except (TypeError, RuntimeError):
+                pass
+
+    def _on_viewer_cursor_intensity(self, text: str):
+        """Relay cursor intensity from individual viewer up to MainWindow."""
+        self.sig_cursor_intensity.emit(text)
+
+    # ──── Interpolation ────
+
+    def set_interpolation(self, enabled: bool):
+        """Toggle linear interpolation for smoother display on all loaded viewers."""
+        mode = "linear" if enabled else "nearest"
+        for widget in self._get_all_loaded_viewers():
+            for layer in widget.viewer.layers:
+                if hasattr(layer, "interpolation2d"):
+                    try:
+                        layer.interpolation2d = mode
+                    except Exception:
+                        pass
+
+    # ──── Pre-load secondary layouts ────
+
+    def _schedule_preload(self):
+        """Queue background preloading of secondary layouts to eliminate first-switch lag."""
+        current = self.stack.currentWidget()
+        self._preload_queue = []
+        # Load non-visible 2D layouts (skip 3D — it's slow and rarely used immediately)
+        if current != self.grid_widget:
+            self._preload_queue.append(self._load_grid)
+        if current != self.overlay_widget:
+            self._preload_queue.append(self._load_overlay)
+        if current != self.mono_widget:
+            self._preload_queue.append(self._load_mono)
+        if self._preload_queue:
+            QTimer.singleShot(800, self._preload_next)
+
+    def _preload_next(self):
+        """Load the next queued layout and schedule the following one."""
+        if not self._preload_queue:
+            return
+        # Only preload if we still have valid data
+        if self._cached_data.get("ct") is None and self._cached_data.get("pet") is None:
+            self._preload_queue.clear()
+            return
+        fn = self._preload_queue.pop(0)
+        fn()
+        if self._preload_queue:
+            QTimer.singleShot(200, self._preload_next)

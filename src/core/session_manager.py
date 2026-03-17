@@ -208,12 +208,12 @@ class SessionManager:
 
     def get_ct_data(self) -> Optional[np.ndarray]:
         if self.ct_image:
-            return self.ct_image.get_fdata()
+            return self.ct_image.get_fdata(dtype=np.float32)
         return None
 
     def get_pet_data(self) -> Optional[np.ndarray]:
         if self.pet_image:
-            return self.pet_image.get_fdata()
+            return self.pet_image.get_fdata(dtype=np.float32)
         return None
         
     def get_tumor_mask_data(self) -> Optional[np.ndarray]:

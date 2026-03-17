@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
-from PyQt6.QtCore import QObject, QEvent
+from PyQt6.QtCore import QObject, QEvent, pyqtSignal
 import napari
 import numpy as np
 from typing import Optional, Tuple
@@ -13,6 +13,9 @@ class ViewerWidget(QWidget):
     A unified widget containing a single Napari viewer.
     Handles data loading and basic display settings.
     """
+    # Emitted when crosshair mode is active and mouse moves over the canvas
+    sig_cursor_intensity = pyqtSignal(str)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self.layout = QVBoxLayout(self)
@@ -25,7 +28,7 @@ class ViewerWidget(QWidget):
         self.layout.addWidget(self.qt_viewer)
 
         self.viewer.camera.mouse_zoom = False
-        
+
         # Add custom mouse wheel callback to swap scroll/zoom
         # Napari native callbacks still let some events through or double fire,
         # so we intercept the raw Qt wheel event on the canvas directly.
@@ -36,7 +39,7 @@ class ViewerWidget(QWidget):
         for cb in list(self.viewer.mouse_double_click_callbacks):
             if cb.__name__ == 'double_click_to_zoom':
                 self.viewer.mouse_double_click_callbacks.remove(cb)
-        
+
         # Keep track of layer names
         self.LAYER_NAMES = {
             "ct": "CT Image",
@@ -45,6 +48,12 @@ class ViewerWidget(QWidget):
         }
         self.is_3d = False
         self._scale_zyx = None  # Physical spacing in Napari (Z, Y, X) order
+
+        # Crosshair: enabled by default
+        self._crosshair_enabled = True
+        self._xhair_move_cb = self._make_xhair_move_cb()
+        self.viewer.mouse_move_callbacks.append(self._xhair_move_cb)
+        self._set_crosshair_cursor(True)
     
     # helper proxies for compatibility (optional, or just use imported functions)
     @staticmethod
@@ -86,6 +95,7 @@ class ViewerWidget(QWidget):
                 colormap=colormap,
                 blending=blending,
                 opacity=opacity,
+                interpolation2d='nearest',  # default; toggle via set_interpolation()
             )
             
     def load_mask(self, mask_data: np.ndarray, layer_type: str, color: Optional[int] = None):
@@ -482,6 +492,66 @@ class ViewerWidget(QWidget):
     def _apply_shape(self, layer, start_world, end_world):
         """Deprecated: replaced by interactive Napari Shapes + commit_shape_to_mask."""
         pass
+
+    # ──── Crosshair cursor ────
+
+    def _set_crosshair_cursor(self, enabled: bool):
+        """Set the canvas cursor to crosshair or default arrow."""
+        if hasattr(self.qt_viewer, 'canvas') and hasattr(self.qt_viewer.canvas, 'native'):
+            from PyQt6.QtGui import QCursor
+            from PyQt6.QtCore import Qt
+            shape = Qt.CursorShape.CrossCursor if enabled else Qt.CursorShape.ArrowCursor
+            self.qt_viewer.canvas.native.setCursor(QCursor(shape))
+
+    def enable_crosshair_mode(self):
+        """Enable crosshair cursor and intensity readout."""
+        self._crosshair_enabled = True
+        self._set_crosshair_cursor(True)
+
+    def disable_crosshair_mode(self):
+        """Switch to arrow cursor and suppress intensity readout."""
+        self._crosshair_enabled = False
+        self._set_crosshair_cursor(False)
+
+    def _make_xhair_move_cb(self):
+        """Return a mouse-move callback that reads CT/PET intensity at the cursor."""
+        def on_move(viewer, event):
+            if not self._crosshair_enabled:
+                return
+            parts = []
+            for layer_type, label, fmt in [
+                ("ct", "CT", "{:.0f} HU"),
+                ("pet", "PET", "{:.2f} SUV"),
+            ]:
+                name = self.LAYER_NAMES.get(layer_type)
+                if not name or name not in viewer.layers:
+                    continue
+                layer = viewer.layers[name]
+                try:
+                    data_pos = layer.world_to_data(event.position)
+                    zi = int(round(float(data_pos[0])))
+                    yi = int(round(float(data_pos[1])))
+                    xi = int(round(float(data_pos[2])))
+                    d = layer.data
+                    if 0 <= zi < d.shape[0] and 0 <= yi < d.shape[1] and 0 <= xi < d.shape[2]:
+                        val = float(d[zi, yi, xi])
+                        parts.append(f"{label}: {fmt.format(val)}")
+                except Exception:
+                    pass
+            self.sig_cursor_intensity.emit("  |  ".join(parts))
+        return on_move
+
+    # ──── Interpolation toggle ────
+
+    def set_interpolation(self, enabled: bool):
+        """Toggle linear interpolation for smoother sub-voxel display."""
+        mode = "linear" if enabled else "nearest"
+        for layer in self.viewer.layers:
+            if hasattr(layer, "interpolation2d"):
+                try:
+                    layer.interpolation2d = mode
+                except Exception:
+                    pass
 
     def close(self):
         self.viewer.close()

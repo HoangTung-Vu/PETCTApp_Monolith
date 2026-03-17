@@ -1,6 +1,7 @@
 """Refinement handler mixin for MainWindow."""
 
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QMessageBox, QDialog, QLabel, QVBoxLayout, QPushButton
+from PyQt6.QtCore import Qt
 import numpy as np
 
 class RefinementHandlerMixin:
@@ -44,8 +45,15 @@ class RefinementHandlerMixin:
         self._set_ui_busy(True)
         self.refine_worker.start()
 
-    def _on_refine_adaptive(self, isocontour_fraction, background_mode, border_thickness):
-        """Refine the current mask using Adaptive Thresholding logic (async)."""
+    def _on_refine_adaptive(self, isocontour_fraction, background_mode, border_thickness):  # noqa: E501
+        """Refine the current mask using Adaptive Thresholding (preview, async)."""
+        # Store params so we can display them after preview
+        self._last_refine_info = (
+            "adaptive",
+            f"Isocontour: {isocontour_fraction:.2f}\n"
+            f"Background mode: {background_mode}\n"
+            f"Border thickness: {border_thickness} voxels"
+        )
         if self.session_manager.pet_image is None:
             QMessageBox.warning(self, "Missing Data", "PET image required for Adaptive Thresholding refinement.")
             return
@@ -87,7 +95,16 @@ class RefinementHandlerMixin:
         self.refine_worker.start()
 
     def _on_refine_iterative(self, m, c1, c0, convergence_tol, max_iterations):
-        """Refine the current mask using Iterative Thresholding logic (async)."""
+        """Refine the current mask using Iterative Thresholding (preview, async)."""
+        # Store params so we can display them after preview
+        self._last_refine_info = (
+            "iterative",
+            f"m (slope): {m}\n"
+            f"c1 (B/S coeff): {c1}\n"
+            f"c0 (intercept): {c0}\n"
+            f"Tolerance: {convergence_tol}\n"
+            f"Max iterations: {max_iterations}"
+        )
         if self.session_manager.pet_image is None:
             QMessageBox.warning(self, "Missing Data", "PET image required for Iterative Thresholding refinement.")
             return
@@ -130,7 +147,7 @@ class RefinementHandlerMixin:
         self._set_ui_busy(True)
         self.refine_worker.start()
 
-    def _on_refinement_finished(self, refined_img):
+    def _on_refinement_finished(self, refined_img, computed_threshold: float = 0.0):
         # Use float32 to prevent float64 memory bloat since it will be cast to uint8 later anyway
         data = refined_img.get_fdata(dtype=np.float32)
         # Use set_*_mask() to properly trigger report invalidation
@@ -142,19 +159,32 @@ class RefinementHandlerMixin:
         self.control_panel.clear_report_results()
         self.layout_manager.hide_lesion_ids()
         self.control_panel.chk_show_lesion_ids.setChecked(False)
-        
-        # COMMIT: Save to disk
-        self.save_session()
-        
-        # We also need to re-snapshot so that another refinement
-        # will only apply to the newly refined state. 
-        # NEW baseline for the NEXT ROI drawing, otherwise diff logic fails.
+
+        # PREVIEW MODE: Do NOT auto-save. The user must click "Save Refinement" explicitly.
+        # Re-snapshot so next ROI diff starts from the newly previewed state.
         self.session_manager.snapshot_current_mask("tumor")
-        
-        print("Refined tumor finished, saved, and re-snapshotted.")
+
+        print("Refined tumor preview ready. Click 'Save Refinement' to persist to disk.")
         self._set_ui_busy(False)
         self.control_panel.hide_refine_progress()
         self.control_panel.refine_tab.reset_tools()
+
+        # Show threshold notification for adaptive/iterative methods
+        info = getattr(self, "_last_refine_info", None)
+        if info and info[0] in ("adaptive", "iterative"):
+            method_name = "Adaptive Thresholding" if info[0] == "adaptive" else "Iterative Thresholding"
+            threshold_line = (
+                f"\n─────────────────────────────\n"
+                f"Computed threshold:  {computed_threshold:.4f} SUV\n"
+            ) if computed_threshold > 0 else ""
+            QMessageBox.information(
+                self,
+                f"Preview — {method_name}",
+                f"Parameters used:\n\n{info[1]}"
+                f"{threshold_line}\n"
+                f"Click 'Save Refinement to Disk' to persist.",
+            )
+        self._last_refine_info = None
 
     def _on_refinement_error(self, error_msg):
         self._set_ui_busy(False)

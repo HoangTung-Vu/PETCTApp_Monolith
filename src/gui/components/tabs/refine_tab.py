@@ -108,7 +108,8 @@ class RefineTab(QWidget):
         self.spin_suv.setValue(2.5)
         self.spin_suv.setSingleStep(0.1)
 
-        self.btn_refine = QPushButton("Refine ROI by SUV")
+        self.btn_refine = QPushButton("Preview: SUV Threshold")
+        self.btn_refine.setToolTip("Preview the result without saving. Click 'Save Refinement' to persist.")
         self.btn_refine.clicked.connect(self._emit_refine_suv)
 
         suv_layout.addRow("Min SUV:", self.spin_suv)
@@ -136,7 +137,8 @@ class RefineTab(QWidget):
         self.spin_border_thickness.setRange(1, 10)
         self.spin_border_thickness.setValue(3)
 
-        self.btn_refine_adaptive = QPushButton("Refine ROI by Adaptive Threshold")
+        self.btn_refine_adaptive = QPushButton("Preview: Adaptive Threshold")
+        self.btn_refine_adaptive.setToolTip("Preview the result without saving. Click 'Save Refinement' to persist.")
         self.btn_refine_adaptive.clicked.connect(self._emit_refine_adaptive)
 
         adaptive_layout.addRow("Isocontour Fraction:", self.spin_isocontour)
@@ -178,7 +180,8 @@ class RefineTab(QWidget):
         self.spin_iters.setRange(1, 50)
         self.spin_iters.setValue(10)
 
-        self.btn_refine_iterative = QPushButton("Refine ROI by Iterative Threshold")
+        self.btn_refine_iterative = QPushButton("Preview: Iterative Threshold")
+        self.btn_refine_iterative.setToolTip("Preview the result without saving. Click 'Save Refinement' to persist.")
         self.btn_refine_iterative.clicked.connect(self._emit_refine_iterative)
 
         iterative_layout.addRow("m (Slope):", self.spin_m)
@@ -193,8 +196,9 @@ class RefineTab(QWidget):
 
         layout.addSpacing(8)
 
-        # 7. Save Refinement
-        self.btn_save_refine = QPushButton("Save Refinement (Overwrite)")
+        # 7. Save Refinement — explicit disk persist after preview
+        self.btn_save_refine = QPushButton("Save Refinement to Disk")
+        self.btn_save_refine.setToolTip("Persist the previewed mask to disk (overwrites previous save).")
         self.btn_save_refine.clicked.connect(self.sig_save_refine_clicked.emit)
         self.btn_save_refine.setStyleSheet("background-color: #d9534f; color: white; font-weight: bold;")
         layout.addWidget(self.btn_save_refine)

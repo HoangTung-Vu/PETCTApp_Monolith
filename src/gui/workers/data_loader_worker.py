@@ -54,10 +54,11 @@ class DataLoaderWorker(QThread):
                      
             # Pre-compute get_fdata() here in the background thread so it's cached in memory
             # This is the operation that usually blocks the main thread
+            import numpy as np
             if self.session_manager.ct_image is not None:
-                _ = self.session_manager.ct_image.get_fdata()
+                _ = self.session_manager.ct_image.get_fdata(dtype=np.float32)
             if self.session_manager.pet_image is not None:
-                _ = self.session_manager.pet_image.get_fdata()
+                _ = self.session_manager.pet_image.get_fdata(dtype=np.float32)
 
             self.finished.emit(True)
 
