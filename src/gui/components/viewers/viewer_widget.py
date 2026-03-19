@@ -308,9 +308,9 @@ class ViewerWidget(QWidget):
             w_vert  = float(data_pos_zyx[dims_d[0]]) * float(scale[dims_d[0]])
             w_horiz = float(data_pos_zyx[dims_d[1]]) * float(scale[dims_d[1]])
 
-            center = self.viewer.camera.center   # N-tuple in unpermuted world coords
-            c_vert  = float(center[dims_d[0]])
-            c_horiz = float(center[dims_d[1]])
+            center = self.viewer.camera.center   # 3-tuple in world coords, ordered by dims.order!
+            c_vert  = float(center[-2])
+            c_horiz = float(center[-1])
 
             zoom = float(self.viewer.camera.zoom)
 
