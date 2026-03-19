@@ -34,6 +34,8 @@ class MaskSyncMixin:
             return [self.overlay_viewer]
         elif current == self.mono_widget:
             return list(self.mono_viewers.values())
+        elif current == self.mono_single_widget:
+            return list(self.mono_single_viewers.values())
         elif current == self.view_3d_widget:
             return [self.viewer_3d]
         return []
@@ -53,6 +55,7 @@ class MaskSyncMixin:
             list(self.grid_viewers.values())
             + [self.overlay_viewer]
             + list(self.mono_viewers.values())
+            + list(self.mono_single_viewers.values())
         )
         if self._is_3d_loaded:
             all_viewers.append(self.viewer_3d)

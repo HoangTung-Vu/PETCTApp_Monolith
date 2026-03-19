@@ -42,11 +42,10 @@ PET_PRESET_TIPS = {
 }
 
 CT_COLORMAPS  = ["gray", "green", "cyan", "blue", "twilight"]
-PET_COLORMAPS = ["hot", "inferno", "magma", "plasma", "viridis", "jet", "gray"]
+PET_COLORMAPS = ["jet", "gray", "hot", "inferno", "magma", "plasma", "viridis"]
 
 
 def _make_collapsible(title: str, content_widget: QWidget) -> QWidget:
-    """Wrap content_widget in a toggle-button collapsible section."""
     container = QWidget()
     layout = QVBoxLayout(container)
     layout.setContentsMargins(0, 0, 0, 2)
@@ -93,6 +92,9 @@ class ViewDisplayTab(QWidget):
     sig_pan_mode_toggled       = pyqtSignal(bool)
     sig_interpolation_toggled  = pyqtSignal(bool)
 
+    # True = crosshair overlay ON; False = crosshair overlay OFF (small cross cursor)
+    sig_crosshair_toggled      = pyqtSignal(bool)
+
     def __init__(self, parent=None):
         super().__init__(parent)
         self._init_ui()
@@ -106,13 +108,13 @@ class ViewDisplayTab(QWidget):
         layout = QVBoxLayout(inner)
         layout.setSpacing(4)
 
-        # ── View Mode ────────────────────────────────────────────────────────
+        # ── View Mode ──────────────────────────────────────────────────────
         view_content = QWidget()
         vc_lay = QVBoxLayout(view_content)
         vc_lay.setContentsMargins(4, 4, 4, 4)
         vc_lay.setSpacing(3)
 
-        vc_lay.addWidget(QLabel("Mono-orthogonal:"))
+        vc_lay.addWidget(QLabel("Orthogonal (CT + PET):"))
         for label, mode in [("Axial", "mono_axial"), ("Sagittal", "mono_sagittal"), ("Coronal", "mono_coronal")]:
             btn = QPushButton(label)
             btn.clicked.connect(lambda _, m=mode: self.sig_layout_changed.emit(m))
@@ -122,7 +124,15 @@ class ViewDisplayTab(QWidget):
         self.btn_grid.clicked.connect(lambda: self.sig_layout_changed.emit("grid"))
         vc_lay.addWidget(self.btn_grid)
 
-        vc_lay.addWidget(QLabel("Overlay:"))
+        vc_lay.addWidget(QLabel("Mono-modality (3 views):"))
+        btn_mono_ct = QPushButton("CT Only")
+        btn_mono_ct.clicked.connect(lambda: self.sig_layout_changed.emit("mono_single_ct"))
+        vc_lay.addWidget(btn_mono_ct)
+        btn_mono_pet = QPushButton("PET Only")
+        btn_mono_pet.clicked.connect(lambda: self.sig_layout_changed.emit("mono_single_pet"))
+        vc_lay.addWidget(btn_mono_pet)
+
+        vc_lay.addWidget(QLabel("Overlay (fused):"))
         for label, mode in [("Axial", "overlay_axial"), ("Sagittal", "overlay_sagittal"), ("Coronal", "overlay_coronal")]:
             btn = QPushButton(label)
             btn.clicked.connect(lambda _, m=mode: self.sig_layout_changed.emit(m))
@@ -134,7 +144,7 @@ class ViewDisplayTab(QWidget):
 
         self.chk_3d_pet = QPushButton("3D: CT View")
         self.chk_3d_pet.setCheckable(True)
-        self.chk_3d_pet.setChecked(False)  # Default: CT mode
+        self.chk_3d_pet.setChecked(False)
 
         def _on_3d_toggle(checked):
             self.chk_3d_pet.setText("3D: PET View" if checked else "3D: CT View")
@@ -145,23 +155,30 @@ class ViewDisplayTab(QWidget):
 
         layout.addWidget(_make_collapsible("View Mode", view_content))
 
-        # ── Cursor & Interpolation ────────────────────────────────────────────
+        # ── Cursor & Interaction ──────────────────────────────────────────
         cursor_content = QWidget()
         cc_lay = QVBoxLayout(cursor_content)
         cc_lay.setContentsMargins(4, 4, 4, 4)
-        cc_lay.setSpacing(3)
+        cc_lay.setSpacing(4)
 
+        # Crosshair toggle (main toggle: overlay ON/OFF)
+        self.btn_crosshair = QPushButton("Crosshair: ON")
+        self.btn_crosshair.setCheckable(True)
+        self.btn_crosshair.setChecked(True)
+        self.btn_crosshair.setStyleSheet(
+            "QPushButton { background: #1a4a1a; }"
+            "QPushButton:checked { background: #1a4a1a; }"
+            "QPushButton:!checked { background: #4a1a1a; }"
+        )
+        self.btn_crosshair.clicked.connect(self._on_crosshair_toggled)
+        cc_lay.addWidget(self.btn_crosshair)
+
+        # Pan mode toggle (separate from crosshair toggle)
         self.btn_pan_mode = QPushButton("Switch to Pan Mode")
         self.btn_pan_mode.setCheckable(True)
         self.btn_pan_mode.setChecked(False)
         self.btn_pan_mode.clicked.connect(self._on_pan_mode_toggled)
         cc_lay.addWidget(self.btn_pan_mode)
-
-        self.lbl_cursor_info = QLabel("CT: ---  |  PET: ---")
-        self.lbl_cursor_info.setStyleSheet(
-            "color: #aaf; font-family: monospace; font-size: 11px; padding: 2px;"
-        )
-        cc_lay.addWidget(self.lbl_cursor_info)
 
         self.btn_interpolation = QPushButton("Smooth Interpolation: OFF")
         self.btn_interpolation.setCheckable(True)
@@ -169,9 +186,9 @@ class ViewDisplayTab(QWidget):
         self.btn_interpolation.clicked.connect(self._on_interpolation_toggled)
         cc_lay.addWidget(self.btn_interpolation)
 
-        layout.addWidget(_make_collapsible("Cursor & Interpolation", cursor_content))
+        layout.addWidget(_make_collapsible("Cursor & Interaction", cursor_content))
 
-        # ── CT Display ───────────────────────────────────────────────────────
+        # ── CT Display ──────────────────────────────────────────────────────
         ct_content = QWidget()
         ct_lay = QFormLayout(ct_content)
         ct_lay.setContentsMargins(4, 4, 4, 4)
@@ -210,7 +227,7 @@ class ViewDisplayTab(QWidget):
 
         layout.addWidget(_make_collapsible("CT Display", ct_content))
 
-        # ── PET Display ───────────────────────────────────────────────────────
+        # ── PET Display ──────────────────────────────────────────────────────
         pet_content = QWidget()
         pet_lay = QFormLayout(pet_content)
         pet_lay.setContentsMargins(4, 4, 4, 4)
@@ -218,7 +235,7 @@ class ViewDisplayTab(QWidget):
 
         self.combo_pet_colormap = QComboBox()
         self.combo_pet_colormap.addItems(PET_COLORMAPS)
-        self.combo_pet_colormap.setCurrentText("hot")
+        self.combo_pet_colormap.setCurrentText("jet")
         self.combo_pet_colormap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.combo_pet_colormap.currentTextChanged.connect(self.sig_pet_colormap_changed.emit)
         pet_lay.addRow("Colormap:", self.combo_pet_colormap)
@@ -257,7 +274,7 @@ class ViewDisplayTab(QWidget):
 
         layout.addWidget(_make_collapsible("PET Display", pet_content))
 
-        # ── Zoom & Mask ────────────────────────────────────────────────────────
+        # ── Zoom & Mask ──────────────────────────────────────────────────────
         zm_content = QWidget()
         zm_lay = QFormLayout(zm_content)
         zm_lay.setContentsMargins(4, 4, 4, 4)
@@ -297,7 +314,7 @@ class ViewDisplayTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
-    # ── Slots ────────────────────────────────────────────────────────────────
+    # ── Slots ─────────────────────────────────────────────────────────────
 
     def _emit_ct_wl(self):
         self.combo_ct_preset.blockSignals(True)
@@ -343,13 +360,25 @@ class ViewDisplayTab(QWidget):
         self.spin_pet_level.blockSignals(False)
         self.sig_pet_window_level_changed.emit(float(window), float(level))
 
+    def _on_crosshair_toggled(self, checked: bool):
+        self.btn_crosshair.setText("Crosshair: ON" if checked else "Crosshair: OFF")
+        # If enabling crosshair, ensure pan mode is off
+        if checked and self.btn_pan_mode.isChecked():
+            self.btn_pan_mode.setChecked(False)
+            self.btn_pan_mode.setText("Switch to Pan Mode")
+            self.sig_pan_mode_toggled.emit(False)
+        self.sig_crosshair_toggled.emit(checked)
+
     def _on_pan_mode_toggled(self, checked: bool):
         if checked:
             self.btn_pan_mode.setText("Switch to Crosshair Mode")
-            self.lbl_cursor_info.setVisible(False)
+            # Pan mode disables crosshair overlay
+            if self.btn_crosshair.isChecked():
+                self.btn_crosshair.setChecked(False)
+                self.btn_crosshair.setText("Crosshair: OFF")
+                self.sig_crosshair_toggled.emit(False)
         else:
             self.btn_pan_mode.setText("Switch to Pan Mode")
-            self.lbl_cursor_info.setVisible(True)
         self.sig_pan_mode_toggled.emit(checked)
 
     def _on_interpolation_toggled(self, checked: bool):
@@ -358,6 +387,3 @@ class ViewDisplayTab(QWidget):
         )
         self.sig_interpolation_toggled.emit(checked)
 
-    def update_cursor_info(self, text: str):
-        """Update intensity label shown below the cursor toggle."""
-        self.lbl_cursor_info.setText(text if text else "CT: ---  |  PET: ---")

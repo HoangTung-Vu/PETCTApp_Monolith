@@ -98,9 +98,7 @@ class MainWindow(
         cp.sig_pet_colormap_changed.connect(lm.set_pet_colormap)
         cp.sig_pan_mode_toggled.connect(self._on_pan_mode_toggled)
         cp.sig_interpolation_toggled.connect(lm.set_interpolation)
-
-        # Cursor intensity: relay from layout_manager → cursor label in sidebar
-        lm.sig_cursor_intensity.connect(cp.view_display_tab.update_cursor_info)
+        cp.sig_crosshair_toggled.connect(self._on_crosshair_toggled)
 
         # Session
         cp.sig_new_session_clicked.connect(self.create_new_session)
@@ -160,11 +158,15 @@ class MainWindow(
         )
 
     def _on_pan_mode_toggled(self, pan_mode_on: bool):
-        """Switch between crosshair (default) and pan cursor modes."""
-        if pan_mode_on:
-            self.layout_manager.disable_crosshair_mode()
-        else:
+        """Switch between pan cursor and crosshair/small-cross modes."""
+        self.layout_manager.set_pan_mode(pan_mode_on)
+
+    def _on_crosshair_toggled(self, enabled: bool):
+        """Toggle the full crosshair overlay."""
+        if enabled:
             self.layout_manager.enable_crosshair_mode()
+        else:
+            self.layout_manager.disable_crosshair_mode()
 
     # ──── Session Management ────
 
@@ -276,7 +278,11 @@ class MainWindow(
             self.snapshot_worker.start()
 
         # Crosshair is on by default — enable after viewers are populated
-        self.layout_manager.enable_crosshair_mode()
+        # Respect the toggle button state
+        xhair_btn = self.control_panel.view_display_tab.btn_crosshair
+        if xhair_btn.isChecked():
+            self.layout_manager.enable_crosshair_mode()
+        self._crosshair_suppressed_by_tab = False
 
         print(f"Async data loading completed for session {self.session_manager.current_session_id}.")
 
@@ -331,10 +337,32 @@ class MainWindow(
         from PyQt6.QtWidgets import QMessageBox
         QMessageBox.critical(self, "Save Failed", error_msg)
 
+    # Tab indices
+    _TAB_WORKFLOW = 0
+    _TAB_VIEW     = 1
+    _TAB_REFINE   = 2
+    _TAB_AUTOPET  = 3
+    _TAB_ERASER   = 4
+
     def _on_tab_changed(self, index: int):
         """Delegate tab change events to specialized handlers."""
-        # Mixin-based tab handlers (implemented in refinement_handler.py, etc.)
         self._on_refinement_tab_changed(index)
+
+        # Disable crosshair overlay in paint/click tabs (crosshair interferes)
+        _PAINT_TABS = (self._TAB_REFINE, self._TAB_AUTOPET, self._TAB_ERASER)
+        xhair_btn = self.control_panel.view_display_tab.btn_crosshair
+        crosshair_was_on = xhair_btn.isChecked()
+
+        if index in _PAINT_TABS:
+            # Temporarily hide crosshair overlay (don't change button state)
+            if self.layout_manager._crosshair_enabled:
+                self.layout_manager.disable_crosshair_mode()
+                self._crosshair_suppressed_by_tab = True
+        else:
+            # Restore crosshair if it was suppressed and the toggle is ON
+            if getattr(self, '_crosshair_suppressed_by_tab', False) and crosshair_was_on:
+                self.layout_manager.enable_crosshair_mode()
+            self._crosshair_suppressed_by_tab = False
 
     def _set_ui_busy(self, busy: bool):
         """Enable/Disable interactive controls during background tasks."""

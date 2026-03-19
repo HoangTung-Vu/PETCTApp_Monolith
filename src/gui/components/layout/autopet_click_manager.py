@@ -6,13 +6,6 @@ import numpy as np
 class AutoPETClickMixin:
     """Mixin providing AutoPET Interactive click handling for LayoutManager."""
 
-    def _get_all_2d_viewers(self):
-        """Collect all 2D viewer widgets."""
-        viewers = list(self.grid_viewers.values())
-        viewers.append(self.overlay_viewer)
-        viewers.extend(self.mono_viewers.values())
-        return viewers
-
     def enable_autopet_click_mode(self, label: str):
         """Install mouse callback on all 2D viewers.
         label: 'tumor' or 'background'. Empty string disables.
