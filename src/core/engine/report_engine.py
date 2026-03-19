@@ -81,15 +81,15 @@ class ReportEngine:
             # Accumulate global TLG
             g_tlg += suv_mean * mtv
 
-            # Voxel positions as list of (z, y, x) tuples
+            # Voxel positions as list of (x, y, z) tuples (NIfTI order)
             coords = np.argwhere(component_mask)  # shape (N, 3)
             voxels = [tuple(int(c) for c in row) for row in coords]
 
-            # 3-D bounding box: (z_min, y_min, x_min, z_max, y_max, x_max)
-            z_min, y_min, x_min = coords.min(axis=0)
-            z_max, y_max, x_max = coords.max(axis=0)
-            bbox = (int(z_min), int(y_min), int(x_min),
-                    int(z_max), int(y_max), int(x_max))
+            # 3-D bounding box: (x_min, y_min, z_min, x_max, y_max, z_max)
+            x_min, y_min, z_min = coords.min(axis=0)
+            x_max, y_max, z_max = coords.max(axis=0)
+            bbox = (int(x_min), int(y_min), int(z_min),
+                    int(x_max), int(y_max), int(z_max))
 
             lesions.append({
                 "id": lesion_id,

@@ -379,6 +379,11 @@ class ViewDisplayTab(QWidget):
                 self.sig_crosshair_toggled.emit(False)
         else:
             self.btn_pan_mode.setText("Switch to Pan Mode")
+            # Re-enable crosshair when exiting pan mode
+            if not self.btn_crosshair.isChecked():
+                self.btn_crosshair.setChecked(True)
+                self.btn_crosshair.setText("Crosshair: ON")
+                self.sig_crosshair_toggled.emit(True)
         self.sig_pan_mode_toggled.emit(checked)
 
     def _on_interpolation_toggled(self, checked: bool):
