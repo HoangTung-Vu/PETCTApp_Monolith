@@ -82,7 +82,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         self._ct_wl = (350.0, 35.0)
         self._pet_wl = (10.0, 5.0)
         self._ct_colormap = "gray"
-        self._pet_colormap = "hot"
+        self._pet_colormap = "jet"
 
         # Crosshair state
         self._crosshair_enabled = False
