@@ -39,8 +39,25 @@ fi
 def_build_image() {
     local image_name="$1"
     local context_dir="$2"
-    echo "Building Docker image: $image_name ..."
-    docker build --no-cache -t "$image_name" "$context_dir"
+    if docker image inspect "$image_name" >/dev/null 2>&1; then
+        read -r -p "Image '$image_name' already exists. Rebuild? [y/N] " answer
+        case "$answer" in
+            [yY][eE][sS]|[yY])
+                echo "Pruning builder cache..."
+                docker builder prune -f
+                echo "Rebuilding Docker image: $image_name ..."
+                docker build --no-cache -t "$image_name" "$context_dir"
+                ;;
+            *)
+                echo "Skipping build for '$image_name', using existing image."
+                ;;
+        esac
+    else
+        echo "Pruning builder cache..."
+        docker builder prune -f
+        echo "Building Docker image: $image_name ..."
+        docker build --no-cache -t "$image_name" "$context_dir"
+    fi
 }
 
 start_container() {
@@ -96,24 +113,22 @@ echo "====================================="
 trap cleanup EXIT
 
 echo -e "\n-- Step 1: Building Docker images --"
-echo "Pruning Docker builder cache..."
-docker builder prune -f
 def_build_image "$NNUNET_IMAGE" "$SCRIPT_DIR/AI_engines/engine_nnunet"
 def_build_image "$NNUNET_OLD_IMAGE" "$SCRIPT_DIR/AI_engines/engine_nnunet_old_ver"
-def_build_image "$AUTOPET_IMAGE" "$SCRIPT_DIR/AI_engines/engine_autopet"
-def_build_image "$TOTALSEG_IMAGE" "$SCRIPT_DIR/AI_engines/engine_totalseg"
+# def_build_image "$AUTOPET_IMAGE" "$SCRIPT_DIR/AI_engines/engine_autopet"
+# def_build_image "$TOTALSEG_IMAGE" "$SCRIPT_DIR/AI_engines/engine_totalseg"
 
 echo -e "\n-- Step 2: Starting containers --"
 start_container "$NNUNET_CONTAINER" "$NNUNET_IMAGE" "$NNUNET_PORT"
 start_container "$NNUNET_OLD_CONTAINER" "$NNUNET_OLD_IMAGE" "$NNUNET_OLD_PORT"
-start_container "$AUTOPET_CONTAINER" "$AUTOPET_IMAGE" "$AUTOPET_PORT"
-start_container "$TOTALSEG_CONTAINER" "$TOTALSEG_IMAGE" "$TOTALSEG_PORT"
+# start_container "$AUTOPET_CONTAINER" "$AUTOPET_IMAGE" "$AUTOPET_PORT"
+# start_container "$TOTALSEG_CONTAINER" "$TOTALSEG_IMAGE" "$TOTALSEG_PORT"
 
 echo -e "\n-- Step 3: Health checks --"
 wait_for_health "$NNUNET_PORT" "nnUNet Engine"
 wait_for_health "$NNUNET_OLD_PORT" "nnUNet Old Engine"
-wait_for_health "$AUTOPET_PORT" "AutoPET Engine"
-wait_for_health "$TOTALSEG_PORT" "TotalSeg Engine"
+# wait_for_health "$AUTOPET_PORT" "AutoPET Engine"
+# wait_for_health "$TOTALSEG_PORT" "TotalSeg Engine"
 
 echo -e "\n-- Step 4: Launch PyQt GUI --"
 cd "$SCRIPT_DIR"
