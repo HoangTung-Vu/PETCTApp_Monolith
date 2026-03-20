@@ -102,6 +102,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         self.grid_layout = QGridLayout(self.grid_widget)
         self.grid_layout.setContentsMargins(0, 0, 0, 0)
         self.grid_layout.setSpacing(1)
+        self.grid_layout.setColumnStretch(0, 1)
+        self.grid_layout.setColumnStretch(1, 1)
 
         self.grid_viewers = {}
         for r in range(3):
@@ -130,6 +132,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         self.mono_layout = QGridLayout(self.mono_widget)
         self.mono_layout.setContentsMargins(0, 0, 0, 0)
         self.mono_layout.setSpacing(1)
+        self.mono_layout.setColumnStretch(0, 1)
+        self.mono_layout.setColumnStretch(1, 1)
         self.mono_viewers = {}
         for i in range(2):
             v = ViewerWidget()
@@ -163,6 +167,10 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         ms_grid = QGridLayout(ms_grid_widget)
         ms_grid.setContentsMargins(0, 0, 0, 0)
         ms_grid.setSpacing(1)
+        ms_grid.setColumnStretch(0, 1)
+        ms_grid.setColumnStretch(1, 1)
+        ms_grid.setRowStretch(0, 1)
+        ms_grid.setRowStretch(1, 1)
 
         self.mono_single_viewers = {}
         # (0,0)=Axial, (0,1)=Coronal, (1,0)=Sagittal, (1,1)=empty
@@ -449,7 +457,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 p_max = self._pet_wl[1] + (self._pet_wl[0] / 2)
                 widget.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
 
-            widget.viewer.reset_view()
+            if len(widget.viewer.layers) > 0:
+                widget.viewer.reset_view()
             if self._cached_lesion_data:
                 widget.show_lesion_ids(*self._cached_lesion_data)
 
@@ -490,7 +499,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             p_max = self._pet_wl[1] + (self._pet_wl[0] / 2)
             self.overlay_viewer.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
 
-        self.overlay_viewer.viewer.reset_view()
+        if len(self.overlay_viewer.viewer.layers) > 0:
+            self.overlay_viewer.viewer.reset_view()
         if self._cached_lesion_data:
             self.overlay_viewer.show_lesion_ids(*self._cached_lesion_data)
         self._loaded_layouts.add("overlay")
@@ -520,7 +530,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 p_min = max(0, self._pet_wl[1] - (self._pet_wl[0] / 2))
                 p_max = self._pet_wl[1] + (self._pet_wl[0] / 2)
                 v.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
-            v.viewer.reset_view()
+            if len(v.viewer.layers) > 0:
+                v.viewer.reset_view()
             if self._cached_lesion_data:
                 v.show_lesion_ids(*self._cached_lesion_data)
 
@@ -541,7 +552,6 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         axes = {(0, 0): 0, (0, 1): 1, (1, 0): 2}
 
         for (r, c), vw in self.mono_single_viewers.items():
-            vw.viewer.layers.clear()
             vw.load_image(data, affine, modality, colormap)
             if self._cached_data_zyx["tumor"] is not None:
                 vw.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
@@ -553,10 +563,20 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 if modality == "pet":
                     c_min = max(0, c_min)
                 vw.viewer.layers[name].contrast_limits = (c_min, c_max)
+                vw.viewer.layers[name].visible = True
+
+            other_modality = "pet" if modality == "ct" else "ct"
+            other_name = vw.LAYER_NAMES[other_modality]
+            if other_name in vw.viewer.layers:
+                vw.viewer.layers[other_name].visible = False
+
+            if self._cached_lesion_data:
+                vw.show_lesion_ids(*self._cached_lesion_data)
 
             axis = axes.get((r, c), 0)
             vw.set_camera_view(axis)
-            vw.viewer.reset_view()
+            if len(vw.viewer.layers) > 0:
+                vw.viewer.reset_view()
 
         self._loaded_layouts.add("mono_single")
 

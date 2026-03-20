@@ -30,7 +30,7 @@ class AutoPETInteractiveEngine:
         device: str = "auto",
         point_width: float = 2.0,
         use_folds: tuple = (0,),
-        use_mirroring: bool = False,
+        use_mirroring: bool = True,
         checkpoint_name: str = "checkpoint_final.pth",
     ):
         if model_dir is None:

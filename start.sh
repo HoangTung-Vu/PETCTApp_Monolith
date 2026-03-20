@@ -40,7 +40,7 @@ def_build_image() {
     local image_name="$1"
     local context_dir="$2"
     echo "Building Docker image: $image_name ..."
-    docker build -t "$image_name" "$context_dir"
+    docker build --no-cache -t "$image_name" "$context_dir"
 }
 
 start_container() {
@@ -96,10 +96,12 @@ echo "====================================="
 trap cleanup EXIT
 
 echo -e "\n-- Step 1: Building Docker images --"
-# def_build_image "$NNUNET_IMAGE" "$SCRIPT_DIR/AI_engines/engine_nnunet"
-# def_build_image "$NNUNET_OLD_IMAGE" "$SCRIPT_DIR/AI_engines/engine_nnunet_old_ver"
-# def_build_image "$AUTOPET_IMAGE" "$SCRIPT_DIR/AI_engines/engine_autopet"
-# def_build_image "$TOTALSEG_IMAGE" "$SCRIPT_DIR/AI_engines/engine_totalseg"
+echo "Pruning Docker builder cache..."
+docker builder prune -f
+def_build_image "$NNUNET_IMAGE" "$SCRIPT_DIR/AI_engines/engine_nnunet"
+def_build_image "$NNUNET_OLD_IMAGE" "$SCRIPT_DIR/AI_engines/engine_nnunet_old_ver"
+def_build_image "$AUTOPET_IMAGE" "$SCRIPT_DIR/AI_engines/engine_autopet"
+def_build_image "$TOTALSEG_IMAGE" "$SCRIPT_DIR/AI_engines/engine_totalseg"
 
 echo -e "\n-- Step 2: Starting containers --"
 start_container "$NNUNET_CONTAINER" "$NNUNET_IMAGE" "$NNUNET_PORT"
