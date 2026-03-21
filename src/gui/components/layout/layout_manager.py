@@ -577,6 +577,15 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             vw.load_image(data, affine, modality, colormap)
             if self._cached_data_zyx["tumor"] is not None:
                 vw.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+                # Ensure tumor mask is on top — new image layers are appended above
+                # existing layers, so after adding a new modality the mask can end
+                tumor_name = vw.LAYER_NAMES.get("tumor", "Tumor Mask")
+                layer_names = [l.name for l in vw.viewer.layers]
+                if tumor_name in layer_names:
+                    idx = layer_names.index(tumor_name)
+                    top = len(vw.viewer.layers) - 1
+                    if idx != top:
+                        vw.viewer.layers.move(idx, top)
 
             name = vw.LAYER_NAMES[modality]
             if name in vw.viewer.layers:

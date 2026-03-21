@@ -41,8 +41,8 @@ PET_PRESET_TIPS = {
     "Low":       "W 5 / L 2.5",
 }
 
-CT_COLORMAPS  = ["gray", "green", "cyan", "blue", "twilight"]
-PET_COLORMAPS = ["jet", "gray", "hot", "inferno", "magma", "plasma", "viridis"]
+CT_COLORMAPS  = ["gray", "gray_r", "green", "cyan", "blue", "twilight"]
+PET_COLORMAPS = ["jet", "gray", "gray_r", "hot", "inferno", "magma", "plasma", "viridis"]
 
 
 def _make_collapsible(title: str, content_widget: QWidget) -> QWidget:
