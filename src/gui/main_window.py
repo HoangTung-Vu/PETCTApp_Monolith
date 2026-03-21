@@ -96,7 +96,6 @@ class MainWindow(
         cp.sig_toggle_mask.connect(lm.toggle_mask)
         cp.sig_ct_colormap_changed.connect(lm.set_ct_colormap)
         cp.sig_pet_colormap_changed.connect(lm.set_pet_colormap)
-        cp.sig_pan_mode_toggled.connect(self._on_pan_mode_toggled)
         cp.sig_interpolation_toggled.connect(lm.set_interpolation)
         cp.sig_crosshair_toggled.connect(self._on_crosshair_toggled)
 
@@ -156,10 +155,6 @@ class MainWindow(
             "No tumor voxel found at the clicked position.\n\n"
             "Double-click directly on a highlighted lesion region to erase it.",
         )
-
-    def _on_pan_mode_toggled(self, pan_mode_on: bool):
-        """Switch between pan cursor and crosshair/small-cross modes."""
-        self.layout_manager.set_pan_mode(pan_mode_on)
 
     def _on_crosshair_toggled(self, enabled: bool):
         """Toggle the full crosshair overlay."""

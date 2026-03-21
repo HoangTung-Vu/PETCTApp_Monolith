@@ -1,5 +1,5 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout
-from PyQt6.QtCore import QObject, QEvent, pyqtSignal
+from PyQt6.QtCore import QObject, QEvent, Qt, pyqtSignal
 import napari
 import numpy as np
 from typing import Optional, Tuple
@@ -22,6 +22,9 @@ class ViewerWidget(QWidget):
 
     # Emitted when slice scroll occurs: current_step tuple
     sig_slice_changed = pyqtSignal(tuple)
+
+    # Emitted when arrow key pressed while crosshair is active: (dim_index, delta)
+    sig_crosshair_arrow = pyqtSignal(int, int)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -71,7 +74,10 @@ class ViewerWidget(QWidget):
         self._xhair_press_cb = self._make_xhair_press_cb()
         self.viewer.mouse_drag_callbacks.append(self._xhair_press_cb)
 
-        # Default: no pan-on-drag, arrow cursor always
+        self._pan_drag_cb = self._make_pan_drag_cb()
+        self.viewer.mouse_drag_callbacks.append(self._pan_drag_cb)
+
+        # Default: no pan-on-drag (panning handled manually via RMB), arrow cursor always
         self.viewer.camera.mouse_pan = False
         self._set_cursor_cross(False)
 
@@ -192,8 +198,29 @@ class ViewerWidget(QWidget):
         if hasattr(self, 'qt_viewer') and hasattr(self.qt_viewer, 'canvas'):
             canvas_native = getattr(self.qt_viewer.canvas, 'native', None)
             if canvas_native and source == canvas_native:
+                # Suppress RMB context menu — RMB is used for panning
+                if event.type() == QEvent.Type.ContextMenu:
+                    return True
+
+                # Arrow keys move crosshair when crosshair overlay is active
+                if event.type() == QEvent.Type.KeyPress and self._crosshair_enabled:
+                    key = event.key()
+                    dims_d = list(self.viewer.dims.displayed)
+                    if len(dims_d) >= 2:
+                        if key == Qt.Key.Key_Left:
+                            self.sig_crosshair_arrow.emit(dims_d[1], -1)
+                            return True
+                        elif key == Qt.Key.Key_Right:
+                            self.sig_crosshair_arrow.emit(dims_d[1], +1)
+                            return True
+                        elif key == Qt.Key.Key_Up:
+                            self.sig_crosshair_arrow.emit(dims_d[0], -1)
+                            return True
+                        elif key == Qt.Key.Key_Down:
+                            self.sig_crosshair_arrow.emit(dims_d[0], +1)
+                            return True
+
                 if event.type() == QEvent.Type.Wheel:
-                    from PyQt6.QtCore import Qt
                     delta = event.angleDelta().y()
                     if delta == 0:
                         return False
@@ -387,6 +414,27 @@ class ViewerWidget(QWidget):
                 _emit_pos()
                 yield
 
+        return on_drag
+
+    def _make_pan_drag_cb(self):
+        """Return a drag callback that pans the camera on right-click drag."""
+        def on_drag(viewer, event):
+            if event.button != 2:   # right mouse button only
+                return
+            last_canvas = np.array(event.pos[:2], dtype=float)
+            yield
+            while event.type == 'mouse_move':
+                new_canvas = np.array(event.pos[:2], dtype=float)
+                delta = new_canvas - last_canvas
+                zoom = viewer.camera.zoom
+                if zoom > 0:
+                    center = list(viewer.camera.center)
+                    # Camera center[-1] = horizontal world axis, center[-2] = vertical
+                    center[-1] -= delta[0] / zoom
+                    center[-2] -= delta[1] / zoom
+                    viewer.camera.center = tuple(center)
+                last_canvas = new_canvas
+                yield
         return on_drag
 
     # ── AutoPET click markers ────────────────────────────────────────────

@@ -15,15 +15,21 @@ class ReportHandlerMixin:
             QMessageBox.warning(self, "Missing Data", "PET image must be loaded to generate a report.")
             return
 
-        # Auto-save session before report (report engine loads from disk)
-        self.save_session()
+        # Auto-save session first: wait until save finishes before starting report
+        from ..workers import SaveWorker
+        self.report_save_worker = SaveWorker(self.session_manager)
+        self.report_save_worker.finished.connect(self._start_report_worker)
+        self.report_save_worker.error.connect(self._on_report_error)
+        
+        self.control_panel.show_report_progress()
+        self._set_ui_busy(True)
+        self.report_save_worker.start()
 
+    def _start_report_worker(self):
         from ..workers import ReportWorker
         self.report_worker = ReportWorker(self.session_manager)
         self.report_worker.finished.connect(self._on_report_finished)
         self.report_worker.error.connect(self._on_report_error)
-        self.control_panel.show_report_progress()
-        self._set_ui_busy(True)
         self.report_worker.start()
 
     def _on_report_finished(self, metrics: dict):

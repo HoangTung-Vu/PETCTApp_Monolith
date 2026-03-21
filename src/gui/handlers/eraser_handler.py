@@ -31,16 +31,22 @@ class EraserHandlerMixin:
         erased = (old_mask_xyz > 0) & (new_mask_xyz == 0)
         erased_indices = np.nonzero(erased)  # tuple of index arrays
 
+        snapshot = self.session_manager._tumor_mask_snapshot
         backup = {
             "indices": erased_indices,
             "shape": old_mask_xyz.shape,
             "prob_values": old_prob_data[erased].copy() if old_prob_data is not None else None,
+            "snapshot_values": snapshot[erased_indices].copy() if snapshot is not None else None,
         }
 
         # Limit undo stack depth to 5
         if len(self._eraser_undo_stack) >= 5:
             self._eraser_undo_stack.pop(0)
         self._eraser_undo_stack.append(backup)
+
+        # Patch snapshot so erased voxels no longer block ROI diff on Refine tab
+        if snapshot is not None:
+            snapshot[erased_indices] = 0
 
         # Zero out prob for erased voxels
         if old_prob_data is not None:
@@ -78,6 +84,12 @@ class EraserHandlerMixin:
 
         self.session_manager.set_tumor_mask(restored_mask)
         self._push_mask_to_all("tumor", restored_mask)
+
+        # Restore snapshot at the formerly-erased voxels
+        if backup["snapshot_values"] is not None:
+            snapshot = self.session_manager._tumor_mask_snapshot
+            if snapshot is not None:
+                snapshot[backup["indices"]] = backup["snapshot_values"]
 
         # Restore prob values at the formerly-erased voxels
         if backup["prob_values"] is not None:

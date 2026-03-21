@@ -88,8 +88,6 @@ class ViewDisplayTab(QWidget):
     sig_ct_colormap_changed    = pyqtSignal(str)
     sig_pet_colormap_changed   = pyqtSignal(str)
 
-    # True = pan mode ON (crosshair OFF); False = crosshair ON (default)
-    sig_pan_mode_toggled       = pyqtSignal(bool)
     sig_interpolation_toggled  = pyqtSignal(bool)
 
     # True = crosshair overlay ON; False = crosshair overlay OFF (small cross cursor)
@@ -172,13 +170,6 @@ class ViewDisplayTab(QWidget):
         )
         self.btn_crosshair.clicked.connect(self._on_crosshair_toggled)
         cc_lay.addWidget(self.btn_crosshair)
-
-        # Pan mode toggle (separate from crosshair toggle)
-        self.btn_pan_mode = QPushButton("Switch to Pan Mode")
-        self.btn_pan_mode.setCheckable(True)
-        self.btn_pan_mode.setChecked(False)
-        self.btn_pan_mode.clicked.connect(self._on_pan_mode_toggled)
-        cc_lay.addWidget(self.btn_pan_mode)
 
         self.btn_interpolation = QPushButton("Smooth Interpolation: OFF")
         self.btn_interpolation.setCheckable(True)
@@ -362,29 +353,7 @@ class ViewDisplayTab(QWidget):
 
     def _on_crosshair_toggled(self, checked: bool):
         self.btn_crosshair.setText("Crosshair: ON" if checked else "Crosshair: OFF")
-        # If enabling crosshair, ensure pan mode is off
-        if checked and self.btn_pan_mode.isChecked():
-            self.btn_pan_mode.setChecked(False)
-            self.btn_pan_mode.setText("Switch to Pan Mode")
-            self.sig_pan_mode_toggled.emit(False)
         self.sig_crosshair_toggled.emit(checked)
-
-    def _on_pan_mode_toggled(self, checked: bool):
-        if checked:
-            self.btn_pan_mode.setText("Switch to Crosshair Mode")
-            # Pan mode disables crosshair overlay
-            if self.btn_crosshair.isChecked():
-                self.btn_crosshair.setChecked(False)
-                self.btn_crosshair.setText("Crosshair: OFF")
-                self.sig_crosshair_toggled.emit(False)
-        else:
-            self.btn_pan_mode.setText("Switch to Pan Mode")
-            # Re-enable crosshair when exiting pan mode
-            if not self.btn_crosshair.isChecked():
-                self.btn_crosshair.setChecked(True)
-                self.btn_crosshair.setText("Crosshair: ON")
-                self.sig_crosshair_toggled.emit(True)
-        self.sig_pan_mode_toggled.emit(checked)
 
     def _on_interpolation_toggled(self, checked: bool):
         self.btn_interpolation.setText(

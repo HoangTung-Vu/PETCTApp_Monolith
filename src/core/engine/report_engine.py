@@ -1,7 +1,7 @@
 """Engine for computing PET/CT clinical report metrics (per-lesion)."""
 import numpy as np
 import nibabel as nib
-from scipy.ndimage import label
+from scipy.ndimage import label, find_objects
 from ...utils.dimension_utils import get_voxel_volume_from_affine
 
 
@@ -26,8 +26,8 @@ class ReportEngine:
         """Compute the per-lesion report dictionary.
 
         Uses connected component labeling to identify individual lesions in
-        the binary mask.  Each lesion gets its own SUVmax, SUVmean, MTV, as
-        well as its voxel coordinates and 3-D bounding box.
+        the binary mask.  Each lesion gets its own SUVmax, SUVmean, MTV, and
+        3-D bounding box.
 
         Args:
             pet_image:  PET NIfTI image (intensity values = SUV or raw counts).
@@ -41,13 +41,12 @@ class ReportEngine:
                     ``SUVmax``  float
                     ``SUVmean`` float
                     ``MTV``     float (mL)
-                    ``voxels``  list[tuple[int,int,int]] (z, y, x)
-                    ``bbox``    tuple (z_min, y_min, x_min, z_max, y_max, x_max)
+                    ``bbox``    tuple (x_min, y_min, z_min, x_max, y_max, z_max)
 
         Raises:
             ValueError: If shapes mismatch or mask is empty.
         """
-        pet_data = pet_image.get_fdata().astype(np.float64)
+        pet_data = pet_image.get_fdata(dtype=np.float32)
         mask_data = mask_image.get_fdata().astype(np.uint8)
 
         if pet_data.shape != mask_data.shape:
@@ -66,37 +65,41 @@ class ReportEngine:
         # ── Connected component labeling ──
         labeled_array, num_features = label(roi)
 
+        # find_objects returns tight bounding slices per component (O(N) total,
+        # not O(N×L)) — avoids scanning the full array once per lesion.
+        component_slices = find_objects(labeled_array)
+
         lesions = []
         g_tlg = 0.0
 
-        for lesion_id in range(1, num_features + 1):
-            component_mask = labeled_array == lesion_id
-            pet_vals = pet_data[component_mask]
+        for lesion_id, sl in enumerate(component_slices, start=1):
+            if sl is None:
+                continue
+
+            # Work on the bounding-box subarray only
+            sub_labeled = labeled_array[sl]
+            sub_pet = pet_data[sl]
+            component_mask = sub_labeled == lesion_id
+            pet_vals = sub_pet[component_mask]
 
             suv_max = float(np.max(pet_vals))
             suv_mean = float(np.mean(pet_vals))
-            n_voxels = int(np.count_nonzero(component_mask))
+            n_voxels = len(pet_vals)
             mtv = n_voxels * voxel_vol_ml
 
-            # Accumulate global TLG
             g_tlg += suv_mean * mtv
 
-            # Voxel positions as list of (x, y, z) tuples (NIfTI order)
-            coords = np.argwhere(component_mask)  # shape (N, 3)
-            voxels = [tuple(int(c) for c in row) for row in coords]
-
-            # 3-D bounding box: (x_min, y_min, z_min, x_max, y_max, z_max)
-            x_min, y_min, z_min = coords.min(axis=0)
-            x_max, y_max, z_max = coords.max(axis=0)
-            bbox = (int(x_min), int(y_min), int(z_min),
-                    int(x_max), int(y_max), int(z_max))
+            # Bounding box from tight slices (find_objects guarantees tight fit)
+            bbox = (
+                sl[0].start, sl[1].start, sl[2].start,
+                sl[0].stop - 1, sl[1].stop - 1, sl[2].stop - 1,
+            )
 
             lesions.append({
                 "id": lesion_id,
                 "SUVmax": round(suv_max, 2),
                 "SUVmean": round(suv_mean, 2),
                 "MTV": round(mtv, 2),
-                "voxels": voxels,
                 "bbox": bbox,
             })
 

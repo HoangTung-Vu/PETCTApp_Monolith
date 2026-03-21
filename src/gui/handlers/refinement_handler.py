@@ -161,8 +161,8 @@ class RefinementHandlerMixin:
         self.control_panel.chk_show_lesion_ids.setChecked(False)
 
         # PREVIEW MODE: Do NOT auto-save. The user must click "Save Refinement" explicitly.
-        # Re-snapshot so next ROI diff starts from the newly previewed state.
-        self.session_manager.snapshot_current_mask("tumor")
+        # We do NOT re-snapshot here. The ROI diff should continue pointing to the
+        # originally painted blob until the user confirms the preview by saving.
 
         print("Refined tumor preview ready. Click 'Save Refinement' to persist to disk.")
         self._set_ui_busy(False)

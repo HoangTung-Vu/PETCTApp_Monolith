@@ -216,7 +216,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
     # ── Crosshair event handling ─────────────────────────────────────────
 
     def _connect_crosshair_events(self):
-        """Connect click and scroll signals from all visible viewers."""
+        """Connect click, scroll, and arrow-key signals from all visible viewers."""
         for vw in self._get_all_2d_viewers():
             try:
                 vw.sig_crosshair_clicked.disconnect(self._on_viewer_crosshair_click)
@@ -226,6 +226,10 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 vw.sig_slice_changed.disconnect()
             except (TypeError, RuntimeError):
                 pass
+            try:
+                vw.sig_crosshair_arrow.disconnect(self._on_crosshair_arrow)
+            except (TypeError, RuntimeError):
+                pass
 
         for vw in self._get_visible_viewers():
             if not vw.is_3d:
@@ -233,6 +237,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 vw.sig_slice_changed.connect(
                     lambda step, v=vw: self._on_viewer_slice_changed(step, v)
                 )
+                vw.sig_crosshair_arrow.connect(self._on_crosshair_arrow)
 
     def _on_viewer_slice_changed(self, current_step: tuple, viewer_widget_ref):
         """Update _xhair_pos based on the non-displayed dimensions of the viewer."""
@@ -258,6 +263,23 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         self._xhair_pos = [pos_zyx[0], pos_zyx[1], pos_zyx[2]]
         self._sync_viewer_slices()
         self._refresh_all_crosshairs()
+
+    def _on_crosshair_arrow(self, dim: int, delta: int):
+        """Move crosshair by one voxel along dim when an arrow key is pressed."""
+        if not self._crosshair_enabled:
+            return
+        # Clamp within volume bounds if available
+        new_val = self._xhair_pos[dim] + delta
+        # Try to get the max extent for this dimension from any loaded viewer
+        for vw in self._get_visible_viewers():
+            if not vw.is_3d and vw.viewer.dims.ndim > dim:
+                limit = vw.viewer.dims.range[dim][1]
+                new_val = max(0.0, min(float(limit) - 1, new_val))
+                break
+        self._xhair_pos[dim] = new_val
+        self._sync_viewer_slices()
+        self._refresh_all_crosshairs()
+        self._emit_crosshair_coords()
         self._emit_crosshair_coords()
 
     def _sync_viewer_slices(self):
