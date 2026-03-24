@@ -79,6 +79,7 @@ class ViewDisplayTab(QWidget):
     sig_toggle_3d_pet            = pyqtSignal(bool)
     sig_pet_opacity_changed      = pyqtSignal(float)
     sig_tumor_opacity_changed    = pyqtSignal(float)
+    sig_roi_opacity_changed      = pyqtSignal(float)
     sig_ct_window_level_changed  = pyqtSignal(float, float)
     sig_pet_window_level_changed = pyqtSignal(float, float)
     sig_zoom_changed             = pyqtSignal(int)
@@ -188,6 +189,7 @@ class ViewDisplayTab(QWidget):
         self.combo_ct_colormap = QComboBox()
         self.combo_ct_colormap.addItems(CT_COLORMAPS)
         self.combo_ct_colormap.setCurrentText("gray")
+        self.combo_ct_colormap.setMaxVisibleItems(15)
         self.combo_ct_colormap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.combo_ct_colormap.currentTextChanged.connect(self.sig_ct_colormap_changed.emit)
         ct_lay.addRow("Colormap:", self.combo_ct_colormap)
@@ -200,8 +202,9 @@ class ViewDisplayTab(QWidget):
                 self.combo_ct_preset.setItemData(
                     self.combo_ct_preset.count() - 1, tip, Qt.ItemDataRole.ToolTipRole
                 )
+        self.combo_ct_preset.setMaxVisibleItems(15)
         self.combo_ct_preset.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.combo_ct_preset.textActivated.connect(self._on_ct_preset_changed)
+        self.combo_ct_preset.currentTextChanged.connect(self._on_ct_preset_changed)
         ct_lay.addRow("Preset:", self.combo_ct_preset)
 
         self.spin_ct_window = QDoubleSpinBox()
@@ -227,6 +230,7 @@ class ViewDisplayTab(QWidget):
         self.combo_pet_colormap = QComboBox()
         self.combo_pet_colormap.addItems(PET_COLORMAPS)
         self.combo_pet_colormap.setCurrentText("jet")
+        self.combo_pet_colormap.setMaxVisibleItems(15)
         self.combo_pet_colormap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
         self.combo_pet_colormap.currentTextChanged.connect(self.sig_pet_colormap_changed.emit)
         pet_lay.addRow("Colormap:", self.combo_pet_colormap)
@@ -239,8 +243,9 @@ class ViewDisplayTab(QWidget):
                 self.combo_pet_preset.setItemData(
                     self.combo_pet_preset.count() - 1, tip, Qt.ItemDataRole.ToolTipRole
                 )
+        self.combo_pet_preset.setMaxVisibleItems(15)
         self.combo_pet_preset.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.combo_pet_preset.textActivated.connect(self._on_pet_preset_changed)
+        self.combo_pet_preset.currentTextChanged.connect(self._on_pet_preset_changed)
         pet_lay.addRow("Preset:", self.combo_pet_preset)
 
         self.spin_pet_window = QDoubleSpinBox()
@@ -295,6 +300,19 @@ class ViewDisplayTab(QWidget):
         self.chk_tumor.setChecked(True)
         self.chk_tumor.toggled.connect(lambda c: self.sig_toggle_mask.emit("tumor", c))
         zm_lay.addRow(self.chk_tumor)
+
+        self.chk_roi = QCheckBox("Show ROI Mask")
+        self.chk_roi.setChecked(True)
+        self.chk_roi.toggled.connect(lambda c: self.sig_toggle_mask.emit("roi", c))
+        zm_lay.addRow(self.chk_roi)
+
+        self.slider_roi_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_roi_opacity.setRange(0, 100)
+        self.slider_roi_opacity.setValue(90)
+        self.slider_roi_opacity.valueChanged.connect(
+            lambda v: self.sig_roi_opacity_changed.emit(v / 100.0)
+        )
+        zm_lay.addRow("ROI opacity:", self.slider_roi_opacity)
 
         layout.addWidget(_make_collapsible("Zoom & Mask", zm_content))
 

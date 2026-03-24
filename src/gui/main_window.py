@@ -89,6 +89,7 @@ class MainWindow(
         # Display
         cp.sig_pet_opacity_changed.connect(lm.set_pet_opacity)
         cp.sig_tumor_opacity_changed.connect(lm.set_tumor_opacity)
+        cp.sig_roi_opacity_changed.connect(lm.set_roi_opacity)
         cp.sig_ct_window_level_changed.connect(lm.set_ct_window_level)
         cp.sig_pet_window_level_changed.connect(lm.set_pet_window_level)
         cp.sig_zoom_changed.connect(lm.set_zoom)

@@ -765,6 +765,13 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 if layer.name == name:
                     layer.opacity = value
 
+    def set_roi_opacity(self, value: float):
+        for widget in self._get_all_loaded_viewers():
+            name = widget.LAYER_NAMES.get("roi", "roi")
+            for layer in widget.viewer.layers:
+                if layer.name == name:
+                    layer.opacity = value
+
     def set_ct_window_level(self, window: float, level: float):
         self._ct_wl = (window, level)
         self._set_contrast_limits("ct", level - window / 2, level + window / 2)
