@@ -44,7 +44,7 @@ class MaskSyncMixin:
         """Connect mask layer data events on the CURRENTLY VISIBLE viewers only."""
         self._disconnect_mask_events()
         for v in self._get_visible_viewers():
-            for layer_name in ("Tumor Mask",):
+            for layer_name in ("Tumor Mask", "ROI Mask"):
                 if layer_name in v.viewer.layers:
                     layer = v.viewer.layers[layer_name]
                     layer.events.data.connect(self._on_mask_data_changed)
@@ -61,7 +61,7 @@ class MaskSyncMixin:
             all_viewers.append(self.viewer_3d)
 
         for v in all_viewers:
-            for layer_name in ("Tumor Mask",):
+            for layer_name in ("Tumor Mask", "ROI Mask"):
                 if layer_name in v.viewer.layers:
                     try:
                         v.viewer.layers[layer_name].events.data.disconnect(
@@ -83,7 +83,7 @@ class MaskSyncMixin:
                     layer.refresh()
 
         # Debounced auto-sync: determine layer type from name
-        name_to_type = {"Tumor Mask": "tumor"}
+        name_to_type = {"Tumor Mask": "tumor", "ROI Mask": "roi"}
         self._last_painted_layer = name_to_type.get(layer_name, "tumor")
         self._paint_debounce_timer.start()  # restarts if already running
 

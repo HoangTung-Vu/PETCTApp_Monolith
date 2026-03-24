@@ -15,6 +15,7 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import pyqtSignal, QTimer, Qt
 import numpy as np
+import napari
 
 from ..viewers.viewer_widget import ViewerWidget
 from ..viewers.viewer_sync import link_dims, link_camera, one_shot_sync_step
@@ -72,8 +73,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         self._init_mask_sync()
 
         # Data cache
-        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None}
-        self._cached_data_zyx = {"tumor": None}
+        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None}
+        self._cached_data_zyx = {"tumor": None, "roi": None}
         self._is_3d_loaded = False
         self._cached_lesion_data = None
         self._loaded_layouts = set()
@@ -263,6 +264,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         self._xhair_pos = [pos_zyx[0], pos_zyx[1], pos_zyx[2]]
         self._sync_viewer_slices()
         self._refresh_all_crosshairs()
+        self._emit_crosshair_coords()
 
     def _on_crosshair_arrow(self, dim: int, delta: int):
         """Move crosshair by one voxel along dim when an arrow key is pressed."""
@@ -279,7 +281,6 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         self._xhair_pos[dim] = new_val
         self._sync_viewer_slices()
         self._refresh_all_crosshairs()
-        self._emit_crosshair_coords()
         self._emit_crosshair_coords()
 
     def _sync_viewer_slices(self):
@@ -404,11 +405,12 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
     # ── Data Loading (Lazy) ──────────────────────────────────────────────
 
-    def load_data(self, ct_data, pet_data, affine, tumor_mask=None):
+    def load_data(self, ct_data, pet_data, affine, tumor_mask=None, roi_mask=None):
         self._cached_data["ct"] = ct_data
         self._cached_data["pet"] = pet_data
         self._cached_data["affine"] = affine
         self._cached_data["tumor"] = tumor_mask
+        self._cached_data["roi"] = roi_mask
         self._is_3d_loaded = False
         self._loaded_layouts.clear()
 
@@ -417,6 +419,10 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             self._cached_data_zyx["tumor"] = to_napari(tumor_mask.astype(np.uint8))
         else:
             self._cached_data_zyx["tumor"] = None
+        if roi_mask is not None:
+            self._cached_data_zyx["roi"] = to_napari(roi_mask.astype(np.uint8))
+        else:
+            self._cached_data_zyx["roi"] = None
 
         # Init crosshair at center of data
         if ct_data is not None:
@@ -464,6 +470,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                 widget.load_image(pet, affine, "pet", self._pet_colormap)
             if self._cached_data_zyx["tumor"] is not None:
                 widget.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+            if self._cached_data_zyx["roi"] is not None:
+                widget.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
             if r == 0: widget.set_camera_view(0)
             elif r == 1: widget.set_camera_view(2)
             elif r == 2: widget.set_camera_view(1)
@@ -509,6 +517,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             self.overlay_viewer.load_image(pet, affine, "pet", self._pet_colormap, opacity=0.5)
         if self._cached_data_zyx["tumor"] is not None:
             self.overlay_viewer.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+        if self._cached_data_zyx["roi"] is not None:
+            self.overlay_viewer.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
 
         ct_name = self.overlay_viewer.LAYER_NAMES["ct"]
         pet_name = self.overlay_viewer.LAYER_NAMES["pet"]
@@ -542,6 +552,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         for v in self.mono_viewers.values():
             if self._cached_data_zyx["tumor"] is not None:
                 v.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+            if self._cached_data_zyx["roi"] is not None:
+                v.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
             ct_name = v.LAYER_NAMES["ct"]
             pet_name = v.LAYER_NAMES["pet"]
             if ct is not None and ct_name in v.viewer.layers:
@@ -562,62 +574,77 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
     def _load_mono_single(self):
         if "mono_single" in self._loaded_layouts:
             return
-        modality = self._mono_single_combo.currentText().lower()  # 'ct' or 'pet'
-        data = self._cached_data[modality]
+            
         affine = self._cached_data["affine"]
-        if data is None or affine is None:
+        if affine is None:
             return
 
-        colormap = self._ct_colormap if modality == "ct" else self._pet_colormap
-        wl = self._ct_wl if modality == "ct" else self._pet_wl
-        # (0,0)=Axial axis=0, (0,1)=Coronal axis=1, (1,0)=Sagittal axis=2
+        tumor_zyx = self._cached_data_zyx["tumor"]
+        roi_zyx = self._cached_data_zyx["roi"]
+        
+        c_min, c_max = self._ct_wl[1] - self._ct_wl[0] / 2, self._ct_wl[1] + self._ct_wl[0] / 2
+        p_min, p_max = max(0, self._pet_wl[1] - self._pet_wl[0] / 2), self._pet_wl[1] + self._pet_wl[0] / 2
+
         axes = {(0, 0): 0, (0, 1): 1, (1, 0): 2}
 
         for (r, c), vw in self.mono_single_viewers.items():
-            vw.load_image(data, affine, modality, colormap)
-            if self._cached_data_zyx["tumor"] is not None:
-                vw.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-                # Ensure tumor mask is on top — new image layers are appended above
-                # existing layers, so after adding a new modality the mask can end
-                tumor_name = vw.LAYER_NAMES.get("tumor", "Tumor Mask")
-                layer_names = [l.name for l in vw.viewer.layers]
-                if tumor_name in layer_names:
-                    idx = layer_names.index(tumor_name)
-                    top = len(vw.viewer.layers) - 1
-                    if idx != top:
-                        vw.viewer.layers.move(idx, top)
+            # Load CT if available
+            if self._cached_data["ct"] is not None:
+                vw.load_image(self._cached_data["ct"], affine, "ct", self._ct_colormap)
+                ct_name = vw.LAYER_NAMES["ct"]
+                if ct_name in vw.viewer.layers:
+                    vw.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
 
-            name = vw.LAYER_NAMES[modality]
-            if name in vw.viewer.layers:
-                c_min = wl[1] - wl[0] / 2
-                c_max = wl[1] + wl[0] / 2
-                if modality == "pet":
-                    c_min = max(0, c_min)
-                vw.viewer.layers[name].contrast_limits = (c_min, c_max)
-                vw.viewer.layers[name].visible = True
+            # Load PET if available
+            if self._cached_data["pet"] is not None:
+                vw.load_image(self._cached_data["pet"], affine, "pet", self._pet_colormap)
+                pet_name = vw.LAYER_NAMES["pet"]
+                if pet_name in vw.viewer.layers:
+                    vw.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
 
-            other_modality = "pet" if modality == "ct" else "ct"
-            other_name = vw.LAYER_NAMES[other_modality]
-            if other_name in vw.viewer.layers:
-                vw.viewer.layers[other_name].visible = False
+            if tumor_zyx is not None:
+                vw.load_mask_zyx(tumor_zyx, "tumor")
+            if roi_zyx is not None:
+                vw.load_mask_zyx(roi_zyx, "roi")
+
+            # Ensure mask layers are on top (only move if needed)
+            n_layers = len(vw.viewer.layers)
+            if n_layers > 1:
+                for mask_key in ("tumor", "roi"):
+                    mask_name = vw.LAYER_NAMES.get(mask_key)
+                    if mask_name and mask_name in vw.viewer.layers:
+                        idx = list(vw.viewer.layers).index(vw.viewer.layers[mask_name])
+                        if idx < len(vw.viewer.layers) - 1:
+                            vw.viewer.layers.move(idx, len(vw.viewer.layers) - 1)
 
             if self._cached_lesion_data:
                 vw.show_lesion_ids(*self._cached_lesion_data)
 
             axis = axes.get((r, c), 0)
             vw.set_camera_view(axis)
-            if len(vw.viewer.layers) > 0:
+            if n_layers > 0:
                 vw.viewer.reset_view()
 
         self._loaded_layouts.add("mono_single")
+        self._update_mono_single_visibility()
+
+    def _update_mono_single_visibility(self):
+        modality = self._mono_single_combo.currentText().lower()
+        other_modality = "pet" if modality == "ct" else "ct"
+        
+        for (r, c), vw in self.mono_single_viewers.items():
+            name = vw.LAYER_NAMES[modality]
+            if name in vw.viewer.layers:
+                vw.viewer.layers[name].visible = True
+            
+            other_name = vw.LAYER_NAMES[other_modality]
+            if other_name in vw.viewer.layers:
+                vw.viewer.layers[other_name].visible = False
 
     def _reload_mono_single(self, modality_text):
         """Called when the modality combo changes."""
-        self._loaded_layouts.discard("mono_single")
         if self.stack.currentWidget() == self.mono_single_widget:
-            self._load_mono_single()
-            if self._crosshair_enabled:
-                self.enable_crosshair_mode()
+            self._update_mono_single_visibility()
 
     def _load_3d_data(self):
         if self._is_3d_loaded:
@@ -632,6 +659,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             self.viewer_3d.load_image(pet, affine, "pet", self._pet_colormap, opacity=1.0)
         if self._cached_data_zyx["tumor"] is not None:
             self.viewer_3d.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+        if self._cached_data_zyx["roi"] is not None:
+            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
         if self._cached_lesion_data:
             self.viewer_3d.show_lesion_ids(*self._cached_lesion_data)
 
@@ -664,10 +693,16 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
         elif mode.startswith("mono_single"):
             modality = "PET" if "pet" in mode else "CT"
+            current_modality = self._mono_single_combo.currentText()
+            
             self._mono_single_combo.blockSignals(True)
             self._mono_single_combo.setCurrentText(modality)
             self._mono_single_combo.blockSignals(False)
-            self._loaded_layouts.discard("mono_single")
+            
+            # Only discard if we are changing modality
+            if current_modality.upper() != modality.upper():
+                self._loaded_layouts.discard("mono_single")
+                
             self.stack.setCurrentWidget(self.mono_single_widget)
             self._load_mono_single()
 
@@ -690,6 +725,15 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         elif mode == "3d":
             self.stack.setCurrentWidget(self.view_3d_widget)
             self._load_3d_data()
+            # Ensure 3D viewer is in a clean interactive state:
+            # reset ndisplay, disable editing on all label layers, restore camera
+            self.viewer_3d.viewer.dims.ndisplay = 3
+            self.viewer_3d.viewer.camera.mouse_pan = True
+            self.viewer_3d.viewer.camera.mouse_zoom = True
+            for layer in self.viewer_3d.viewer.layers:
+                if isinstance(layer, napari.layers.Labels):
+                    layer.editable = False
+                    layer.mode = "pan_zoom"
 
         # One-shot slice sync
         if old_viewer is not None:
@@ -753,7 +797,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             self.mono_viewers[0].viewer.camera.zoom = zoom_factor
 
     def toggle_mask(self, mask_type: str, visible: bool):
-        name_map = {"tumor": "Tumor Mask"}
+        name_map = {"tumor": "Tumor Mask", "roi": "ROI Mask"}
         target_name = name_map.get(mask_type, mask_type)
         for widget in self._get_all_loaded_viewers():
             for layer in widget.viewer.layers:
@@ -789,12 +833,15 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
 
     # ── Mask Update ──────────────────────────────────────────────────────
 
-    def update_mask(self, mask_data, mask_type):
+    def update_mask(self, mask_data, mask_type, data_zyx=None):
         if mask_data is None:
             return
         self._cached_data[mask_type] = mask_data
-        from ....utils.nifti_utils import to_napari
-        data_zyx = to_napari(mask_data.astype(np.uint8))
+        
+        if data_zyx is None:
+            from ....utils.nifti_utils import to_napari
+            data_zyx = to_napari(mask_data.astype(np.uint8))
+            
         self._cached_data_zyx[mask_type] = data_zyx
         self._disconnect_mask_events()
         for v in self._get_visible_viewers():
@@ -855,8 +902,8 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         )
         for v in all_viewers:
             v.viewer.layers.clear()
-        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None}
-        self._cached_data_zyx = {"tumor": None}
+        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None}
+        self._cached_data_zyx = {"tumor": None, "roi": None}
         self._is_3d_loaded = False
         self._loaded_layouts.clear()
         self._click_markers = None

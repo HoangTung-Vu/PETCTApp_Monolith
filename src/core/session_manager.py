@@ -7,7 +7,6 @@ from .file_manager import FileManager
 from ..database.models import Session
 from ..database.session_repository import SessionRepository
 # We will import engines dynamically or inject them to avoid circular imports if any
-from .engine.refinement_engine import RefinementEngine
 from .engine.report_engine import ReportEngine
 
 class SessionManager:
@@ -23,9 +22,9 @@ class SessionManager:
         # If they don't exist yet, they are None.
         self.tumor_mask: Optional[nib.Nifti1Image] = None
         self.organ_mask: Optional[nib.Nifti1Image] = None
-        
-        # Snapshot for ROI refinement (baseline before painting)
-        self._tumor_mask_snapshot: Optional[np.ndarray] = None
+
+        # ROI mask for interactive refinement (raw uint8 XYZ array, never saved to disk)
+        self.roi_mask: Optional[np.ndarray] = None
         
         # Session Metadata
         self.patient_name: str = ""
@@ -82,7 +81,7 @@ class SessionManager:
         self.tumor_mask = None
         self.organ_mask = None
         self.tumor_prob = None
-        self._tumor_mask_snapshot = None    
+        self.roi_mask = None
         self.clear_lesion_data()
         
         print(f"[SessionManager] Created session {self.current_session_id}")
@@ -147,7 +146,7 @@ class SessionManager:
         else:
             self.tumor_prob = None
 
-        self._tumor_mask_snapshot = None
+        self.roi_mask = None
 
         print(f"[SessionManager] Loaded session {session_id}")
 
@@ -238,75 +237,46 @@ class SessionManager:
         """Returns all sessions ordered by creation time."""
         return self.repository.get_all()
 
-    def snapshot_current_mask(self, mask_type: str, mask_data_snapshot: Optional[np.ndarray] = None):
-        """Take a snapshot of the current mask state. 
-        If mask is missing, create a zeroed mask matching CT dimensions.
-        """
-        if mask_type == "tumor":
-            if self.tumor_mask is None and self.ct_image is not None:
-                print(f"[SessionManager] Creating new zeroed Tumor Mask ({self.ct_image.shape})")
-                self.tumor_mask = nib.Nifti1Image(
-                    np.zeros(self.ct_image.shape, dtype=np.uint8),
-                    self.ct_image.affine,
-                    self.ct_image.header
-                )
-            if self.tumor_mask:
-                self._tumor_mask_snapshot = mask_data_snapshot if mask_data_snapshot is not None else self.tumor_mask.get_fdata().copy()
+    # ── ROI Mask (interactive refinement scratchpad) ────────────────────
 
-    def revert_to_snapshot(self, mask_type: str):
-        """Discard any unsaved/unrefined changes by reverting to the snapshot."""
-        if mask_type == "tumor" and self._tumor_mask_snapshot is not None:
-            self.set_tumor_mask(self._tumor_mask_snapshot)
-            self._tumor_mask_snapshot = None
+    def set_roi_mask(self, mask_array: np.ndarray):
+        """Store an ROI mask array (XYZ, uint8). Never saved to disk."""
+        self.roi_mask = mask_array.astype(np.uint8)
 
-    def get_paint_roi(self, mask_type: str) -> Optional[np.ndarray]:
-        """Compute the ROI diff between current state and snapshot."""
-        current_data = None
-        snapshot_data = None
+    def get_roi_mask_data(self) -> Optional[np.ndarray]:
+        """Return the current ROI mask array, or None."""
+        return self.roi_mask
 
-        if mask_type == "tumor":
-            if self.tumor_mask:
-                current_data = self.tumor_mask.get_fdata()
-            snapshot_data = self._tumor_mask_snapshot
+    def clear_roi_mask(self):
+        """Zero out the ROI mask (keeps shape if it exists)."""
+        if self.roi_mask is not None:
+            self.roi_mask[:] = 0
 
-        if current_data is None or snapshot_data is None:
-            return None
+    def ensure_roi_mask(self):
+        """Create a zeroed ROI mask matching CT shape if none exists.
+        Also ensures tumor_mask exists (needed for merge)."""
+        if self.ct_image is None:
+            return
+        if self.tumor_mask is None:
+            print(f"[SessionManager] Creating new zeroed Tumor Mask ({self.ct_image.shape})")
+            self.tumor_mask = nib.Nifti1Image(
+                np.zeros(self.ct_image.shape, dtype=np.uint8),
+                self.ct_image.affine,
+                self.ct_image.header,
+            )
+        if self.roi_mask is None:
+            self.roi_mask = np.zeros(self.ct_image.shape, dtype=np.uint8)
 
-        # ROI is anywhere the mask changed (painted or erased)
-        return (np.abs(current_data - snapshot_data) > 0).astype(np.uint8)
+    def merge_roi_into_tumor(self) -> Optional[np.ndarray]:
+        """Merge ROI mask into tumor mask (logical OR), clear ROI. Returns merged tumor data."""
+        if self.roi_mask is None or self.tumor_mask is None:
+            return self.get_tumor_mask_data()
 
-    def refine_mask(self, mask_type: str, threshold: float) -> Optional[np.ndarray]:
-        """
-        Refines the specified mask using SUV thresholding.
-        Updates the internal mask state and returns the refined data.
-        Uses the internal snapshot to scope refinement to the painted ROI.
-        """
-        if self.pet_image is None:
-            raise ValueError("PET image required for refinement.")
-            
-        # Get NIfTI objects directly
-        pet_img = self.pet_image
-        
-        if mask_type == "tumor":
-            current_mask_img = self.tumor_mask
-        else:
-            raise ValueError(f"Unknown mask type: {mask_type}")
-            
-        if current_mask_img is None:
-            raise ValueError(f"No {mask_type} mask available to refine.")
-
-        # Compute ROI
-        roi_mask = self.get_paint_roi(mask_type)
-
-        # Run Refinement (returns NIfTI image)
-        refined_img = RefinementEngine.refine_suv(pet_img, current_mask_img, threshold, roi_mask)
-        
-        # Update Internal State
-        if mask_type == "tumor":
-            self.tumor_mask = refined_img
-            self._tumor_mask_snapshot = None # Clear snapshot after success
-            
-        return refined_img.get_fdata()
+        tumor_data = self.tumor_mask.get_fdata()
+        merged = np.maximum(tumor_data, self.roi_mask).astype(np.uint8)
+        self.set_tumor_mask(merged)
+        self.clear_roi_mask()
+        return merged
 
     def generate_report(self) -> dict:
         """Generate a clinical report by loading the tumor mask from disk.

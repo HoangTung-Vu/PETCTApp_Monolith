@@ -81,15 +81,13 @@ class SegmentationHandlerMixin:
         # 6. Save immediately
         self.save_session()
 
-        # 7. Snapshot for refine/autopet tabs
-        self.session_manager.snapshot_current_mask(seg_type)
         print(f"Segmentation {seg_type} finished and saved.")
 
         self.control_panel.hide_progress()
         self.control_panel.workflow_tab.btn_segment.setEnabled(True)
 
-    def _push_mask_to_all(self, layer_type, data):
-        self.layout_manager.update_mask(data, layer_type)
+    def _push_mask_to_all(self, layer_type, data, data_zyx=None):
+        self.layout_manager.update_mask(data, layer_type, data_zyx)
         # Hide lesion IDs since mask changed
         self.layout_manager.hide_lesion_ids()
         self.control_panel.chk_show_lesion_ids.setChecked(False)

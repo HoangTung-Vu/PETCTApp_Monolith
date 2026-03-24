@@ -48,7 +48,7 @@ class AutoPETHandlerMixin:
         self.autopet_worker.start()
 
     def _on_autopet_finished(self, refinement_prob):
-        """Combine AutoPET prob with existing nnUNet prob."""
+        """Combine AutoPET prob with existing nnUNet prob, put result in ROI mask."""
         print(f"[AutoPET] Inference finished!")
         print(f"[AutoPET] Refinement prob shape: {refinement_prob.shape}, dtype: {refinement_prob.dtype}")
 
@@ -61,17 +61,14 @@ class AutoPETHandlerMixin:
         new_mask = (combined_prob >= 0.5).astype(np.uint8)
         print(f"[AutoPET] New mask nonzero voxels: {np.count_nonzero(new_mask)}")
 
-        self.session_manager.set_tumor_mask(new_mask)
+        # Put result into roi_mask (yellow preview), NOT tumor_mask
+        self.session_manager.set_roi_mask(new_mask)
         self.session_manager.set_tumor_prob(combined_prob)
-        self._push_mask_to_all("tumor", new_mask)
+        self._push_mask_to_all("roi", new_mask)
 
         # Clear stale report UI and lesion data
         self.session_manager.clear_lesion_data()
-        # Only save if explicitly clicked using Save button
-        # self.save_session()
-        # Re-snapshot after commit so tab-switch revert uses the new baseline
-        self.session_manager.snapshot_current_mask("tumor")
-        print("[AutoPET] Session saved and snapshot updated.")
+        print("[AutoPET] ROI preview ready. Click 'Save' to confirm and persist.")
 
         self.layout_manager.clear_autopet_clicks()
         self.autopet_clicks.clear()

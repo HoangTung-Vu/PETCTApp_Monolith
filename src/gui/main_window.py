@@ -51,7 +51,7 @@ class MainWindow(
         # Refinement State
         self.current_tool = "pan_zoom"
         self.brush_size = 10
-        self._last_tab_index = 0 # Track for snapshot/revert logic
+        self._last_tab_index = 0
 
         # AutoPET Interactive State
         self.autopet_clicks = []
@@ -110,12 +110,12 @@ class MainWindow(
         cp.sig_refine_adaptive_clicked.connect(self._on_refine_adaptive)
         cp.sig_refine_iterative_clicked.connect(self._on_refine_iterative)
         cp.sig_confirm_roi_clicked.connect(self._on_confirm_roi)
-        cp.sig_save_refine_clicked.connect(self.save_session)
+        cp.sig_save_refine_clicked.connect(self._on_confirm_and_save)
 
         # AutoPET
         cp.sig_autopet_click_mode_changed.connect(lm.enable_autopet_click_mode)
         cp.sig_autopet_run_clicked.connect(self._on_autopet_run)
-        cp.sig_autopet_save_clicked.connect(self.save_session)
+        cp.sig_autopet_save_clicked.connect(self._on_confirm_and_save)
         cp.sig_autopet_clear_clicks.connect(self._on_autopet_clear_clicks)
         lm.sig_autopet_click_added.connect(self._on_autopet_click_added)
 
@@ -173,6 +173,7 @@ class MainWindow(
         # Clear application state
         self.autopet_clicks.clear()
         self._eraser_undo_stack.clear()
+        self.session_manager.roi_mask = None
 
         # Clear report display
         self.control_panel.clear_report_results()
@@ -261,16 +262,6 @@ class MainWindow(
         # Update session label
         session_name = f"ID: {self.session_manager.current_session_id} - {self.session_manager.patient_name}"
         self.control_panel.set_current_session_label(session_name)
-
-        # Pre-snapshot in background so Refine tab entry has zero lag.
-        # Only if we don't already have a snapshot from a prior paint session.
-        if self.session_manager._tumor_mask_snapshot is None:
-            from .workers import SnapshotWorker
-            self.snapshot_worker = SnapshotWorker(self.session_manager, "tumor")
-            self.snapshot_worker.finished.connect(
-                lambda: print("[MainWindow] Pre-snapshot complete — Refine tab ready.")
-            )
-            self.snapshot_worker.start()
 
         # Crosshair is on by default — enable after viewers are populated
         # Respect the toggle button state
@@ -389,7 +380,6 @@ class MainWindow(
         workers = [
             getattr(self, 'save_worker', None),
             getattr(self, 'loader_worker', None),
-            getattr(self, 'snapshot_worker', None),
             getattr(self, 'refine_worker', None),
             getattr(self, 'autopet_worker', None),
             getattr(self, 'report_worker', None),

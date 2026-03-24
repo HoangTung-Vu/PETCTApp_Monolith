@@ -51,7 +51,8 @@ class ViewerWidget(QWidget):
         self.LAYER_NAMES = {
             "ct": "CT Image",
             "pet": "PET Image",
-            "tumor": "Tumor Mask"
+            "tumor": "Tumor Mask",
+            "roi": "ROI Mask",
         }
         self.is_3d = False
         self._scale_zyx = None   # physical spacing (sz, sy, sx) in mm
@@ -137,12 +138,31 @@ class ViewerWidget(QWidget):
                 layer.data = data_zyx
         else:
             kwargs = dict(name=name, opacity=0.7)
+            if layer_type == "roi":
+                kwargs["opacity"] = 0.9
             if self._scale_zyx is not None:
                 kwargs['scale'] = self._scale_zyx
             layer = self.viewer.add_labels(data_zyx, **kwargs)
 
+        # Always enforce yellow colormap for ROI layer
+        if layer_type == "roi":
+            self._apply_roi_colormap(layer)
+
         if self.is_3d:
             layer.editable = False
+
+    # Shared across all ViewerWidget instances — created once
+    _roi_colormap = None
+
+    @staticmethod
+    def _apply_roi_colormap(layer):
+        """Set a yellow-only colormap on a Labels layer for ROI visualization."""
+        if ViewerWidget._roi_colormap is None:
+            from napari.utils.colormaps import DirectLabelColormap
+            ViewerWidget._roi_colormap = DirectLabelColormap(
+                color_dict={0: "transparent", 1: "yellow", None: "transparent"}
+            )
+        layer.colormap = ViewerWidget._roi_colormap
 
     def get_layer_data(self, layer_type: str) -> Optional[np.ndarray]:
         """Returns layer data in Nibabel (X, Y, Z) format."""
@@ -366,6 +386,8 @@ class ViewerWidget(QWidget):
                 if not name or name not in viewer.layers:
                     continue
                 layer = viewer.layers[name]
+                if not layer.visible:
+                    continue
                 try:
                     data_pos = layer.world_to_data(event.position)
                     zi = int(round(float(data_pos[0])))

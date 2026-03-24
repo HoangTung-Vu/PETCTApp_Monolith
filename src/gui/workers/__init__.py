@@ -3,7 +3,6 @@ from .refinement_worker import RefinementWorker, AdaptiveThresholdingWorker, Ite
 from .autopet_worker import AutoPETWorker
 from .data_loader_worker import DataLoaderWorker
 from .report_worker import ReportWorker
-from .snapshot_worker import SnapshotWorker
 from .save_worker import SaveWorker
 
 __all__ = [
@@ -14,6 +13,5 @@ __all__ = [
     "AutoPETWorker",
     "DataLoaderWorker",
     "ReportWorker",
-    "SnapshotWorker",
     "SaveWorker",
 ]
