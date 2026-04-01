@@ -1,6 +1,4 @@
 """Main application window.
-
-Slim core (~150 lines): UI setup, signal wiring, session management.
 All handler logic lives in ``handlers/`` as mixins.
 """
 
@@ -52,15 +50,13 @@ class MainWindow(
         self.current_tool = "pan_zoom"
         self.brush_size = 10
         self._last_tab_index = 0
+        self._init_refinement_state()
 
         # AutoPET Interactive State
         self.autopet_clicks = []
 
         # Eraser State
         self._eraser_undo_stack = []
-
-        # Last refinement info for threshold notification
-        self._last_refine_info = None
 
     def _init_ui(self):
         central_widget = QWidget()
@@ -382,6 +378,7 @@ class MainWindow(
             getattr(self, 'save_worker', None),
             getattr(self, 'loader_worker', None),
             getattr(self, 'refine_worker', None),
+            getattr(self, '_threshold_worker', None),
             getattr(self, 'autopet_worker', None),
             getattr(self, 'report_worker', None),
             getattr(self, 'worker', None), # segmentation worker

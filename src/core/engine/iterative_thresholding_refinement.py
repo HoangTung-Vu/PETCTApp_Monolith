@@ -80,6 +80,109 @@ class IterativeThresholdingEngine:
     # Public API                                                           #
     # ------------------------------------------------------------------ #
 
+    def compute_threshold(
+        self,
+        pet_image: nib.Nifti1Image,
+        mask_image: nib.Nifti1Image,
+        roi_mask: np.ndarray,
+    ):
+        """Compute iterative threshold per connected component in the ROI.
+
+        Uses scipy.ndimage.label to split ROI into connected components,
+        then runs the iterative algorithm on each independently.
+
+        Returns:
+            Tuple of (components_info, labels_array) where:
+            - components_info: list of dicts with keys
+              {label, threshold, threshold_pct, n_voxels, i_source, i_background, iterations}
+            - labels_array: ndarray from scipy.ndimage.label
+        """
+        from scipy.ndimage import label as cc_label
+
+        pet_data = pet_image.get_fdata(dtype=np.float32)
+        mask_data = mask_image.get_fdata()
+        roi = roi_mask > 0
+
+        self._validate_shapes(pet_data, mask_data, roi)
+
+        voxel_volume_ml = get_voxel_volume_ml_from_affine(mask_image.affine)
+        labels, num_components = cc_label(roi)
+        components_info = []
+
+        for comp_id in range(1, num_components + 1):
+            comp = labels == comp_id
+            n_voxels = int(comp.sum())
+            if n_voxels < 2:
+                continue
+
+            i_source = float(pet_data[comp].max())
+            if i_source <= 0:
+                print(f"[Iterative] Component {comp_id}: I_source <= 0, skipping.")
+                continue
+
+            i_bg = self._estimate_background(pet_data, comp, mask_data)
+            sb_ratio = i_source / i_bg if i_bg > 0 else float("inf")
+            bs_ratio = 1.0 / sb_ratio if sb_ratio != float("inf") else 0.0
+
+            t1_pct = self.c1 * bs_ratio + self.c0
+            t1_abs = (t1_pct / 100.0) * i_source
+            t_current = t1_abs
+            iterations_used = 0
+
+            for iteration in range(self.max_iterations):
+                iterations_used = iteration + 1
+                refined = self._threshold_mask(pet_data, comp, t_current)
+                volume_ml = float(refined[comp].sum()) * voxel_volume_ml
+
+                if volume_ml <= 0:
+                    print(
+                        f"[Iterative] Component {comp_id}: volume=0 at iteration {iteration}, "
+                        f"falling back to T1={t1_abs:.4f}"
+                    )
+                    t_current = t1_abs
+                    break
+
+                t_next_pct = (self.m / volume_ml) + self.c1 * bs_ratio + self.c0
+                t_next_abs = (t_next_pct / 100.0) * i_source
+
+                delta = abs(t_next_abs - t_current)
+                if t1_abs > 0 and (delta / t1_abs) <= self.convergence_tol:
+                    break
+
+                t_current = t_next_abs
+
+            # Fallback: if threshold >= i_source, entire component would vanish
+            if t_current >= i_source:
+                print(
+                    f"[Iterative] Component {comp_id}: threshold {t_current:.4f} >= I_source {i_source:.4f}, "
+                    f"falling back to T1={t1_abs:.4f}"
+                )
+                t_current = t1_abs
+
+            t_pct = (t_current / i_source) * 100.0 if i_source > 0 else 0.0
+            components_info.append({
+                "label": comp_id,
+                "threshold": float(t_current),
+                "threshold_pct": float(t_pct),
+                "n_voxels": n_voxels,
+                "i_source": float(i_source),
+                "i_background": float(i_bg),
+                "iterations": iterations_used,
+            })
+
+        if not components_info:
+            print("[Iterative] No valid components found.")
+
+        # Expose for backward compat
+        if components_info:
+            weights = [c["n_voxels"] for c in components_info]
+            thresholds = [c["threshold"] for c in components_info]
+            self.last_threshold_abs = float(np.average(thresholds, weights=weights))
+        else:
+            self.last_threshold_abs = 0.0
+
+        return components_info, labels
+
     def refine(
         self,
         pet_image: nib.Nifti1Image,

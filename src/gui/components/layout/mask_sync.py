@@ -41,16 +41,19 @@ class MaskSyncMixin:
         return []
 
     def _connect_mask_events(self):
-        """Connect mask layer data events on the CURRENTLY VISIBLE viewers only."""
+        """Connect mask layer data/paint events on the CURRENTLY VISIBLE viewers only."""
         self._disconnect_mask_events()
         for v in self._get_visible_viewers():
             for layer_name in ("Tumor Mask", "ROI Mask"):
                 if layer_name in v.viewer.layers:
                     layer = v.viewer.layers[layer_name]
                     layer.events.data.connect(self._on_mask_data_changed)
+                    # Also connect paint event (fires on brush strokes, not just data replacement)
+                    if hasattr(layer.events, 'paint'):
+                        layer.events.paint.connect(self._on_mask_data_changed)
 
     def _disconnect_mask_events(self):
-        """Disconnect mask layer data events from ALL viewers (safety)."""
+        """Disconnect mask layer data/paint events from ALL viewers (safety)."""
         all_viewers = (
             list(self.grid_viewers.values())
             + [self.overlay_viewer]
@@ -67,6 +70,13 @@ class MaskSyncMixin:
                         v.viewer.layers[layer_name].events.data.disconnect(
                             self._on_mask_data_changed
                         )
+                    except Exception:
+                        pass
+                    try:
+                        if hasattr(v.viewer.layers[layer_name].events, 'paint'):
+                            v.viewer.layers[layer_name].events.paint.disconnect(
+                                self._on_mask_data_changed
+                            )
                     except Exception:
                         pass
 

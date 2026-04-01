@@ -259,6 +259,13 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             self._emit_crosshair_coords()
             self._refresh_all_crosshairs()
 
+    def jump_to_position(self, z: float, y: float, x: float):
+        """Jump all viewers to the given position (ZYX Napari coords)."""
+        self._xhair_pos = [z, y, x]
+        self._sync_viewer_slices()
+        self._refresh_all_crosshairs()
+        self._emit_crosshair_coords()
+
     def _on_viewer_crosshair_click(self, pos_zyx: list):
         """Update crosshair position from a viewer click and sync all views."""
         self._xhair_pos = [pos_zyx[0], pos_zyx[1], pos_zyx[2]]

@@ -1,30 +1,112 @@
 """Refinement handler mixin for MainWindow."""
 
-from PyQt6.QtWidgets import QMessageBox, QDialog, QLabel, QVBoxLayout, QPushButton
+from PyQt6.QtWidgets import QMessageBox
 from PyQt6.QtCore import Qt
 import numpy as np
 
+
 class RefinementHandlerMixin:
-    """Handles SUV refinement, sync masks, and drawing tool slots."""
+    """Handles SUV refinement, threshold computation, sync masks, and drawing tool slots.
+
+    Key states:
+        _roi_dirty (bool):  True after ROI is painted but before threshold is applied.
+                            Refine/compute buttons are enabled only when True.
+        _painted_roi (ndarray | None):  Snapshot of ROI mask at the time of compute,
+                            used as the base for live preview and final apply.
+        _preview_active (bool):  True while a threshold preview dialog is open.
+                            Suppresses auto-sync so preview data doesn't leak
+                            back into session_manager.
+        _roi_labels (ndarray | None):  Connected-component labels from compute step.
+        _components_info (list | None):  Per-component threshold info from compute.
+        _method_info (str):  Description of the method used for compute.
+    """
+
+    def _init_refinement_state(self):
+        """Call from MainWindow.__init__ to set up refinement state."""
+        self._painted_roi = None
+        self._preview_active = False
+        self._roi_labels = None
+        self._components_info = None
+        self._method_info = ""
+        self._current_component_idx = 0
+        self._cached_pet_f32 = None
+
+    # ── is_dirty management ──
+
+    def _is_roi_dirty(self) -> bool:
+        """Dynamically check if ROI mask has painted content."""
+        roi_data = self.session_manager.get_roi_mask_data()
+        return roi_data is not None and roi_data.any()
+
+    def _update_refine_button_states(self):
+        self.control_panel.refine_tab.set_refine_buttons_enabled(self._is_roi_dirty())
+
+    # ── Merge thresholded result into tumor ──
+
+    def _merge_result_into_tumor(self, result, base_roi):
+        """Replace tumor voxels within ROI with thresholded result, clear ROI,
+        push both layers to viewers.
+
+        Args:
+            result: uint8 array — thresholded voxels (1 = tumor, 0 = not)
+            base_roi: uint8 array — the original painted ROI (defines the region)
+        """
+        tumor_data = self.session_manager.get_tumor_mask_data()
+        if tumor_data is None:
+            tumor_data = np.zeros(result.shape, dtype=np.uint8)
+        else:
+            tumor_data = tumor_data.copy()
+
+        # Within ROI: replace tumor with thresholded result
+        roi = base_roi > 0
+        tumor_data[roi] = result[roi]
+        tumor_data = (tumor_data > 0).astype(np.uint8)
+
+        self.session_manager.set_tumor_mask(tumor_data)
+        self._push_mask_to_all("tumor", tumor_data)
+
+        # Clear ROI mask
+        self.session_manager.clear_roi_mask()
+        cleared_roi = self.session_manager.get_roi_mask_data()
+        if cleared_roi is not None:
+            self._push_mask_to_all("roi", cleared_roi)
+
+        # Clear stale lesion data
+        self.session_manager.clear_lesion_data()
+        self.control_panel.clear_report_results()
+        self.layout_manager.hide_lesion_ids()
+        self.control_panel.chk_show_lesion_ids.setChecked(False)
+
+    def _clear_refinement_state(self):
+        """Reset all transient refinement state after apply or cancel."""
+        self._preview_active = False
+        self._painted_roi = None
+        self._roi_labels = None
+        self._components_info = None
+        self._current_component_idx = 0
+        self._cached_pet_f32 = None
+        self._update_refine_button_states()
+        self.control_panel.refine_tab.reset_tools()
+
+    # ── SUV Threshold Apply (synchronous, the "base" operation) ──
 
     def _on_refine_suv(self, threshold):
-        """Refine the current mask using SUV threshold logic (async)."""
+        """Apply SUV threshold to painted ROI → merge into tumor (synchronous)."""
+        if not self._is_roi_dirty():
+            QMessageBox.information(
+                self, "No ROI Change",
+                "Paint or draw an ROI region first.\n"
+                "The ROI must be modified before running refinement again."
+            )
+            return
+
         if self.session_manager.pet_image is None:
             QMessageBox.warning(self, "Missing Data", "PET image required for SUV refinement.")
             return
 
         self._sync_roi_from_viewer()
 
-        mask_img = self.session_manager.tumor_mask
-        if mask_img is None:
-            QMessageBox.warning(
-                self, "Missing Data",
-                "No tumor mask available to refine."
-            )
-            return
-
         roi_mask = self.session_manager.get_roi_mask_data()
-
         if roi_mask is None or not roi_mask.any():
             QMessageBox.warning(
                 self, "No ROI",
@@ -32,154 +114,283 @@ class RefinementHandlerMixin:
             )
             return
 
-        from ..workers import RefinementWorker
-        self.refine_worker = RefinementWorker(
-            self.session_manager.pet_image, mask_img, threshold, roi_mask
-        )
-        self.refine_worker.finished.connect(self._on_refinement_finished)
-        self.refine_worker.error.connect(self._on_refinement_error)
+        base_roi = self._painted_roi if self._painted_roi is not None else roi_mask
+        pet_data = self.session_manager.pet_image.get_fdata(dtype=np.float32)
+        roi = base_roi > 0
 
-        self.control_panel.show_refine_progress()
-        self._set_ui_busy(True)
-        self.refine_worker.start()
+        result = np.zeros(base_roi.shape, dtype=np.uint8)
+        result[roi & (pet_data >= threshold)] = 1
+
+        # Merge into tumor_mask, clear ROI
+        self._merge_result_into_tumor(result, base_roi)
+        self._clear_refinement_state()
+
+        print(f"[RefineHandler] SUV threshold {threshold:.4f} applied and merged into tumor mask.")
+
+    # ── Adaptive / Iterative — compute threshold only ──
 
     def _on_refine_adaptive(self, isocontour_fraction, background_mode, border_thickness):
-        """Refine the current mask using Adaptive Thresholding (preview, async)."""
-        self._last_refine_info = (
-            "adaptive",
-            f"Isocontour: {isocontour_fraction:.2f}\n"
-            f"Background mode: {background_mode}\n"
-            f"Border thickness: {border_thickness} voxels"
-        )
+        """Compute adaptive threshold per ROI component (async, no mask modification)."""
+        if not self._is_roi_dirty():
+            QMessageBox.information(
+                self, "No ROI Change",
+                "Paint or draw an ROI region first.\n"
+                "The ROI must be modified before computing a new threshold."
+            )
+            return
+
         if self.session_manager.pet_image is None:
-            QMessageBox.warning(self, "Missing Data", "PET image required for Adaptive Thresholding refinement.")
+            QMessageBox.warning(self, "Missing Data", "PET image required for Adaptive Thresholding.")
             return
 
         self._sync_roi_from_viewer()
 
-        mask_img = self.session_manager.tumor_mask
-        if mask_img is None:
-            QMessageBox.warning(
-                self, "Missing Data",
-                "No tumor mask available to refine."
-            )
-            return
-
         roi_mask = self.session_manager.get_roi_mask_data()
-
         if roi_mask is None or not roi_mask.any():
             QMessageBox.warning(
                 self, "No ROI",
-                "Please paint/draw an ROI region first before running adaptive thresholding."
+                "Please paint/draw an ROI region first before computing adaptive threshold."
             )
             return
 
-        from ..workers import AdaptiveThresholdingWorker
-        self.refine_worker = AdaptiveThresholdingWorker(
+        self._painted_roi = roi_mask.copy()
+
+        from ..workers import ThresholdComputeWorker
+        self._threshold_worker = ThresholdComputeWorker(
             self.session_manager.pet_image,
-            mask_img,
+            self.session_manager.tumor_mask,
             roi_mask,
+            method="adaptive",
             isocontour_fraction=isocontour_fraction,
             background_mode=background_mode,
             border_thickness=border_thickness,
         )
-        self.refine_worker.finished.connect(self._on_refinement_finished)
-        self.refine_worker.error.connect(self._on_refinement_error)
+        self._threshold_worker.threshold_computed.connect(self._on_threshold_computed)
+        self._threshold_worker.error.connect(self._on_refinement_error)
 
         self.control_panel.show_refine_progress()
         self._set_ui_busy(True)
-        self.refine_worker.start()
+        self._threshold_worker.start()
 
     def _on_refine_iterative(self, m, c1, c0, convergence_tol, max_iterations):
-        """Refine the current mask using Iterative Thresholding (preview, async)."""
-        self._last_refine_info = (
-            "iterative",
-            f"m (slope): {m}\n"
-            f"c1 (B/S coeff): {c1}\n"
-            f"c0 (intercept): {c0}\n"
-            f"Tolerance: {convergence_tol}\n"
-            f"Max iterations: {max_iterations}"
-        )
+        """Compute iterative threshold per ROI component (async, no mask modification)."""
+        if not self._is_roi_dirty():
+            QMessageBox.information(
+                self, "No ROI Change",
+                "Paint or draw an ROI region first.\n"
+                "The ROI must be modified before computing a new threshold."
+            )
+            return
+
         if self.session_manager.pet_image is None:
-            QMessageBox.warning(self, "Missing Data", "PET image required for Iterative Thresholding refinement.")
+            QMessageBox.warning(self, "Missing Data", "PET image required for Iterative Thresholding.")
+            return
+
+        if self.session_manager.tumor_mask is None:
+            QMessageBox.warning(
+                self, "Missing Data",
+                "No tumor mask available. Iterative thresholding needs an existing mask\n"
+                "for background estimation. Run segmentation first or use Adaptive Thresholding."
+            )
             return
 
         self._sync_roi_from_viewer()
 
-        mask_img = self.session_manager.tumor_mask
-        if mask_img is None:
-            QMessageBox.warning(
-                self, "Missing Data",
-                "No tumor mask available to refine."
-            )
-            return
-
         roi_mask = self.session_manager.get_roi_mask_data()
-
         if roi_mask is None or not roi_mask.any():
             QMessageBox.warning(
                 self, "No ROI",
-                "Please paint/draw an ROI region first before running iterative thresholding."
+                "Please paint/draw an ROI region first before computing iterative threshold."
             )
             return
 
-        from ..workers import IterativeThresholdingWorker
-        self.refine_worker = IterativeThresholdingWorker(
+        self._painted_roi = roi_mask.copy()
+
+        from ..workers import ThresholdComputeWorker
+        self._threshold_worker = ThresholdComputeWorker(
             self.session_manager.pet_image,
-            mask_img,
+            self.session_manager.tumor_mask,
             roi_mask,
-            m=m,
-            c1=c1,
-            c0=c0,
+            method="iterative",
+            m=m, c1=c1, c0=c0,
             convergence_tol=convergence_tol,
             max_iterations=max_iterations,
         )
-        self.refine_worker.finished.connect(self._on_refinement_finished)
-        self.refine_worker.error.connect(self._on_refinement_error)
+        self._threshold_worker.threshold_computed.connect(self._on_threshold_computed)
+        self._threshold_worker.error.connect(self._on_refinement_error)
 
         self.control_panel.show_refine_progress()
         self._set_ui_busy(True)
-        self.refine_worker.start()
+        self._threshold_worker.start()
 
-    def _on_refinement_finished(self, refined_img, computed_threshold: float = 0.0):
-        refined_data = refined_img.get_fdata(dtype=np.float32)
+    # ── Threshold computation result → sequential popup dialogs ──
 
-        # Put the refined result into roi_mask (only within the painted ROI region)
-        roi_data = self.session_manager.get_roi_mask_data()
-        if roi_data is not None:
-            roi_region = roi_data > 0
-            refined_within_roi = np.zeros(refined_data.shape, dtype=np.uint8)
-            refined_within_roi[roi_region] = (refined_data[roi_region] > 0).astype(np.uint8)
-            self.session_manager.set_roi_mask(refined_within_roi)
-            self._push_mask_to_all("roi", refined_within_roi)
-
-        print("Refined ROI preview ready. Click 'Save Refinement' to confirm and persist.")
+    def _on_threshold_computed(self, components_info, labels, method_info):
+        """Called when ThresholdComputeWorker finishes. Shows per-component dialog."""
         self._set_ui_busy(False)
         self.control_panel.hide_refine_progress()
-        self.control_panel.refine_tab.reset_tools()
 
-        # Show threshold notification for adaptive/iterative methods
-        info = getattr(self, "_last_refine_info", None)
-        if info and info[0] in ("adaptive", "iterative"):
-            method_name = "Adaptive Thresholding" if info[0] == "adaptive" else "Iterative Thresholding"
-            threshold_line = (
-                f"\n─────────────────────────────\n"
-                f"Computed threshold:  {computed_threshold:.4f} SUV\n"
-            ) if computed_threshold > 0 else ""
-            QMessageBox.information(
-                self,
-                f"Preview — {method_name}",
-                f"Parameters used:\n\n{info[1]}"
-                f"{threshold_line}\n"
-                f"Click 'Save Refinement to Disk' to confirm and persist.",
+        if not components_info:
+            QMessageBox.warning(
+                self, "No Result",
+                "No valid ROI components found. Check your ROI painting and PET data."
             )
-        self._last_refine_info = None
+            return
+
+        self._components_info = components_info
+        self._roi_labels = labels
+        self._method_info = method_info
+        self._preview_active = True
+        self._cached_pet_f32 = self.session_manager.pet_image.get_fdata(dtype=np.float32)
+
+        print(
+            f"[RefineHandler] {method_info}: {len(components_info)} component(s) found. "
+            f"Showing threshold dialog(s)..."
+        )
+
+        # Process components sequentially via dialogs
+        self._current_component_idx = 0
+        self._show_next_component_dialog()
+
+    def _show_next_component_dialog(self):
+        """Show the threshold preview dialog for the current component."""
+        if self._current_component_idx >= len(self._components_info):
+            # All components processed — apply all thresholds and merge into tumor
+            self._apply_all_component_thresholds()
+            return
+
+        from ..components.threshold_preview_dialog import ThresholdPreviewDialog
+
+        comp = self._components_info[self._current_component_idx]
+        total = len(self._components_info)
+        idx = self._current_component_idx
+
+        # Jump viewer to centroid of this component
+        self._jump_to_component(comp["label"])
+
+        # Show initial preview for this component
+        self._update_component_preview(comp["label"], comp["threshold"])
+
+        dialog = ThresholdPreviewDialog(
+            component_info=comp,
+            component_index=idx,
+            total_components=total,
+            method_info=self._method_info,
+            parent=self,
+        )
+
+        # Live preview as user adjusts slider
+        dialog.threshold_changed.connect(
+            lambda thresh: self._update_component_preview(comp["label"], thresh)
+        )
+
+        result = dialog.exec()
+        if result:
+            # User clicked Apply — store the adjusted threshold
+            self._components_info[idx]["threshold"] = dialog.final_threshold
+            print(
+                f"[RefineHandler] Component {comp['label']}: "
+                f"final threshold = {dialog.final_threshold:.4f} SUV"
+            )
+            self._current_component_idx += 1
+            self._show_next_component_dialog()
+        else:
+            # User closed dialog — cancel, restore original ROI to session & viewers
+            print("[RefineHandler] Threshold adjustment cancelled.")
+            self._preview_active = False
+            if self._painted_roi is not None:
+                self.session_manager.set_roi_mask(self._painted_roi)
+                self._push_mask_to_all("roi", self._painted_roi)
+            # Keep dirty state true natively as mask is restored
+            self._painted_roi = None
+            self._roi_labels = None
+            self._components_info = None
+
+    def _jump_to_component(self, label_id):
+        """Jump the viewer to the centroid of the given connected component."""
+        if self._roi_labels is None:
+            return
+
+        from scipy.ndimage import center_of_mass
+
+        comp_mask = self._roi_labels == label_id
+        # center_of_mass returns indices in array dimension order.
+        # roi_mask/labels are stored in XYZ (NIfTI convention),
+        # so result is (x_idx, y_idx, z_idx).
+        centroid_xyz = center_of_mass(comp_mask)
+        if centroid_xyz is None or any(np.isnan(centroid_xyz)):
+            return
+
+        cx, cy, cz = centroid_xyz  # x, y, z in NIfTI XYZ space
+        shape_xyz = self._roi_labels.shape
+
+        # to_napari does: transpose(XYZ→ZYX) then flip(Z, Y).
+        # So Napari coords require the same flip:
+        z_napari = (shape_xyz[2] - 1) - cz
+        y_napari = (shape_xyz[1] - 1) - cy
+        x_napari = cx  # X is not flipped
+
+        self.layout_manager.jump_to_position(z_napari, y_napari, x_napari)
+        print(f"[RefineHandler] Jumped to component {label_id} centroid: z={z_napari:.0f}, y={y_napari:.0f}, x={x_napari:.0f}")
+
+    def _update_component_preview(self, label_id, threshold):
+        """Update ROI display to show thresholded voxels for one component (live preview)."""
+        if self._painted_roi is None or self._roi_labels is None:
+            return
+
+        pet_data = self._cached_pet_f32
+
+        # Build preview: show thresholded result for ALL components processed so far,
+        # plus the current component with the given threshold.
+        preview = np.zeros(self._painted_roi.shape, dtype=np.uint8)
+
+        for i, comp in enumerate(self._components_info):
+            comp_mask = self._roi_labels == comp["label"]
+            if i < self._current_component_idx:
+                # Already-accepted component: use its stored threshold
+                preview[comp_mask & (pet_data >= comp["threshold"])] = 1
+            elif i == self._current_component_idx:
+                # Current component: use the slider threshold
+                preview[comp_mask & (pet_data >= threshold)] = 1
+            else:
+                # Future component: show original painted ROI (not yet thresholded)
+                preview[comp_mask & (self._painted_roi > 0)] = 1
+
+        self._push_mask_to_all("roi", preview)
+
+    def _apply_all_component_thresholds(self):
+        """Apply the final per-component thresholds, merge into tumor_mask, clear ROI."""
+        if self._painted_roi is None or self._roi_labels is None:
+            return
+
+        pet_data = self.session_manager.pet_image.get_fdata(dtype=np.float32)
+        result = np.zeros(self._painted_roi.shape, dtype=np.uint8)
+
+        for comp in self._components_info:
+            comp_mask = self._roi_labels == comp["label"]
+            result[comp_mask & (pet_data >= comp["threshold"])] = 1
+
+        # Update SUV spinbox with average threshold (for reference)
+        if self._components_info:
+            avg = np.mean([c["threshold"] for c in self._components_info])
+            self.control_panel.refine_tab.spin_suv.setValue(round(avg, 2))
+
+        # Merge into tumor_mask, clear ROI
+        self._merge_result_into_tumor(result, self._painted_roi)
+        self._clear_refinement_state()
+
+        print("[RefineHandler] All component thresholds applied and merged into tumor mask.")
+
+    # ── Error handling ──
 
     def _on_refinement_error(self, error_msg):
         self._set_ui_busy(False)
         self.control_panel.hide_refine_progress()
+        self._clear_refinement_state()
         print(f"Refinement Error: {error_msg}")
         QMessageBox.critical(self, "Refinement Failed", error_msg)
+
+    # ── Tab entry/exit ──
 
     def _on_refinement_tab_changed(self, index: int):
         """Handle roi_mask setup/teardown for Refine (2) and AutoPET (3) tabs."""
@@ -199,13 +410,14 @@ class RefinementHandlerMixin:
         # ENTERING Refine/AutoPET Mode
         if is_refine_mode and not was_refine_mode:
             print("[RefineHandler] Entering Refine/AutoPET. Ensuring ROI mask exists...")
-            
+
             if self.session_manager.roi_mask is not None:
                 # ROI already exists from a previous visit — re-push to viewers
                 roi_data = self.session_manager.get_roi_mask_data()
                 tumor_data = self.session_manager.get_tumor_mask_data()
                 if roi_data is not None:
                     self._push_mask_to_all("roi", roi_data)
+                    # Button states will be updated below
                 if tumor_data is not None:
                     self._push_mask_to_all("tumor", tumor_data)
             else:
@@ -217,6 +429,8 @@ class RefinementHandlerMixin:
                 self._set_ui_busy(True)
                 self.ensure_roi_worker.start()
 
+            self._update_refine_button_states()
+
             # Clear report UI when entering interactive mode
             self.session_manager.clear_lesion_data()
             self.control_panel.clear_report_results()
@@ -227,15 +441,14 @@ class RefinementHandlerMixin:
 
     def _on_roi_ready(self, roi_data, tumor_data, roi_zyx, tumor_zyx):
         """Callback when ROI worker finishes."""
-        # Push current roi_mask to viewers so the layer exists for painting
         if roi_data is not None:
             self._push_mask_to_all("roi", roi_data, data_zyx=roi_zyx)
-        # Also push tumor mask to ensure it's loaded
         if tumor_data is not None:
             self._push_mask_to_all("tumor", tumor_data, data_zyx=tumor_zyx)
-            
+
         self._set_ui_busy(False)
         self.control_panel.hide_refine_progress()
+        self._update_refine_button_states()
 
     # ── Drawing tool slots ──
 
@@ -248,9 +461,11 @@ class RefinementHandlerMixin:
         self._update_all_tools()
 
     def _on_confirm_roi(self):
-        """Commit interactive shapes to the ROI mask layer."""
+        """Commit shapes (if any) and sync ROI from viewer, then mark dirty."""
         self.layout_manager.commit_shape("roi")
-        print(f"[RefineHandler] ROI shapes committed to roi mask")
+        self._sync_roi_from_viewer()
+        self._update_refine_button_states()
+        print(f"[RefineHandler] ROI confirmed, dirty={self._is_roi_dirty()}")
 
     def _update_all_tools(self):
         self.layout_manager.set_drawing_tool(
@@ -267,18 +482,22 @@ class RefinementHandlerMixin:
 
     def _on_sync_masks(self):
         """Pull mask from active viewer and sync to all others + session."""
-        # Sync ROI mask (used during Refine/AutoPET tabs)
         self._sync_roi_from_viewer()
         print("Synced ROI mask from active viewer.")
 
     def _on_auto_sync(self, layer_type: str):
         """Auto-sync after debounced paint/erase (300ms after last stroke)."""
+        # Suppress auto-sync for ROI while preview dialog is active
+        if layer_type == "roi" and self._preview_active:
+            return
+
         mask_data = self.layout_manager.get_active_mask_data(layer_type)
         if mask_data is None:
             return
 
         if layer_type == "roi":
             self.session_manager.set_roi_mask(mask_data)
+            self._update_refine_button_states()
         elif layer_type == "tumor":
             self.session_manager.set_tumor_mask(mask_data)
 
@@ -295,6 +514,7 @@ class RefinementHandlerMixin:
 
     def _on_confirm_and_save(self):
         """Merge ROI into tumor, push to viewers, then save to disk."""
+        self._sync_roi_from_viewer()
         merged = self.session_manager.merge_roi_into_tumor()
         if merged is not None:
             self._push_mask_to_all("tumor", merged)
@@ -309,6 +529,8 @@ class RefinementHandlerMixin:
         self.control_panel.clear_report_results()
         self.layout_manager.hide_lesion_ids()
         self.control_panel.chk_show_lesion_ids.setChecked(False)
+
+        self._update_refine_button_states()
 
         # Persist to disk
         self.save_session()

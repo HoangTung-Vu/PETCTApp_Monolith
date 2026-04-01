@@ -1,4 +1,4 @@
-"""Refine tab: Manual tools, brush size, target layer, SUV refinement, Adaptive Thresholding."""
+"""Refine tab: Manual tools, brush size, SUV refinement, Adaptive/Iterative threshold computation."""
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFormLayout, QGroupBox,
@@ -10,7 +10,7 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 
 class RefineTab(QWidget):
-    """Manual drawing tools + SUV refinement + Adaptive Thresholding controls."""
+    """Manual drawing tools + SUV refinement + Adaptive/Iterative threshold computation."""
 
     # Signals
     sig_set_tool = pyqtSignal(str)           # 'pan_zoom', 'paint', 'sphere', 'square'
@@ -34,7 +34,7 @@ class RefineTab(QWidget):
         scroll.setWidgetResizable(True)
         scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
 
-        # Create a container widget for the scroll area
+        # Container widget
         container = QWidget()
         layout = QVBoxLayout(container)
 
@@ -66,7 +66,7 @@ class RefineTab(QWidget):
         self.btn_confirm_roi.setEnabled(False)
 
         self.btn_pan.clicked.connect(lambda: self._set_tool_and_enable_confirm("pan_zoom", False))
-        self.btn_paint.clicked.connect(lambda: self._set_tool_and_enable_confirm("paint", False))
+        self.btn_paint.clicked.connect(lambda: self._set_tool_and_enable_confirm("paint", True))
         self.btn_sphere.clicked.connect(lambda: self._set_tool_and_enable_confirm("sphere", True))
         self.btn_square.clicked.connect(lambda: self._set_tool_and_enable_confirm("square", True))
 
@@ -97,10 +97,15 @@ class RefineTab(QWidget):
         grp_brush.setLayout(brush_layout)
         layout.addWidget(grp_brush)
 
+        # ── Dirty state indicator ──
+        self.lbl_dirty = QLabel("")
+        self.lbl_dirty.setStyleSheet("color: #888; font-style: italic; padding: 2px;")
+        layout.addWidget(self.lbl_dirty)
+
         layout.addSpacing(5)
 
-        # 4. SUV Refinement
-        grp_suv = QGroupBox("SUV Refinement")
+        # 3. SUV Refinement (base thresholding)
+        grp_suv = QGroupBox("SUV Threshold (Base)")
         suv_layout = QFormLayout()
 
         self.spin_suv = QDoubleSpinBox()
@@ -108,8 +113,8 @@ class RefineTab(QWidget):
         self.spin_suv.setValue(2.5)
         self.spin_suv.setSingleStep(0.1)
 
-        self.btn_refine = QPushButton("Preview: SUV Threshold")
-        self.btn_refine.setToolTip("Preview the result without saving. Click 'Save Refinement' to persist.")
+        self.btn_refine = QPushButton("Apply: SUV Threshold")
+        self.btn_refine.setToolTip("Apply SUV threshold within painted ROI.")
         self.btn_refine.clicked.connect(self._emit_refine_suv)
 
         suv_layout.addRow("Min SUV:", self.spin_suv)
@@ -120,8 +125,8 @@ class RefineTab(QWidget):
 
         layout.addSpacing(8)
 
-        # 5. Adaptive Thresholding Refinement
-        grp_adaptive = QGroupBox("Adaptive Thresholding")
+        # 4. Adaptive Thresholding — computes threshold, shows in popup slider
+        grp_adaptive = QGroupBox("Adaptive Threshold (find SUV)")
         adaptive_layout = QFormLayout()
 
         self.spin_isocontour = QDoubleSpinBox()
@@ -137,8 +142,11 @@ class RefineTab(QWidget):
         self.spin_border_thickness.setRange(1, 10)
         self.spin_border_thickness.setValue(3)
 
-        self.btn_refine_adaptive = QPushButton("Preview: Adaptive Threshold")
-        self.btn_refine_adaptive.setToolTip("Preview the result without saving. Click 'Save Refinement' to persist.")
+        self.btn_refine_adaptive = QPushButton("Compute: Adaptive Threshold")
+        self.btn_refine_adaptive.setToolTip(
+            "Compute optimal SUV threshold per ROI region.\n"
+            "A popup slider will let you fine-tune before applying."
+        )
         self.btn_refine_adaptive.clicked.connect(self._emit_refine_adaptive)
 
         adaptive_layout.addRow("Isocontour Fraction:", self.spin_isocontour)
@@ -151,8 +159,8 @@ class RefineTab(QWidget):
 
         layout.addSpacing(8)
 
-        # 6. Iterative Thresholding Refinement
-        grp_iterative = QGroupBox("Iterative Thresholding")
+        # 5. Iterative Thresholding — computes threshold, shows in popup slider
+        grp_iterative = QGroupBox("Iterative Threshold (find SUV)")
         iterative_layout = QFormLayout()
 
         self.spin_m = QDoubleSpinBox()
@@ -180,8 +188,11 @@ class RefineTab(QWidget):
         self.spin_iters.setRange(1, 50)
         self.spin_iters.setValue(10)
 
-        self.btn_refine_iterative = QPushButton("Preview: Iterative Threshold")
-        self.btn_refine_iterative.setToolTip("Preview the result without saving. Click 'Save Refinement' to persist.")
+        self.btn_refine_iterative = QPushButton("Compute: Iterative Threshold")
+        self.btn_refine_iterative.setToolTip(
+            "Compute optimal SUV threshold per ROI region.\n"
+            "A popup slider will let you fine-tune before applying."
+        )
         self.btn_refine_iterative.clicked.connect(self._emit_refine_iterative)
 
         iterative_layout.addRow("m (Slope):", self.spin_m)
@@ -196,7 +207,7 @@ class RefineTab(QWidget):
 
         layout.addSpacing(8)
 
-        # 7. Save Refinement — explicit disk persist after preview
+        # 6. Save Refinement — explicit disk persist
         self.btn_save_refine = QPushButton("Save Refinement to Disk")
         self.btn_save_refine.setToolTip("Persist the previewed mask to disk (overwrites previous save).")
         self.btn_save_refine.clicked.connect(self.sig_save_refine_clicked.emit)
@@ -211,9 +222,10 @@ class RefineTab(QWidget):
 
         layout.addStretch()
 
-        # Set the container as the scroll area's widget
         scroll.setWidget(container)
         main_layout.addWidget(scroll)
+
+    # ── Signal emitters ──
 
     def _emit_refine_suv(self):
         val = self.spin_suv.value()
@@ -236,6 +248,20 @@ class RefineTab(QWidget):
     def _set_tool_and_enable_confirm(self, tool, enabled):
         self.btn_confirm_roi.setEnabled(enabled)
         self.sig_set_tool.emit(tool)
+
+    # ── Public API for handler ──
+
+    def set_refine_buttons_enabled(self, enabled: bool):
+        """Enable/disable all refine/compute buttons based on is_dirty state."""
+        self.btn_refine.setEnabled(enabled)
+        self.btn_refine_adaptive.setEnabled(enabled)
+        self.btn_refine_iterative.setEnabled(enabled)
+        if enabled:
+            self.lbl_dirty.setText("ROI painted — ready to refine")
+            self.lbl_dirty.setStyleSheet("color: #5cb85c; font-style: italic; padding: 2px;")
+        else:
+            self.lbl_dirty.setText("Paint ROI first to enable refinement")
+            self.lbl_dirty.setStyleSheet("color: #888; font-style: italic; padding: 2px;")
 
     def reset_tools(self):
         """Reset UI to reflect Pan/Zoom tool state."""

@@ -49,6 +49,79 @@ class AdaptiveThresholdingRefinementEngine:
     # Public API
     # ------------------------------------------------------------------
 
+    def compute_threshold(
+        self,
+        pet_image: nib.Nifti1Image,
+        roi_mask: np.ndarray,
+    ):
+        """Compute adaptive threshold per connected component in the ROI.
+
+        Uses scipy.ndimage.label to split ROI into connected components,
+        then computes the adaptive threshold for each independently.
+
+        Returns:
+            Tuple of (components_info, labels_array) where:
+            - components_info: list of dicts with keys
+              {label, threshold, n_voxels, i_max, i_mean, i_background}
+            - labels_array: ndarray from scipy.ndimage.label (same shape as roi_mask)
+        """
+        from scipy.ndimage import label as cc_label
+
+        pet_data = pet_image.get_fdata(dtype=np.float32)
+        roi = roi_mask > 0
+
+        if not roi.any():
+            raise ValueError("roi_mask is empty.")
+
+        labels, num_components = cc_label(roi)
+        components_info = []
+
+        for comp_id in range(1, num_components + 1):
+            comp = labels == comp_id
+            n_voxels = int(comp.sum())
+            if n_voxels < 2:
+                continue
+
+            i_max = float(pet_data[comp].max())
+            if i_max <= 0:
+                print(f"[Adaptive] Component {comp_id}: I_max <= 0, skipping.")
+                continue
+
+            isocontour = comp & (pet_data >= self.isocontour_fraction * i_max)
+            i_mean = self._compute_i_mean(pet_data, isocontour, comp)
+            i_bg = self._compute_i_background(pet_data, comp, isocontour)
+            thresh = 0.15 * i_mean + i_bg
+
+            # Fallback: if threshold >= i_max, the entire component would vanish.
+            if thresh >= i_max:
+                print(
+                    f"[Adaptive] Component {comp_id}: threshold {thresh:.4f} >= I_max {i_max:.4f}, "
+                    f"falling back to 0.5 * I_max = {0.5 * i_max:.4f}"
+                )
+                thresh = 0.5 * i_max
+
+            components_info.append({
+                "label": comp_id,
+                "threshold": float(thresh),
+                "n_voxels": n_voxels,
+                "i_max": float(i_max),
+                "i_mean": float(i_mean),
+                "i_background": float(i_bg),
+            })
+
+        if not components_info:
+            print("[Adaptive] No valid components found.")
+
+        # Expose for backward compat
+        if components_info:
+            weights = [c["n_voxels"] for c in components_info]
+            thresholds = [c["threshold"] for c in components_info]
+            self.last_threshold = float(np.average(thresholds, weights=weights))
+        else:
+            self.last_threshold = 0.0
+
+        return components_info, labels
+
     def refine(
         self,
         pet_image: nib.Nifti1Image,
