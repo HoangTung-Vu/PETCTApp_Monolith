@@ -248,7 +248,7 @@ class ReportEngine:
         g_tlg = metrics.get("gTLG", 0.0)
 
         # ── CSV ──
-        csv_path = report_dir / "report.csv"
+        csv_path = report_dir / "report_metabolic.csv"
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -277,19 +277,59 @@ class ReportEngine:
             writer.writerow([])
             writer.writerow(["gTLG", g_tlg])
 
-        # ── Additional Metrics (report2.csv) ──
+        # ── Additional Metrics (report_radiomics.csv) ──
         d_max = 0.0
+        lesion_a, lesion_b = None, None
         if len(lesions) >= 2:
             pts = np.array([les["center_physical"] for les in lesions])
             diffs = pts[:, np.newaxis, :] - pts[np.newaxis, :, :]
             dists = np.linalg.norm(diffs, axis=2)
-            d_max = round(float(np.max(dists)), 2)
+            idx_a, idx_b = np.unravel_index(np.argmax(dists), dists.shape)
+            d_max = round(float(dists[idx_a, idx_b]), 2)
+            lesion_a = lesions[idx_a]
+            lesion_b = lesions[idx_b]
 
-        report2_path = report_dir / "report2.csv"
+        report2_path = report_dir / "report_radiomics.csv"
         with open(report2_path, "w", newline="") as f2:
             writer2 = csv.writer(f2)
             writer2.writerow(["Metric", "Value"])
             writer2.writerow(["Dmax_mm", d_max])
+            
+            if lesion_a and lesion_b:
+                writer2.writerow([])
+                writer2.writerow(["Dmax Points Info"])
+                writer2.writerow([
+                    "id", "voxel_x", "voxel_y", "voxel_z",
+                    "physical_x_mm", "physical_y_mm", "physical_z_mm",
+                    "SUVmax", "SUVmean", "MTV_mL", "TLG",
+                ])
+                for les in (lesion_a, lesion_b):
+                    vx, vy, vz = les["center_voxel"]
+                    px, py, pz = les["center_physical"]
+                    tlg = round(les["SUVmean"] * les["MTV"], 2)
+                    app_z = shape_z - 1 - vz
+                    app_y = shape_y - 1 - vy
+                    app_x = vx
+                    writer2.writerow([
+                        les["id"],
+                        int(round(app_x)), int(round(app_y)), int(round(app_z)),
+                        px, py, pz,
+                        les["SUVmax"], les["SUVmean"], les["MTV"], tlg,
+                    ])
+
+        # ── Isolated Masks ──
+        # Re-run connected components to map lesion IDs back to local mask labels
+        from scipy.ndimage import label, find_objects
+        labeled_array, _ = label(mask_data > 0)
+        component_slices = find_objects(labeled_array)
+        label_map = {}
+        for index, sl in enumerate(component_slices, start=1):
+            if sl is None: continue
+            bbox = (sl[0].start, sl[1].start, sl[2].start, sl[0].stop - 1, sl[1].stop - 1, sl[2].stop - 1)
+            for les in lesions:
+                if les["bbox"] == bbox:
+                    label_map[les["id"]] = index
+                    break
 
         # ── Per-tumor images ──
         images_dir = report_dir / "images"
@@ -317,14 +357,22 @@ class ReportEngine:
             iy = max(0, min(iy, ct_napari.shape[1] - 1))
             ix = max(0, min(ix, ct_napari.shape[2] - 1))
 
+            # Isolate mask for this specific tumor
+            mask_label = label_map.get(lid)
+            if mask_label is not None:
+                isolated_mask_data = (labeled_array == mask_label).astype(np.uint8)
+                isolated_mask_napari = to_napari(isolated_mask_data)
+            else:
+                isolated_mask_napari = mask_napari  # Fallback
+
             # Napari (Z, Y, X) slicing:
             # Axial:    data[iz, :, :] -> shape (Y, X) -> Width=X, Height=Y -> aspect sx/sy
             # Coronal:  data[:, iy, :] -> shape (Z, X) -> Width=X, Height=Z -> aspect sx/sz
             # Sagittal: data[:, :, ix] -> shape (Z, Y) -> Width=Y, Height=Z -> aspect sy/sz
             slices = {
-                "axial":    (ct_napari[iz, :, :], pet_napari[iz, :, :], mask_napari[iz, :, :], sx, sy),
-                "coronal":  (ct_napari[:, iy, :], pet_napari[:, iy, :], mask_napari[:, iy, :], sx, sz),
-                "sagittal": (ct_napari[:, :, ix], pet_napari[:, :, ix], mask_napari[:, :, ix], sy, sz),
+                "axial":    (ct_napari[iz, :, :], pet_napari[iz, :, :], isolated_mask_napari[iz, :, :], sx, sy),
+                "coronal":  (ct_napari[:, iy, :], pet_napari[:, iy, :], isolated_mask_napari[:, iy, :], sx, sz),
+                "sagittal": (ct_napari[:, :, ix], pet_napari[:, :, ix], isolated_mask_napari[:, :, ix], sy, sz),
             }
 
             for plane, (ct_sl, pet_sl, mask_sl, step_w, step_h) in slices.items():
@@ -348,3 +396,76 @@ class ReportEngine:
 
                 ct_img.save(tumor_dir / f"{plane}_ct.png")
                 pet_img.save(tumor_dir / f"{plane}_pet.png")
+
+        # ── Dmax images ──
+        if lesion_a and lesion_b:
+            dmax_dir = images_dir / "dmax"
+            dmax_dir.mkdir(exist_ok=True)
+            
+            label_a = label_map.get(lesion_a["id"])
+            label_b = label_map.get(lesion_b["id"])
+            
+            if label_a is not None and label_b is not None:
+                dmax_mask_data = ((labeled_array == label_a) | (labeled_array == label_b)).astype(np.uint8)
+            else:
+                dmax_mask_data = mask_data
+                
+            dmax_mask_napari = to_napari(dmax_mask_data)
+            
+            # Map coordinates to Napari indices
+            vza, vya, vxa = lesion_a["center_voxel"][2], lesion_a["center_voxel"][1], lesion_a["center_voxel"][0]
+            vzb, vyb, vxb = lesion_b["center_voxel"][2], lesion_b["center_voxel"][1], lesion_b["center_voxel"][0]
+            
+            z1, y1, x1 = shape_z - 1 - vza, shape_y - 1 - vya, vxa
+            z2, y2, x2 = shape_z - 1 - vzb, shape_y - 1 - vyb, vxb
+            
+            mid_z = max(0, min(int(round((z1 + z2) / 2)), ct_napari.shape[0] - 1))
+            mid_y = max(0, min(int(round((y1 + y2) / 2)), ct_napari.shape[1] - 1))
+            mid_x = max(0, min(int(round((x1 + x2) / 2)), ct_napari.shape[2] - 1))
+            
+            # Use MIP for PET and Mask, midpoint for CT
+            pet_axial_mip = np.max(pet_napari, axis=0)
+            mask_axial_mip = np.max(dmax_mask_napari, axis=0)
+            
+            pet_coronal_mip = np.max(pet_napari, axis=1)
+            mask_coronal_mip = np.max(dmax_mask_napari, axis=1)
+            
+            pet_sagittal_mip = np.max(pet_napari, axis=2)
+            mask_sagittal_mip = np.max(dmax_mask_napari, axis=2)
+            
+            dmax_slices = {
+                "axial": (ct_napari[mid_z, :, :], pet_axial_mip, mask_axial_mip, sx, sy, (x1, y1), (x2, y2)),
+                "coronal": (ct_napari[:, mid_y, :], pet_coronal_mip, mask_coronal_mip, sx, sz, (x1, z1), (x2, z2)),
+                "sagittal": (ct_napari[:, :, mid_x], pet_sagittal_mip, mask_sagittal_mip, sy, sz, (y1, z1), (y2, z2)),
+            }
+            
+            from PIL import ImageDraw
+            for plane, (ct_sl, pet_sl, mask_sl, step_w, step_h, p1, p2) in dmax_slices.items():
+                ct_img = ReportEngine._render_slice(ct_sl, mask_sl, ct_w, ct_l, ct_colormap, mask_opacity)
+                pet_img = ReportEngine._render_slice(pet_sl, mask_sl, pet_w, pet_l, pet_colormap, mask_opacity)
+                
+                base_w, base_h = ct_img.size
+                min_step = min(step_w, step_h)
+                new_w, new_h = base_w, base_h
+                if min_step > 0:
+                    new_w = int(round(base_w * (step_w / min_step)))
+                    new_h = int(round(base_h * (step_h / min_step)))
+                    if new_w != base_w or new_h != base_h:
+                        resample_filter = getattr(Image, "Resampling", Image).LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+                        ct_img = ct_img.resize((new_w, new_h), resample_filter)
+                        pet_img = pet_img.resize((new_w, new_h), resample_filter)
+                        
+                # Scale coordinates to resized image
+                p1_scaled = (p1[0] * (new_w / base_w), p1[1] * (new_h / base_h))
+                p2_scaled = (p2[0] * (new_w / base_w), p2[1] * (new_h / base_h))
+                
+                # Draw a light red line connecting the tumors
+                line_color = (255, 128, 128)
+                img_draw_ct = ImageDraw.Draw(ct_img)
+                img_draw_ct.line([p1_scaled, p2_scaled], fill=line_color, width=3)
+                
+                img_draw_pet = ImageDraw.Draw(pet_img)
+                img_draw_pet.line([p1_scaled, p2_scaled], fill=line_color, width=3)
+                
+                ct_img.save(dmax_dir / f"{plane}_ct.png")
+                pet_img.save(dmax_dir / f"{plane}_pet.png")
