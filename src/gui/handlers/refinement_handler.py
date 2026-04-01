@@ -36,7 +36,7 @@ class RefinementHandlerMixin:
     def _is_roi_dirty(self) -> bool:
         """Dynamically check if ROI mask has painted content."""
         roi_data = self.session_manager.get_roi_mask_data()
-        return roi_data is not None and roi_data.any()
+        return bool(roi_data is not None and roi_data.any())
 
     def _update_refine_button_states(self):
         self.control_panel.refine_tab.set_refine_buttons_enabled(self._is_roi_dirty())
@@ -248,7 +248,19 @@ class RefinementHandlerMixin:
             f"Showing threshold dialog(s)..."
         )
 
-        # Process components sequentially via dialogs
+        # Force tool to pan_zoom so user can safely navigate viewers without painting
+        self.control_panel.refine_tab.reset_tools()
+        # Disable other workflow tabs so user cannot start other actions while previewing,
+        # but keep View & Display tab accessible for crosshair/opacity adjustments.
+        for tab in [
+            self.control_panel.refine_tab,
+            self.control_panel.workflow_tab,
+            self.control_panel.autopet_tab,
+            self.control_panel.eraser_tab
+        ]:
+            tab.setEnabled(False)
+
+        # Process components sequentially via modeless dialogs
         self._current_component_idx = 0
         self._show_next_component_dialog()
 
@@ -279,32 +291,51 @@ class RefinementHandlerMixin:
             parent=self,
         )
 
+        # Modeless dialog allows interacting with main window (viewers)
+        dialog.setModal(False)
+
         # Live preview as user adjusts slider
         dialog.threshold_changed.connect(
             lambda thresh: self._update_component_preview(comp["label"], thresh)
         )
 
-        result = dialog.exec()
-        if result:
-            # User clicked Apply — store the adjusted threshold
-            self._components_info[idx]["threshold"] = dialog.final_threshold
-            print(
-                f"[RefineHandler] Component {comp['label']}: "
-                f"final threshold = {dialog.final_threshold:.4f} SUV"
-            )
-            self._current_component_idx += 1
-            self._show_next_component_dialog()
-        else:
-            # User closed dialog — cancel, restore original ROI to session & viewers
-            print("[RefineHandler] Threshold adjustment cancelled.")
-            self._preview_active = False
-            if self._painted_roi is not None:
-                self.session_manager.set_roi_mask(self._painted_roi)
-                self._push_mask_to_all("roi", self._painted_roi)
-            # Keep dirty state true natively as mask is restored
-            self._painted_roi = None
-            self._roi_labels = None
-            self._components_info = None
+        dialog.accepted.connect(lambda: self._on_component_accepted(dialog, comp, idx))
+        dialog.rejected.connect(self._on_component_rejected)
+
+        self._current_preview_dialog = dialog
+        dialog.show()
+
+    def _on_component_accepted(self, dialog, comp, idx):
+        """Handle user applying the threshold for the current component."""
+        self._components_info[idx]["threshold"] = dialog.final_threshold
+        print(
+            f"[RefineHandler] Component {comp['label']}: "
+            f"final threshold = {dialog.final_threshold:.4f} SUV"
+        )
+        self._current_component_idx += 1
+        self._show_next_component_dialog()
+
+    def _on_component_rejected(self):
+        """Handle user cancelling the threshold adjustment."""
+        print("[RefineHandler] Threshold adjustment cancelled.")
+        self._preview_active = False
+        if self._painted_roi is not None:
+            self.session_manager.set_roi_mask(self._painted_roi)
+            self._push_mask_to_all("roi", self._painted_roi)
+        # Keep dirty state true natively as mask is restored
+        self._painted_roi = None
+        self._roi_labels = None
+        self._components_info = None
+        self._current_preview_dialog = None
+        
+        # Re-enable tabs
+        for tab in [
+            self.control_panel.refine_tab,
+            self.control_panel.workflow_tab,
+            self.control_panel.autopet_tab,
+            self.control_panel.eraser_tab
+        ]:
+            tab.setEnabled(True)
 
     def _jump_to_component(self, label_id):
         """Jump the viewer to the centroid of the given connected component."""
@@ -360,6 +391,16 @@ class RefinementHandlerMixin:
 
     def _apply_all_component_thresholds(self):
         """Apply the final per-component thresholds, merge into tumor_mask, clear ROI."""
+        # Re-enable tabs since preview is finished
+        for tab in [
+            self.control_panel.refine_tab,
+            self.control_panel.workflow_tab,
+            self.control_panel.autopet_tab,
+            self.control_panel.eraser_tab
+        ]:
+            tab.setEnabled(True)
+        self._current_preview_dialog = None
+
         if self._painted_roi is None or self._roi_labels is None:
             return
 
@@ -474,6 +515,10 @@ class RefinementHandlerMixin:
 
     def _sync_roi_from_viewer(self):
         """Pull ROI mask from active viewer and sync to session manager."""
+        if getattr(self, '_preview_active', False):
+            # Don't sync the temporary preview mask back to the session natively
+            return
+
         mask_data = self.layout_manager.get_active_mask_data("roi")
         if mask_data is None:
             return
