@@ -20,14 +20,30 @@ class ReportHandlerMixin:
         self.report_save_worker = SaveWorker(self.session_manager)
         self.report_save_worker.finished.connect(self._start_report_worker)
         self.report_save_worker.error.connect(self._on_report_error)
-        
+
         self.control_panel.show_report_progress()
         self._set_ui_busy(True)
         self.report_save_worker.start()
 
     def _start_report_worker(self):
         from ..workers import ReportWorker
-        self.report_worker = ReportWorker(self.session_manager)
+
+        # Read current display params from layout_manager
+        lm = self.layout_manager
+        ct_wl = lm._ct_wl
+        pet_wl = lm._pet_wl
+        ct_colormap = lm._ct_colormap
+        pet_colormap = lm._pet_colormap
+        mask_opacity = lm._tumor_opacity
+
+        self.report_worker = ReportWorker(
+            self.session_manager,
+            ct_wl=ct_wl,
+            pet_wl=pet_wl,
+            ct_colormap=ct_colormap,
+            pet_colormap=pet_colormap,
+            mask_opacity=mask_opacity,
+        )
         self.report_worker.finished.connect(self._on_report_finished)
         self.report_worker.error.connect(self._on_report_error)
         self.report_worker.start()

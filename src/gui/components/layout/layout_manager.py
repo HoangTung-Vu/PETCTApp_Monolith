@@ -84,6 +84,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         self._pet_wl = (10.0, 5.0)
         self._ct_colormap = "gray"
         self._pet_colormap = "jet"
+        self._tumor_opacity = 0.7
 
         # Crosshair state
         self._crosshair_enabled = False
@@ -766,6 +767,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
                     layer.opacity = value
 
     def set_tumor_opacity(self, value: float):
+        self._tumor_opacity = value
         for widget in self._get_all_loaded_viewers():
             name = widget.LAYER_NAMES.get("tumor", "tumor")
             for layer in widget.viewer.layers:
