@@ -22,7 +22,7 @@ class EraserHandlerMixin:
             self.layout_manager.disable_eraser_click_mode()
             print("[Eraser] Mode disabled.")
 
-    def _on_eraser_region_removed(self, old_mask_xyz, new_mask_xyz):
+    def _on_eraser_region_removed(self, old_mask_xyz, new_mask_xyz, mask_zyx=None):
         """Called after eraser removes a connected component. Preview only (no save)."""
         old_prob_data = self.session_manager.get_tumor_prob()
 
@@ -50,7 +50,7 @@ class EraserHandlerMixin:
 
         # Update session manager with erased mask (in-memory only)
         self.session_manager.set_tumor_mask(new_mask_xyz)
-        self._push_mask_to_all("tumor", new_mask_xyz)
+        self._push_mask_to_all("tumor", new_mask_xyz, data_zyx=mask_zyx)
 
         # Clear report UI and hide lesion IDs
         self.control_panel.clear_report_results()

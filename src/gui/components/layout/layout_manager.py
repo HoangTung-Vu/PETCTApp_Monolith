@@ -29,7 +29,7 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
     """Manages Grid, Overlay, Mono, MonoSingle, and 3D layouts."""
 
     sig_autopet_click_added    = pyqtSignal(list, str)
-    sig_eraser_region_removed  = pyqtSignal(object, object)
+    sig_eraser_region_removed  = pyqtSignal(object, object, object)
     sig_eraser_background_click = pyqtSignal()
     sig_mask_painted           = pyqtSignal(str)
     sig_shape_committed        = pyqtSignal(str)
@@ -707,12 +707,11 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             self._mono_single_combo.setCurrentText(modality)
             self._mono_single_combo.blockSignals(False)
             
-            # Only discard if we are changing modality
-            if current_modality.upper() != modality.upper():
-                self._loaded_layouts.discard("mono_single")
-                
             self.stack.setCurrentWidget(self.mono_single_widget)
             self._load_mono_single()
+            # Visibility toggle is instant — no need to discard/reload layout
+            if current_modality.upper() != modality.upper():
+                self._update_mono_single_visibility()
 
         elif mode.startswith("mono"):
             self.stack.setCurrentWidget(self.mono_widget)
@@ -860,10 +859,11 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             
         self._cached_data_zyx[mask_type] = data_zyx
         self._disconnect_mask_events()
-        for v in self._get_all_loaded_viewers():
+        for v in self._get_visible_viewers():
             v.load_mask_zyx(data_zyx, mask_type)
-        if self._is_3d_loaded:
+        if self._is_3d_loaded and self.stack.currentWidget() == self.view_3d_widget:
             self.viewer_3d.load_mask_zyx(data_zyx, mask_type)
+        self._invalidate_non_visible_layouts()
         self._connect_mask_events()
 
     def _invalidate_non_visible_layouts(self):
@@ -904,10 +904,11 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
         if self._is_3d_loaded and self._cached_data_zyx[mask_type] is not None:
             self.viewer_3d.load_mask_zyx(self._cached_data_zyx[mask_type], mask_type)
         
-        # Propagate the synced (or updated) mask to all loaded layouts so they are ready when switched to
+        # Propagate the synced mask to visible viewers; non-visible will reload lazily
         if self._cached_data_zyx[mask_type] is not None:
-            for v in self._get_all_loaded_viewers():
+            for v in self._get_visible_viewers():
                 v.load_mask_zyx(self._cached_data_zyx[mask_type], mask_type)
+            self._invalidate_non_visible_layouts()
 
     # ── Viewer Clear ─────────────────────────────────────────────────────
 

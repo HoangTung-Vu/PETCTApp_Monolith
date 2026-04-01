@@ -72,14 +72,9 @@ class EraserMixin:
             mask_zyx[component_mask] = 0
             print(f"[Eraser] Removed component at {coord_zyx} ({num_voxels} voxels).")
 
-            for v in self._get_all_loaded_viewers():
-                tumor_name = v.LAYER_NAMES.get("tumor", "Tumor Mask")
-                if tumor_name in v.viewer.layers:
-                    v.viewer.layers[tumor_name].refresh()
-
             new_mask_xyz = from_napari(mask_zyx).copy()
             self._cached_data["tumor"] = new_mask_xyz
 
-            self.sig_eraser_region_removed.emit(old_mask_xyz, new_mask_xyz)
+            self.sig_eraser_region_removed.emit(old_mask_xyz, new_mask_xyz, mask_zyx)
 
         return on_click
