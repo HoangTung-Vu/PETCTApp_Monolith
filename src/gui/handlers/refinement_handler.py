@@ -43,39 +43,24 @@ class RefinementHandlerMixin:
 
     # ── Merge thresholded result into tumor ──
 
-    def _merge_result_into_tumor(self, result, base_roi):
-        """Replace tumor voxels within ROI with thresholded result, clear ROI,
-        push both layers to viewers.
+    # ── Apply thresholded result to ROI ──
 
-        Args:
-            result: uint8 array — thresholded voxels (1 = tumor, 0 = not)
-            base_roi: uint8 array — the original painted ROI (defines the region)
-        """
-        tumor_data = self.session_manager.get_tumor_mask_data()
-        if tumor_data is None:
-            tumor_data = np.zeros(result.shape, dtype=np.uint8)
-        else:
-            tumor_data = tumor_data.copy()
+    def _apply_result_to_roi(self, result, base_roi):
+        """Applies thresholded result strictly to the ROI mask (deferring tumor merge to Save)."""
+        try:
+            roi_data = self.session_manager.get_roi_mask_data()
+            if roi_data is None:
+                roi_data = np.zeros_like(result)
+            else:
+                roi_data = roi_data.copy()
 
-        # Within ROI: replace tumor with thresholded result
-        roi = base_roi > 0
-        tumor_data[roi] = result[roi]
-        tumor_data = (tumor_data > 0).astype(np.uint8)
+            # Using assignment replaces existing ROI correctly within the painted box
+            roi_data[base_roi > 0] = result[base_roi > 0]
 
-        self.session_manager.set_tumor_mask(tumor_data)
-        self._push_mask_to_all("tumor", tumor_data)
-
-        # Clear ROI mask
-        self.session_manager.clear_roi_mask()
-        cleared_roi = self.session_manager.get_roi_mask_data()
-        if cleared_roi is not None:
-            self._push_mask_to_all("roi", cleared_roi)
-
-        # Clear stale lesion data
-        self.session_manager.clear_lesion_data()
-        self.control_panel.clear_report_results()
-        self.layout_manager.hide_lesion_ids()
-        self.control_panel.chk_show_lesion_ids.setChecked(False)
+            self.session_manager.set_roi_mask(roi_data)
+            self._push_mask_to_all("roi", roi_data)
+        except Exception as e:
+            print(f"Apply ROI Failed: {e}")
 
     def _clear_refinement_state(self):
         """Reset all transient refinement state after apply or cancel."""
@@ -85,13 +70,17 @@ class RefinementHandlerMixin:
         self._components_info = None
         self._current_component_idx = 0
         self._cached_pet_f32 = None
+        self._current_preview_dialog = None
+        self._base_preview = None
+        self._active_comp_mask = None
+        self._active_pet_vals = None
         self._update_refine_button_states()
         self.control_panel.refine_tab.reset_tools()
 
     # ── SUV Threshold Apply (synchronous, the "base" operation) ──
 
     def _on_refine_suv(self, threshold):
-        """Apply SUV threshold to painted ROI → merge into tumor (synchronous)."""
+        """Apply SUV threshold to painted ROI → update ROI (synchronous)."""
         if not self._is_roi_dirty():
             QMessageBox.information(
                 self, "No ROI Change",
@@ -121,11 +110,11 @@ class RefinementHandlerMixin:
         result = np.zeros(base_roi.shape, dtype=np.uint8)
         result[roi & (pet_data >= threshold)] = 1
 
-        # Merge into tumor_mask, clear ROI
-        self._merge_result_into_tumor(result, base_roi)
+        # Apply to ROI
+        self._apply_result_to_roi(result, base_roi)
         self._clear_refinement_state()
 
-        print(f"[RefineHandler] SUV threshold {threshold:.4f} applied and merged into tumor mask.")
+        print(f"[RefineHandler] SUV threshold {threshold:.4f} applied to ROI.")
 
     # ── Adaptive / Iterative — compute threshold only ──
 
@@ -265,9 +254,8 @@ class RefinementHandlerMixin:
         self._show_next_component_dialog()
 
     def _show_next_component_dialog(self):
-        """Show the threshold preview dialog for the current component."""
+        """Show the threshold dialog for the current component."""
         if self._current_component_idx >= len(self._components_info):
-            # All components processed — apply all thresholds and merge into tumor
             self._apply_all_component_thresholds()
             return
 
@@ -277,11 +265,22 @@ class RefinementHandlerMixin:
         total = len(self._components_info)
         idx = self._current_component_idx
 
+        # PRECOMPUTE: Static background components (i < current and i > current)
+        self._base_preview = np.zeros(self._painted_roi.shape, dtype=np.uint8)
+        pet_data = self._cached_pet_f32
+        for i, c in enumerate(self._components_info):
+            c_mask = self._roi_labels == c["label"]
+            if i < self._current_component_idx:
+                self._base_preview[c_mask & (pet_data >= c["threshold"])] = 1
+            elif i > self._current_component_idx:
+                self._base_preview[c_mask & (self._painted_roi > 0)] = 1
+
+        # PRECOMPUTE: Extract 1D array of PET values and boolean 3D mask for CURRENT component
+        self._active_comp_mask = (self._roi_labels == comp["label"])
+        self._active_pet_vals = pet_data[self._active_comp_mask]
+
         # Jump viewer to centroid of this component
         self._jump_to_component(comp["label"])
-
-        # Show initial preview for this component
-        self._update_component_preview(comp["label"], comp["threshold"])
 
         dialog = ThresholdPreviewDialog(
             component_info=comp,
@@ -293,10 +292,13 @@ class RefinementHandlerMixin:
 
         # Modeless dialog allows interacting with main window (viewers)
         dialog.setModal(False)
+        
+        # Initial preview before user adjusts slider
+        self._update_component_preview(comp["threshold"])
 
-        # Live preview as user adjusts slider
+        # Live preview as user adjusts slider - lightning fast using precomputed 1D arrays
         dialog.threshold_changed.connect(
-            lambda thresh: self._update_component_preview(comp["label"], thresh)
+            lambda thresh: self._update_component_preview(thresh)
         )
 
         dialog.accepted.connect(lambda: self._on_component_accepted(dialog, comp, idx))
@@ -364,28 +366,16 @@ class RefinementHandlerMixin:
         self.layout_manager.jump_to_position(z_napari, y_napari, x_napari)
         print(f"[RefineHandler] Jumped to component {label_id} centroid: z={z_napari:.0f}, y={y_napari:.0f}, x={x_napari:.0f}")
 
-    def _update_component_preview(self, label_id, threshold):
-        """Update ROI display to show thresholded voxels for one component (live preview)."""
-        if self._painted_roi is None or self._roi_labels is None:
-            return
+    def _update_component_preview(self, threshold):
+        """Update the ROI mask in the viewer during threshold adjustment."""
+        # 1. Start with the precomputed static preview parts
+        preview = self._base_preview.copy()
 
-        pet_data = self._cached_pet_f32
-
-        # Build preview: show thresholded result for ALL components processed so far,
-        # plus the current component with the given threshold.
-        preview = np.zeros(self._painted_roi.shape, dtype=np.uint8)
-
-        for i, comp in enumerate(self._components_info):
-            comp_mask = self._roi_labels == comp["label"]
-            if i < self._current_component_idx:
-                # Already-accepted component: use its stored threshold
-                preview[comp_mask & (pet_data >= comp["threshold"])] = 1
-            elif i == self._current_component_idx:
-                # Current component: use the slider threshold
-                preview[comp_mask & (pet_data >= threshold)] = 1
-            else:
-                # Future component: show original painted ROI (not yet thresholded)
-                preview[comp_mask & (self._painted_roi > 0)] = 1
+        # 2. Fast 1D boolean masking for the active component only
+        valid_indices = self._active_pet_vals >= threshold
+        
+        # 3. Assign 1D validation back into the 3D footprint
+        preview[self._active_comp_mask] = valid_indices
 
         self._push_mask_to_all("roi", preview)
 
@@ -404,7 +394,7 @@ class RefinementHandlerMixin:
         if self._painted_roi is None or self._roi_labels is None:
             return
 
-        pet_data = self.session_manager.pet_image.get_fdata(dtype=np.float32)
+        pet_data = self.session_manager.pet_image.get_fdata()
         result = np.zeros(self._painted_roi.shape, dtype=np.uint8)
 
         for comp in self._components_info:
@@ -416,11 +406,11 @@ class RefinementHandlerMixin:
             avg = np.mean([c["threshold"] for c in self._components_info])
             self.control_panel.refine_tab.spin_suv.setValue(round(avg, 2))
 
-        # Merge into tumor_mask, clear ROI
-        self._merge_result_into_tumor(result, self._painted_roi)
+        # Apply threshold to ROI mask
+        self._apply_result_to_roi(result, self._painted_roi)
         self._clear_refinement_state()
 
-        print("[RefineHandler] All component thresholds applied and merged into tumor mask.")
+        print("[RefineHandler] All component thresholds applied to ROI mask.")
 
     # ── Error handling ──
 
@@ -452,7 +442,16 @@ class RefinementHandlerMixin:
         if is_refine_mode and not was_refine_mode:
             print("[RefineHandler] Entering Refine/AutoPET. Ensuring ROI mask exists...")
 
-            if self.session_manager.roi_mask is not None:
+            if getattr(self, '_preview_active', False) and getattr(self, '_current_preview_dialog', None):
+                print("[RefineHandler] Preview active, restoring active threshold preview...")
+                thresh = self._current_preview_dialog.slider.value() / 100.0
+                self._update_component_preview(thresh)
+                
+                # Still need to push tumor mask
+                tumor_data = self.session_manager.get_tumor_mask_data()
+                if tumor_data is not None:
+                    self._push_mask_to_all("tumor", tumor_data)
+            elif self.session_manager.roi_mask is not None:
                 # ROI already exists from a previous visit — re-push to viewers
                 roi_data = self.session_manager.get_roi_mask_data()
                 tumor_data = self.session_manager.get_tumor_mask_data()
