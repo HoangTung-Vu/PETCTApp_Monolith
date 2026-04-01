@@ -136,6 +136,8 @@ class ViewerWidget(QWidget):
             layer = self.viewer.layers[name]
             if layer.data is not data_zyx:
                 layer.data = data_zyx
+            else:
+                layer.refresh()
         else:
             kwargs = dict(name=name, opacity=0.7)
             if layer_type == "roi":

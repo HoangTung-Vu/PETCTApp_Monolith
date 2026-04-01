@@ -858,11 +858,10 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             
         self._cached_data_zyx[mask_type] = data_zyx
         self._disconnect_mask_events()
-        for v in self._get_visible_viewers():
+        for v in self._get_all_loaded_viewers():
             v.load_mask_zyx(data_zyx, mask_type)
         if self._is_3d_loaded:
             self.viewer_3d.load_mask_zyx(data_zyx, mask_type)
-        self._invalidate_non_visible_layouts()
         self._connect_mask_events()
 
     def _invalidate_non_visible_layouts(self):
@@ -902,7 +901,11 @@ class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
             self._cached_data_zyx[mask_type] = to_napari(mask_data.astype(np.uint8))
         if self._is_3d_loaded and self._cached_data_zyx[mask_type] is not None:
             self.viewer_3d.load_mask_zyx(self._cached_data_zyx[mask_type], mask_type)
-        self._invalidate_non_visible_layouts()
+        
+        # Propagate the synced (or updated) mask to all loaded layouts so they are ready when switched to
+        if self._cached_data_zyx[mask_type] is not None:
+            for v in self._get_all_loaded_viewers():
+                v.load_mask_zyx(self._cached_data_zyx[mask_type], mask_type)
 
     # ── Viewer Clear ─────────────────────────────────────────────────────
 
