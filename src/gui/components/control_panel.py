@@ -46,7 +46,11 @@ class ControlPanel(QWidget):
     sig_interpolation_toggled = pyqtSignal(bool)
     sig_crosshair_toggled = pyqtSignal(bool)
 
-    # Refine
+    # Refine — Manual Edit (tumor mask)
+    sig_manual_edit_tool = pyqtSignal(str)
+    sig_manual_edit_brush_changed = pyqtSignal(int)
+
+    # Refine — ROI tools
     sig_set_tool = pyqtSignal(str)
     sig_brush_size_changed = pyqtSignal(int)
     sig_refine_suv_clicked = pyqtSignal(float)
@@ -124,8 +128,12 @@ class ControlPanel(QWidget):
         vd.sig_interpolation_toggled.connect(self.sig_interpolation_toggled)
         vd.sig_crosshair_toggled.connect(self.sig_crosshair_toggled)
 
-        # Refine
+        # Refine — Manual Edit
         r = self.refine_tab
+        r.sig_manual_edit_tool.connect(self.sig_manual_edit_tool)
+        r.sig_manual_edit_brush_changed.connect(self.sig_manual_edit_brush_changed)
+
+        # Refine — ROI tools
         r.sig_set_tool.connect(self.sig_set_tool)
         r.sig_brush_size_changed.connect(self.sig_brush_size_changed)
         r.sig_refine_suv_clicked.connect(self.sig_refine_suv_clicked)
@@ -221,6 +229,8 @@ class ControlPanel(QWidget):
         if index != self._view_display_tab_index:
             self.refine_tab.btn_pan.setChecked(True)
             self.sig_set_tool.emit("pan_zoom")
+            # Also reset manual edit tools
+            self.refine_tab.reset_manual_edit()
 
         # Always disable eraser if it was enabled
         if self.eraser_tab.btn_eraser_toggle.isChecked():

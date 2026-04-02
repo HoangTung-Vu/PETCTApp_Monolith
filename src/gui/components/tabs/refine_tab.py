@@ -1,4 +1,4 @@
-"""Refine tab: Manual tools, brush size, SUV refinement, Adaptive/Iterative threshold computation."""
+"""Refine tab: Manual edit (tumor), ROI tools, SUV refinement, Adaptive/Iterative threshold computation."""
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFormLayout, QGroupBox,
@@ -10,9 +10,13 @@ from PyQt6.QtCore import Qt, pyqtSignal
 
 
 class RefineTab(QWidget):
-    """Manual drawing tools + SUV refinement + Adaptive/Iterative threshold computation."""
+    """Manual edit (tumor) + ROI drawing tools + SUV refinement + threshold computation."""
 
-    # Signals
+    # Signals — Manual Edit (tumor mask)
+    sig_manual_edit_tool = pyqtSignal(str)       # 'pan_zoom', 'paint', 'erase'
+    sig_manual_edit_brush_changed = pyqtSignal(int)
+
+    # Signals — ROI tools
     sig_set_tool = pyqtSignal(str)           # 'pan_zoom', 'paint', 'sphere', 'square'
     sig_brush_size_changed = pyqtSignal(int)
     sig_refine_suv_clicked = pyqtSignal(float)  # threshold
@@ -38,8 +42,64 @@ class RefineTab(QWidget):
         container = QWidget()
         layout = QVBoxLayout(container)
 
+        # ═══════════════════════════════════════════════════════════════
+        # SECTION 1: Manual Edit — paint/erase directly on tumor mask
+        # ═══════════════════════════════════════════════════════════════
+        grp_manual = QGroupBox("Manual Edit (Tumor Mask)")
+        manual_layout = QVBoxLayout()
+
+        # Tool buttons: Pan/Zoom, Paint, Erase
+        manual_btn_layout = QHBoxLayout()
+        self.btn_manual_pan = QPushButton("Pan/Zoom")
+        self.btn_manual_paint = QPushButton("Paint")
+        self.btn_manual_erase = QPushButton("Erase")
+
+        self.btn_manual_pan.setCheckable(True)
+        self.btn_manual_paint.setCheckable(True)
+        self.btn_manual_erase.setCheckable(True)
+
+        self.manual_tool_group = QButtonGroup(self)
+        self.manual_tool_group.addButton(self.btn_manual_pan)
+        self.manual_tool_group.addButton(self.btn_manual_paint)
+        self.manual_tool_group.addButton(self.btn_manual_erase)
+        self.btn_manual_pan.setChecked(True)
+
+        self.btn_manual_pan.clicked.connect(lambda: self.sig_manual_edit_tool.emit("pan_zoom"))
+        self.btn_manual_paint.clicked.connect(lambda: self.sig_manual_edit_tool.emit("paint"))
+        self.btn_manual_erase.clicked.connect(lambda: self.sig_manual_edit_tool.emit("erase"))
+
+        manual_btn_layout.addWidget(self.btn_manual_pan)
+        manual_btn_layout.addWidget(self.btn_manual_paint)
+        manual_btn_layout.addWidget(self.btn_manual_erase)
+        manual_layout.addLayout(manual_btn_layout)
+
+        # Brush size slider
+        manual_brush_layout = QHBoxLayout()
+        manual_brush_layout.addWidget(QLabel("Brush:"))
+        self.slider_manual_brush = QSlider(Qt.Orientation.Horizontal)
+        self.slider_manual_brush.setRange(1, 50)
+        self.slider_manual_brush.setValue(10)
+        self.lbl_manual_brush = QLabel("10")
+        self.lbl_manual_brush.setFixedWidth(30)
+
+        self.slider_manual_brush.valueChanged.connect(self.sig_manual_edit_brush_changed.emit)
+        self.slider_manual_brush.valueChanged.connect(lambda v: self.lbl_manual_brush.setText(str(v)))
+
+        manual_brush_layout.addWidget(self.slider_manual_brush)
+        manual_brush_layout.addWidget(self.lbl_manual_brush)
+        manual_layout.addLayout(manual_brush_layout)
+
+        grp_manual.setLayout(manual_layout)
+        layout.addWidget(grp_manual)
+
+        layout.addSpacing(8)
+
+        # ═══════════════════════════════════════════════════════════════
+        # SECTION 2: ROI Tools — paint ROI → threshold → merge to tumor
+        # ═══════════════════════════════════════════════════════════════
+
         # 1. Tool Selection — 4 buttons: Pan/Zoom, Paint, Sphere, Square
-        grp_tools = QGroupBox("Manual Tools")
+        grp_tools = QGroupBox("ROI Tools")
         tools_layout = QGridLayout()
 
         self.btn_pan = QPushButton("Pan/Zoom")
@@ -269,6 +329,11 @@ class RefineTab(QWidget):
         self.btn_confirm_roi.setEnabled(False)
         # BUG-1 FIX: Emit signal so shape drag is disabled and camera is re-enabled
         self.sig_set_tool.emit("pan_zoom")
+
+    def reset_manual_edit(self):
+        """Reset manual edit section to Pan/Zoom."""
+        self.btn_manual_pan.setChecked(True)
+        self.sig_manual_edit_tool.emit("pan_zoom")
 
     def show_refine_progress(self):
         self.refine_progress.setVisible(True)

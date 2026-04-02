@@ -31,6 +31,10 @@ class RefinementHandlerMixin:
         self._current_component_idx = 0
         self._cached_pet_f32 = None
 
+        # Manual Edit state
+        self._manual_edit_tool = "pan_zoom"
+        self._manual_edit_brush = 10
+
     # ── is_dirty management ──
 
     def _is_roi_dirty(self) -> bool:
@@ -490,10 +494,34 @@ class RefinementHandlerMixin:
         self.control_panel.hide_refine_progress()
         self._update_refine_button_states()
 
-    # ── Drawing tool slots ──
+    # ── Manual Edit (tumor mask) slots ──
+
+    def _on_manual_edit_tool(self, tool: str):
+        """Switch manual edit tool: 'pan_zoom', 'paint', 'erase' on tumor layer."""
+        self._manual_edit_tool = tool
+        # When activating manual edit, reset ROI tools to pan_zoom
+        if tool != "pan_zoom":
+            self.control_panel.refine_tab.reset_tools()
+        self._apply_manual_edit_tool()
+
+    def _on_manual_edit_brush_changed(self, size: int):
+        self._manual_edit_brush = size
+        if self._manual_edit_tool != "pan_zoom":
+            self._apply_manual_edit_tool()
+
+    def _apply_manual_edit_tool(self):
+        """Push manual edit tool state to viewers, targeting tumor layer."""
+        self.layout_manager.set_drawing_tool(
+            self._manual_edit_tool, self._manual_edit_brush, "tumor"
+        )
+
+    # ── ROI Drawing tool slots ──
 
     def _on_set_tool(self, tool):
         self.current_tool = tool
+        # When activating ROI tool, reset manual edit to pan_zoom
+        if tool != "pan_zoom":
+            self.control_panel.refine_tab.reset_manual_edit()
         self._update_all_tools()
 
     def _on_brush_size_changed(self, size):
@@ -557,16 +585,22 @@ class RefinementHandlerMixin:
         print(f"[AutoSync] Synced {layer_type} mask after painting.")
 
     def _on_confirm_and_save(self):
-        """Merge ROI into tumor, push to viewers, then save to disk."""
-        self._sync_roi_from_viewer()
-        merged = self.session_manager.merge_roi_into_tumor()
-        if merged is not None:
-            self._push_mask_to_all("tumor", merged)
+        """Merge ROI into tumor (if ROI exists), then persist tumor mask to disk."""
+        roi_data_check = self.session_manager.get_roi_mask_data()
+        has_roi = roi_data_check is not None and roi_data_check.any()
 
-        # Push cleared roi to viewers
-        roi_data = self.session_manager.get_roi_mask_data()
-        if roi_data is not None:
-            self._push_mask_to_all("roi", roi_data)
+        if has_roi:
+            self._sync_roi_from_viewer()
+            merged = self.session_manager.merge_roi_into_tumor()
+            if merged is not None:
+                self._push_mask_to_all("tumor", merged)
+
+            # Push cleared roi to viewers
+            roi_data = self.session_manager.get_roi_mask_data()
+            if roi_data is not None:
+                self._push_mask_to_all("roi", roi_data)
+
+            self._update_refine_button_states()
 
         # Clear stale report data
         self.session_manager.clear_lesion_data()
@@ -574,8 +608,7 @@ class RefinementHandlerMixin:
         self.layout_manager.hide_lesion_ids()
         self.control_panel.chk_show_lesion_ids.setChecked(False)
 
-        self._update_refine_button_states()
-
         # Persist to disk
         self.save_session()
-        print("[RefineHandler] ROI merged into tumor and saved to disk.")
+        print("[RefineHandler] Tumor mask saved to disk." +
+              (" (ROI merged)" if has_roi else " (manual edit)"))

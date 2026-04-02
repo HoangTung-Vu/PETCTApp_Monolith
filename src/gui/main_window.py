@@ -100,7 +100,11 @@ class MainWindow(
         cp.sig_new_session_clicked.connect(self.create_new_session)
         cp.sig_load_session_clicked.connect(self.load_existing_session)
 
-        # Refinement
+        # Refinement — Manual Edit (tumor mask)
+        cp.sig_manual_edit_tool.connect(self._on_manual_edit_tool)
+        cp.sig_manual_edit_brush_changed.connect(self._on_manual_edit_brush_changed)
+
+        # Refinement — ROI tools
         cp.sig_set_tool.connect(self._on_set_tool)
         cp.sig_brush_size_changed.connect(self._on_brush_size_changed)
         cp.sig_refine_suv_clicked.connect(self._on_refine_suv)
