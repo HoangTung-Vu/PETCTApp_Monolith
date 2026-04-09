@@ -126,7 +126,7 @@ class ViewerWidget(QWidget):
                 colormap=colormap,
                 blending=effective_blending,
                 opacity=opacity,
-                interpolation2d='nearest',
+                interpolation2d='linear',
             )
 
     def load_mask(self, mask_data: np.ndarray, layer_type: str, color: Optional[int] = None):

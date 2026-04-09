@@ -172,9 +172,9 @@ class ViewDisplayTab(QWidget):
         self.btn_crosshair.clicked.connect(self._on_crosshair_toggled)
         cc_lay.addWidget(self.btn_crosshair)
 
-        self.btn_interpolation = QPushButton("Smooth Interpolation: OFF")
+        self.btn_interpolation = QPushButton("Smooth Interpolation: ON")
         self.btn_interpolation.setCheckable(True)
-        self.btn_interpolation.setChecked(False)
+        self.btn_interpolation.setChecked(True)
         self.btn_interpolation.clicked.connect(self._on_interpolation_toggled)
         cc_lay.addWidget(self.btn_interpolation)
 

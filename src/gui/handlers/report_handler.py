@@ -48,9 +48,12 @@ class ReportHandlerMixin:
         pet_colormap = lm._pet_colormap
         mask_opacity = lm._tumor_opacity
 
+        session_id = self.session_manager.current_session_id
+        report_dir = Path(self._report_export_dir) / session_id
+
         self.report_worker = ReportWorker(
             self.session_manager,
-            report_dir=Path(self._report_export_dir),
+            report_dir=report_dir,
             ct_wl=ct_wl,
             pet_wl=pet_wl,
             ct_colormap=ct_colormap,
