@@ -26,6 +26,8 @@ class ReportWorker(QThread):
 
             self.finished.emit(metrics)
         except Exception as e:
+            import traceback
+            traceback.print_exc()
             self.error.emit(str(e))
 
     def _export(self, metrics):

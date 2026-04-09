@@ -46,8 +46,9 @@ class SegmentationWorker(QThread):
                     affine = npz["affine"]
 
                     mask_array = (prob >= 0.5).astype(np.uint8)
-                    ref_img = images[0]
-                    mask_nib = nib.Nifti1Image(mask_array, ref_img.affine)
+                    # Use affine returned by the engine — it may have resampled the input,
+                    # so the server's affine is the authoritative spatial mapping for prob/mask.
+                    mask_nib = nib.Nifti1Image(mask_array, affine)
                     self.finished.emit((mask_nib, prob, "tumor"))
 
                 elif self.engine_type == "tumor_pretrained":
