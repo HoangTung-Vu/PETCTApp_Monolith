@@ -7,9 +7,10 @@ class ReportWorker(QThread):
     finished = pyqtSignal(dict)   # metrics dict
     error = pyqtSignal(str)
 
-    def __init__(self, session_manager, ct_wl=None, pet_wl=None, ct_colormap="gray", pet_colormap="jet", mask_opacity=0.7):
+    def __init__(self, session_manager, report_dir=None, ct_wl=None, pet_wl=None, ct_colormap="gray", pet_colormap="jet", mask_opacity=0.7):
         super().__init__()
         self.session_manager = session_manager
+        self.report_dir = report_dir
         self.ct_wl = ct_wl or (350.0, 35.0)
         self.pet_wl = pet_wl or (10.0, 5.0)
         self.ct_colormap = ct_colormap
@@ -37,7 +38,10 @@ class ReportWorker(QThread):
         if session_id is None:
             return
 
-        report_dir = FileManager.get_session_dir(session_id) / "report"
+        if self.report_dir is not None:
+            report_dir = self.report_dir
+        else:
+            report_dir = FileManager.get_session_dir(session_id) / "report"
 
         ct_data = sm.get_ct_data().astype(np.float32) if sm.ct_image else None
         pet_data = sm.get_pet_data().astype(np.float32) if sm.pet_image else None

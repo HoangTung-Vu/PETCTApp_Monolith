@@ -21,17 +21,13 @@ class SessionManager:
         # Masks are stored as nib.Nifti1Image in memory.
         # If they don't exist yet, they are None.
         self.tumor_mask: Optional[nib.Nifti1Image] = None
-        self.organ_mask: Optional[nib.Nifti1Image] = None
 
         # ROI mask for interactive refinement (raw uint8 XYZ array, never saved to disk)
         self.roi_mask: Optional[np.ndarray] = None
-        
+
         # Session Metadata
         self.patient_name: str = ""
         self.doctor_name: str = ""
-        
-        # Probability volume for tumor (single-channel, shape X,Y,Z, float32)
-        self.tumor_prob: Optional[np.ndarray] = None
 
         # Per-lesion data from the last report generation
         self.lesion_bboxes: list = []      # list[tuple] — (d0_min,d1_min,d2_min,d0_max,d1_max,d2_max)
@@ -79,8 +75,6 @@ class SessionManager:
         
         # Reset masks
         self.tumor_mask = None
-        self.organ_mask = None
-        self.tumor_prob = None
         self.roi_mask = None
         self.clear_lesion_data()
         
@@ -134,17 +128,6 @@ class SessionManager:
             self.tumor_mask = FileManager.load_nifti(session_id, "tumor_seg")
         else:
             self.tumor_mask = None
-            
-        if FileManager.file_exists(session_id, "organ_seg"):
-            self.organ_mask = FileManager.load_nifti(session_id, "organ_seg")
-        else:
-            self.organ_mask = None
-        
-        # Load tumor probability volume if it exists
-        if FileManager.numpy_exists(session_id, "tumor_prob"):
-            self.tumor_prob = FileManager.load_numpy(session_id, "tumor_prob")
-        else:
-            self.tumor_prob = None
 
         self.roi_mask = None
 
@@ -159,22 +142,13 @@ class SessionManager:
             return
 
         tumor_path = None
-        organ_path = None
 
         if self.tumor_mask is not None:
             path = FileManager.save_nifti(self.tumor_mask, self.current_session_id, "tumor_seg")
             tumor_path = str(path)
-            
-        if self.organ_mask is not None:
-            path = FileManager.save_nifti(self.organ_mask, self.current_session_id, "organ_seg")
-            organ_path = str(path)
-        
-        # Save tumor probability volume
-        if self.tumor_prob is not None:
-            FileManager.save_numpy(self.tumor_prob, self.current_session_id, "tumor_prob")
-            
+
         # Update DB with mask paths
-        self.repository.update(self.current_session_id, tumor_seg_path=tumor_path, organ_seg_path=organ_path)
+        self.repository.update(self.current_session_id, tumor_seg_path=tumor_path)
         
         print(f"[SessionManager] Saved session {self.current_session_id}.")
 
@@ -191,18 +165,9 @@ class SessionManager:
         if self.ct_image is None:
             raise ValueError("CT Image must be loaded to set mask (need affine).")
         
-        # Create NIfTI image (Ensure type is uint8 or appropriate label type)
-        self.tumor_mask = nib.Nifti1Image(mask_array.astype(np.uint8), self.ct_image.affine, self.ct_image.header)
-        self.clear_lesion_data()
-
-    def set_organ_mask(self, mask_array: np.ndarray):
-        """
-        Updates the organ mask in memory.
-        """
-        if self.ct_image is None:
-            raise ValueError("CT Image must be loaded to set mask (need affine).")
-            
-        self.organ_mask = nib.Nifti1Image(mask_array.astype(np.uint8), self.ct_image.affine, self.ct_image.header)
+        # Create NIfTI image — do NOT pass CT header, its scl_slope/scl_inter
+        # would corrupt binary mask values when get_fdata() applies scaling.
+        self.tumor_mask = nib.Nifti1Image(mask_array.astype(np.uint8), self.ct_image.affine)
         self.clear_lesion_data()
 
     def get_ct_data(self) -> Optional[np.ndarray]:
@@ -217,21 +182,8 @@ class SessionManager:
         
     def get_tumor_mask_data(self) -> Optional[np.ndarray]:
         if self.tumor_mask:
-            return self.tumor_mask.get_fdata()
+            return np.asarray(self.tumor_mask.dataobj, dtype=np.uint8)
         return None
-
-    def get_organ_mask_data(self) -> Optional[np.ndarray]:
-        if self.organ_mask:
-            return self.organ_mask.get_fdata()
-        return None
-
-    def set_tumor_prob(self, prob_array: np.ndarray):
-        """Set the tumor probability volume in memory."""
-        self.tumor_prob = prob_array.astype(np.float32)
-
-    def get_tumor_prob(self) -> Optional[np.ndarray]:
-        """Get the tumor probability volume."""
-        return self.tumor_prob
 
     def get_all_sessions(self):
         """Returns all sessions ordered by creation time."""

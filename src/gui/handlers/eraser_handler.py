@@ -24,29 +24,19 @@ class EraserHandlerMixin:
 
     def _on_eraser_region_removed(self, old_mask_xyz, new_mask_xyz, mask_zyx=None):
         """Called after eraser removes a connected component. Preview only (no save)."""
-        old_prob_data = self.session_manager.get_tumor_prob()
-
-        # Store only the DIFF (erased voxel indices + their old prob values).
+        # Store only the DIFF (erased voxel indices).
         erased = (old_mask_xyz > 0) & (new_mask_xyz == 0)
         erased_indices = np.nonzero(erased)
 
         backup = {
             "indices": erased_indices,
             "shape": old_mask_xyz.shape,
-            "prob_values": old_prob_data[erased].copy() if old_prob_data is not None else None,
         }
 
         # Limit undo stack depth to 5
         if len(self._eraser_undo_stack) >= 5:
             self._eraser_undo_stack.pop(0)
         self._eraser_undo_stack.append(backup)
-
-        # Zero out prob for erased voxels
-        if old_prob_data is not None:
-            new_prob = old_prob_data.copy()
-            new_prob[erased] = 0.0
-            self.session_manager.set_tumor_prob(new_prob)
-            print(f"[Eraser] Zeroed {int(np.sum(erased))} prob voxels.")
 
         # Update session manager with erased mask (in-memory only)
         self.session_manager.set_tumor_mask(new_mask_xyz)
@@ -59,7 +49,7 @@ class EraserHandlerMixin:
         print(f"[Eraser] Preview updated. Undo stack depth: {len(self._eraser_undo_stack)}")
 
     def _on_eraser_undo(self):
-        """Restore the mask and prob by replaying the diff in reverse."""
+        """Restore the mask by replaying the diff in reverse."""
         if not self._eraser_undo_stack:
             print("[Eraser] Nothing to undo.")
             return
@@ -77,15 +67,5 @@ class EraserHandlerMixin:
 
         self.session_manager.set_tumor_mask(restored_mask)
         self._push_mask_to_all("tumor", restored_mask)
-
-        # Restore prob values at the formerly-erased voxels
-        if backup["prob_values"] is not None:
-            current_prob = self.session_manager.get_tumor_prob()
-            if current_prob is not None:
-                restored_prob = current_prob.copy()
-            else:
-                restored_prob = np.zeros(backup["shape"], dtype=np.float32)
-            restored_prob[backup["indices"]] = backup["prob_values"]
-            self.session_manager.set_tumor_prob(restored_prob)
 
         print(f"[Eraser] Undo successful. Undo stack depth: {len(self._eraser_undo_stack)}")

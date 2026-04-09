@@ -1,6 +1,6 @@
 """Report handler mixin for MainWindow."""
 
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QMessageBox, QFileDialog
 
 
 class ReportHandlerMixin:
@@ -15,6 +15,17 @@ class ReportHandlerMixin:
             QMessageBox.warning(self, "Missing Data", "PET image must be loaded to generate a report.")
             return
 
+        # Ask user where to save the report
+        report_dir = QFileDialog.getExistingDirectory(
+            self,
+            "Select Report Output Directory",
+            "",
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not report_dir:
+            return  # user cancelled
+        self._report_export_dir = report_dir
+
         # Auto-save session first: wait until save finishes before starting report
         from ..workers import SaveWorker
         self.report_save_worker = SaveWorker(self.session_manager)
@@ -26,6 +37,7 @@ class ReportHandlerMixin:
         self.report_save_worker.start()
 
     def _start_report_worker(self):
+        from pathlib import Path
         from ..workers import ReportWorker
 
         # Read current display params from layout_manager
@@ -38,6 +50,7 @@ class ReportHandlerMixin:
 
         self.report_worker = ReportWorker(
             self.session_manager,
+            report_dir=Path(self._report_export_dir),
             ct_wl=ct_wl,
             pet_wl=pet_wl,
             ct_colormap=ct_colormap,

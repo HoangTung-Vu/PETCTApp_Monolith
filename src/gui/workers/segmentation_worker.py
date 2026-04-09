@@ -47,7 +47,7 @@ class SegmentationWorker(QThread):
 
                     mask_array = (prob >= 0.5).astype(np.uint8)
                     ref_img = images[0]
-                    mask_nib = nib.Nifti1Image(mask_array, ref_img.affine, ref_img.header)
+                    mask_nib = nib.Nifti1Image(mask_array, ref_img.affine)
                     self.finished.emit((mask_nib, prob, "tumor"))
 
                 elif self.engine_type == "tumor_pretrained":

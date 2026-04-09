@@ -106,11 +106,17 @@ class ViewerWidget(QWidget):
 
         name = self.LAYER_NAMES.get(layer_type, layer_type)
 
+        # In 2D viewers, coplanar layers (same depth) cause depth-test failures on
+        # Windows OpenGL — the second image/mask layer gets hidden behind the first.
+        # "translucent_no_depth" disables depth testing so layers always composite
+        # correctly. For 3D, keep the caller-supplied blending for correct occlusion.
+        effective_blending = blending if self.is_3d else "translucent_no_depth"
+
         if name in self.viewer.layers:
             self.viewer.layers[name].data = data_zyx
             self.viewer.layers[name].scale = self._scale_zyx
             self.viewer.layers[name].colormap = colormap
-            self.viewer.layers[name].blending = blending
+            self.viewer.layers[name].blending = effective_blending
             self.viewer.layers[name].opacity = opacity
         else:
             self.viewer.add_image(
@@ -118,7 +124,7 @@ class ViewerWidget(QWidget):
                 name=name,
                 scale=self._scale_zyx,
                 colormap=colormap,
-                blending=blending,
+                blending=effective_blending,
                 opacity=opacity,
                 interpolation2d='nearest',
             )
@@ -149,6 +155,13 @@ class ViewerWidget(QWidget):
         # Always enforce yellow colormap for ROI layer
         if layer_type == "roi":
             self._apply_roi_colormap(layer)
+
+        # In 2D viewers with multiple stacked image layers (overlay, mono_single),
+        # the depth buffer written by CT/PET layers causes the mask to fail depth
+        # testing on Windows OpenGL. Disabling depth testing on the Labels layer
+        # ensures it always renders on top of coplanar image layers.
+        if not self.is_3d:
+            layer.blending = "translucent_no_depth"
 
         if self.is_3d:
             layer.editable = False
@@ -523,6 +536,21 @@ class ViewerWidget(QWidget):
     SHAPE_PREVIEW_LAYER = "_shape_preview"
 
     def enable_shape_drag(self, layer_type: str, shape: str):
+        already_active = (
+            getattr(self, '_shape_mode', None) is not None
+            and getattr(self, '_shape_target_layer', None) == layer_type
+            and self.SHAPE_PREVIEW_LAYER in self.viewer.layers
+        )
+        if already_active:
+            # Fast path: only update the draw mode (sphere ↔ square switch)
+            self._shape_mode = shape
+            shapes_layer = self.viewer.layers[self.SHAPE_PREVIEW_LAYER]
+            shapes_layer.mode = "add_ellipse" if shape == "sphere" else "add_rectangle"
+            if self.viewer.layers.selection.active != shapes_layer:
+                self.viewer.layers.selection.active = shapes_layer
+            return
+
+        # Full init path (first activation)
         self.disable_shape_drag()
         self._shape_mode = shape
         self._shape_target_layer = layer_type

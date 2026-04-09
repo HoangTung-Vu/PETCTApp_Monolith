@@ -9,9 +9,8 @@ class SegmentationHandlerMixin:
     def run_segmentation_dialog(self):
         """Ask user which segmentation to run."""
         items = [
-            "Tumor Segmentation (Custom Model)", 
+            "Tumor Segmentation (Custom Model)",
             "Tumor Segmentation (Pretrained)",
-            "Organ Segmentation (TotalSegmentator)"
         ]
         item, ok = QInputDialog.getItem(
             self, "Select Segmentation", "Choose model:", items, 0, False
@@ -21,8 +20,6 @@ class SegmentationHandlerMixin:
                 self._run_segmentation("tumor")
             elif "Pretrained" in item:
                 self._run_segmentation("tumor_pretrained")
-            else:
-                self._run_segmentation("organ")
 
     def _run_segmentation(self, seg_type: str):
         ct_img = self.session_manager.ct_image
@@ -38,15 +35,6 @@ class SegmentationHandlerMixin:
                 )
                 return
             input_data = [ct_img, pet_img]
-
-        elif seg_type == "organ":
-            if not ct_img:
-                QMessageBox.warning(
-                    self, "Missing Data",
-                    "Organ segmentation requires a CT image."
-                )
-                return
-            input_data = ct_img
         else:
             return
 
@@ -62,17 +50,12 @@ class SegmentationHandlerMixin:
 
     def _on_segmentation_finished(self, result_tuple):
         self._set_ui_busy(False)
-        mask_img, prob_array, seg_type = result_tuple
+        mask_img, _prob_array, seg_type = result_tuple
         data = mask_img.get_fdata()
 
         if seg_type in ["tumor", "tumor_pretrained"]:
             self.session_manager.set_tumor_mask(data)
-            if prob_array is not None:
-                self.session_manager.set_tumor_prob(prob_array)
             self._push_mask_to_all("tumor", data)
-        elif seg_type == "organ":
-            self.session_manager.set_organ_mask(data)
-            self._push_mask_to_all("organ", data)
 
         # Clear stale report UI and lesion
         self.session_manager.clear_lesion_data()

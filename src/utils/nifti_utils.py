@@ -100,12 +100,14 @@ def get_shape_for_plane(shape: tuple, plane: str) -> int:
 def to_napari(data: np.ndarray) -> np.ndarray:
     """
     Converts Nibabel (X, Y, Z) to Napari (Z, Y, X) with vertical flip.
+    Returns a contiguous copy (transpose+flip produce negative-stride views
+    that can break texture upload on some platforms).
     """
     # 1. Transpose to (Z, Y, X)
     data_zyx = np.transpose(data, (2, 1, 0))
     # 2. Flip Z (axis 0) and Y (axis 1)
     data_zyx = np.flip(data_zyx, axis=(0, 1))
-    return data_zyx
+    return np.ascontiguousarray(data_zyx)
 
 
 def from_napari(data_zyx: np.ndarray) -> np.ndarray:
