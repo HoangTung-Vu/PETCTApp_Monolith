@@ -189,11 +189,6 @@ class MainWindow(
         print("[MainWindow] All state reset.")
 
     def create_new_session(self, doctor: str, patient: str):
-        if not doctor or not patient:
-            from PyQt6.QtWidgets import QMessageBox
-            QMessageBox.warning(self, "Missing Info", "Please enter both Doctor and Patient names.")
-            return
-
         self._reset_all_state()
 
         from .workers import DataLoaderWorker
