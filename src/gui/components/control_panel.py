@@ -13,6 +13,7 @@ from .tabs.view_display_tab import ViewDisplayTab
 from .tabs.refine_tab import RefineTab
 from .tabs.autopet_tab import AutoPETTab
 from .tabs.eraser_tab import EraserTab
+from .tabs.dicom_import_tab import DicomImportTab
 
 
 class ControlPanel(QWidget):
@@ -70,6 +71,10 @@ class ControlPanel(QWidget):
     sig_eraser_undo_clicked = pyqtSignal()
     sig_eraser_save_clicked = pyqtSignal()
 
+    # DICOM Import
+    sig_dicom_run_conversion  = pyqtSignal(str, str, str, bool, bool)  # dcm_root, out_dir, pid, do_suv, do_resample
+    sig_dicom_load_into_session = pyqtSignal(str, str, str, str)       # ct_path, pet_path, doctor, patient
+
     def __init__(self, parent=None):
         super().__init__(parent)
 
@@ -81,12 +86,14 @@ class ControlPanel(QWidget):
         self.refine_tab = RefineTab()
         self.autopet_tab = AutoPETTab()
         self.eraser_tab = EraserTab()
+        self.dicom_import_tab = DicomImportTab()
 
         self.tabs.addTab(self.workflow_tab, "Workflow")
         self.tabs.addTab(self.view_display_tab, "View & Display")
         self.tabs.addTab(self.refine_tab, "Refine")
         self.tabs.addTab(self.autopet_tab, "AutoPET")
         self.tabs.addTab(self.eraser_tab, "Eraser")
+        self.tabs.addTab(self.dicom_import_tab, "DICOM Import")
 
         # Tab indices for the tab-change handler
         self._view_display_tab_index = 1
@@ -154,6 +161,11 @@ class ControlPanel(QWidget):
         e.sig_eraser_mode_toggled.connect(self.sig_eraser_mode_toggled)
         e.sig_eraser_undo_clicked.connect(self.sig_eraser_undo_clicked)
         e.sig_eraser_save_clicked.connect(self.sig_eraser_save_clicked)
+
+        # DICOM Import
+        d = self.dicom_import_tab
+        d.sig_run_conversion.connect(self.sig_dicom_run_conversion)
+        d.sig_load_into_session.connect(self.sig_dicom_load_into_session)
 
     # ── Proxy accessors (kept for backwards compat with MainWindow) ──
 

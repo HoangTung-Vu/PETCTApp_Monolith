@@ -5,6 +5,7 @@ description = "Add your description here"
 readme = "README.md"
 requires-python = ">=3.13"
 dependencies = [
+    "dicom2nifti>=2.6.2",
     "httpx>=0.28.1",
     "napari[all,optional,pyqt6]>=0.6.6",
     "nibabel>=5.3.3",
@@ -15,5 +16,6 @@ dependencies = [
     "python-multipart>=0.0.22",
     "scikit-image>=0.26.0",
     "scipy>=1.17.0",
+    "simpleitk>=2.5.3",
     "sqlalchemy>=2.0.0",
 ]

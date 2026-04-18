@@ -17,6 +17,7 @@ from .handlers.refinement_handler import RefinementHandlerMixin
 from .handlers.autopet_handler import AutoPETHandlerMixin
 from .handlers.eraser_handler import EraserHandlerMixin
 from .handlers.report_handler import ReportHandlerMixin
+from .handlers.dicom_import_handler import DicomImportHandlerMixin
 
 
 class MainWindow(
@@ -25,6 +26,7 @@ class MainWindow(
     AutoPETHandlerMixin,
     EraserHandlerMixin,
     ReportHandlerMixin,
+    DicomImportHandlerMixin,
     QMainWindow,
 ):
     def __init__(self):
@@ -57,6 +59,9 @@ class MainWindow(
 
         # Eraser State
         self._eraser_undo_stack = []
+
+        # DICOM Import State
+        self._init_dicom_import_handler()
 
     def _init_ui(self):
         central_widget = QWidget()
@@ -130,6 +135,10 @@ class MainWindow(
         # Report
         cp.sig_report_clicked.connect(self._on_report_clicked)
         cp.sig_toggle_lesion_ids.connect(self._on_toggle_lesion_ids)
+
+        # DICOM Import
+        cp.sig_dicom_run_conversion.connect(self._on_dicom_run_conversion)
+        cp.sig_dicom_load_into_session.connect(self._on_dicom_load_into_session)
 
         # Tabs
         cp.sig_tab_changed.connect(self._on_tab_changed)
@@ -380,7 +389,8 @@ class MainWindow(
             getattr(self, '_threshold_worker', None),
             getattr(self, 'autopet_worker', None),
             getattr(self, 'report_worker', None),
-            getattr(self, 'worker', None), # segmentation worker
+            getattr(self, 'worker', None),       # segmentation worker
+            getattr(self, 'dicom_worker', None),
         ]
         
         for worker in workers:
