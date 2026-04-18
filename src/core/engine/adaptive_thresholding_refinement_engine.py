@@ -65,7 +65,7 @@ class AdaptiveThresholdingRefinementEngine:
               {label, threshold, n_voxels, i_max, i_mean, i_background}
             - labels_array: ndarray from scipy.ndimage.label (same shape as roi_mask)
         """
-        from scipy.ndimage import label as cc_label
+        from scipy.ndimage import label as cc_label, find_objects
 
         pet_data = pet_image.get_fdata(dtype=np.float32)
         roi = roi_mask > 0
@@ -74,22 +74,28 @@ class AdaptiveThresholdingRefinementEngine:
             raise ValueError("roi_mask is empty.")
 
         labels, num_components = cc_label(roi)
+        slices = find_objects(labels)
         components_info = []
 
-        for comp_id in range(1, num_components + 1):
-            comp = labels == comp_id
+        for comp_id, slc in enumerate(slices, start=1):
+            if slc is None:
+                continue
+
+            comp = labels[slc] == comp_id
+            pet_slc = pet_data[slc]
+
             n_voxels = int(comp.sum())
             if n_voxels < 2:
                 continue
 
-            i_max = float(pet_data[comp].max())
+            i_max = float(pet_slc[comp].max())
             if i_max <= 0:
                 print(f"[Adaptive] Component {comp_id}: I_max <= 0, skipping.")
                 continue
 
-            isocontour = comp & (pet_data >= self.isocontour_fraction * i_max)
-            i_mean = self._compute_i_mean(pet_data, isocontour, comp)
-            i_bg = self._compute_i_background(pet_data, comp, isocontour)
+            isocontour = comp & (pet_slc >= self.isocontour_fraction * i_max)
+            i_mean = self._compute_i_mean(pet_slc, isocontour, comp)
+            i_bg = self._compute_i_background(pet_slc, comp, isocontour)
             thresh = 0.15 * i_mean + i_bg
 
             # Fallback: if threshold >= i_max, the entire component would vanish.
@@ -147,8 +153,8 @@ class AdaptiveThresholdingRefinementEngine:
         Returns:
             Refined binary mask NIfTI, same affine/header as mask_image.
         """
-        pet_data = pet_image.get_fdata()
-        mask_data = mask_image.get_fdata()
+        pet_data = pet_image.get_fdata(dtype=np.float32)
+        mask_data = np.asarray(mask_image.dataobj, dtype=np.uint8)
         roi = (roi_mask > 0)
 
         self._validate_shapes(pet_data, mask_data, roi)

@@ -134,26 +134,37 @@ class ViewerWidget(QWidget):
         data_zyx = self.to_napari(mask_data)
         self.load_mask_zyx(data_zyx, layer_type)
 
-    def load_mask_zyx(self, data_zyx: np.ndarray, layer_type: str):
+    def load_mask_zyx(self, mask_data: np.ndarray, mask_type: str):
         """Load a label mask already in Napari space (Z, Y, X)."""
-        name = self.LAYER_NAMES.get(layer_type, layer_type)
+        name = self.LAYER_NAMES.get(mask_type, mask_type)
 
+        # 1. Critical bypass to prevent re-triggering events on exact same object
         if name in self.viewer.layers:
             layer = self.viewer.layers[name]
-            if layer.data is not data_zyx:
-                layer.data = data_zyx
-            else:
+            if layer.data is mask_data:
+                return
+
+            # 2. In-place memory assignment skips destroying Napari's internal bindings
+            if isinstance(layer.data, np.ndarray) and layer.data.shape == mask_data.shape:
+                np.copyto(layer.data, mask_data, casting='unsafe')
                 layer.refresh()
+                return
+
+            # Fallback if shapes don't match (e.g. initial load)
+            was_visible = layer.visible
+            layer.data = mask_data
+            layer.visible = was_visible
+            layer.refresh()
         else:
             kwargs = dict(name=name, opacity=0.7)
-            if layer_type == "roi":
+            if mask_type == "roi":
                 kwargs["opacity"] = 0.9
             if self._scale_zyx is not None:
                 kwargs['scale'] = self._scale_zyx
-            layer = self.viewer.add_labels(data_zyx, **kwargs)
+            layer = self.viewer.add_labels(mask_data, **kwargs)
 
         # Always enforce yellow colormap for ROI layer
-        if layer_type == "roi":
+        if mask_type == "roi":
             self._apply_roi_colormap(layer)
 
         # In 2D viewers with multiple stacked image layers (overlay, mono_single),

@@ -22,8 +22,8 @@ class RefinementEngine:
         Returns:
             Refined mask NIfTI image (same shape and affine as mask_image).
         """
-        pet_data = pet_image.get_fdata()
-        mask_data = mask_image.get_fdata()
+        pet_data = pet_image.get_fdata(dtype=np.float32)
+        mask_data = np.asarray(mask_image.dataobj, dtype=np.uint8)
 
         if pet_data.shape != mask_data.shape:
             raise ValueError(f"Shape mismatch: PET {pet_data.shape} vs Mask {mask_data.shape}")

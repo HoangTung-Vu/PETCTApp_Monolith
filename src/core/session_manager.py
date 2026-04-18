@@ -224,7 +224,7 @@ class SessionManager:
         if self.roi_mask is None or self.tumor_mask is None:
             return self.get_tumor_mask_data()
 
-        tumor_data = self.tumor_mask.get_fdata()
+        tumor_data = self.get_tumor_mask_data()
         merged = np.maximum(tumor_data, self.roi_mask).astype(np.uint8)
         self.set_tumor_mask(merged)
         self.clear_roi_mask()

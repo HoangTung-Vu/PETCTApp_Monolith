@@ -53,7 +53,7 @@ class ReportEngine:
             ValueError: If shapes mismatch or mask is empty.
         """
         pet_data = pet_image.get_fdata(dtype=np.float32)
-        mask_data = mask_image.get_fdata().astype(np.uint8)
+        mask_data = np.asarray(mask_image.dataobj, dtype=np.uint8)
 
         if pet_data.shape != mask_data.shape:
             raise ValueError(

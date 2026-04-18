@@ -51,7 +51,7 @@ class SegmentationHandlerMixin:
     def _on_segmentation_finished(self, result_tuple):
         self._set_ui_busy(False)
         mask_img, _prob_array, seg_type = result_tuple
-        data = mask_img.get_fdata()
+        data = np.asarray(mask_img.dataobj, dtype=np.uint8)
 
         if seg_type in ["tumor", "tumor_pretrained"]:
             self.session_manager.set_tumor_mask(data)

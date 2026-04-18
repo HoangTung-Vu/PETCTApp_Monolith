@@ -25,6 +25,12 @@ class MaskSyncMixin:
         self._paint_debounce_timer.timeout.connect(self._emit_debounced_paint)
         self._last_painted_layer = None
 
+        self._visual_throttle_timer = QTimer()
+        self._visual_throttle_timer.setSingleShot(True)
+        self._visual_throttle_timer.setInterval(60)  # ~16 FPS throttle
+        self._visual_throttle_timer.timeout.connect(self._do_visual_refresh)
+        self._pending_refresh_layers = set()
+
     def _get_visible_viewers(self):
         """Return only the viewer widgets that belong to the currently shown layout."""
         current = self.stack.currentWidget()
@@ -81,21 +87,31 @@ class MaskSyncMixin:
                         pass
 
     def _on_mask_data_changed(self, event):
-        """Refresh only the OTHER visible viewers sharing this mask layer.
+        """Refresh only the OTHER visible viewers sharing this mask layer using a throttle timer.
         Also start the debounce timer for auto-sync."""
         trigger_layer = event.source
         layer_name = trigger_layer.name
 
-        for v in self._get_visible_viewers():
-            if layer_name in v.viewer.layers:
-                layer = v.viewer.layers[layer_name]
-                if layer is not trigger_layer:
-                    layer.refresh()
+        self._pending_refresh_layers.add((trigger_layer, layer_name))
+        
+        # Start throttle timer if not already running
+        if not self._visual_throttle_timer.isActive():
+            self._visual_throttle_timer.start()
 
         # Debounced auto-sync: determine layer type from name
         name_to_type = {"Tumor Mask": "tumor", "ROI Mask": "roi"}
         self._last_painted_layer = name_to_type.get(layer_name, "tumor")
         self._paint_debounce_timer.start()  # restarts if already running
+
+    def _do_visual_refresh(self):
+        """Process queued refreshes to prevent UI thread from blocking during drag events."""
+        for trigger_layer, layer_name in list(self._pending_refresh_layers):
+            for v in self._get_visible_viewers():
+                if layer_name in v.viewer.layers:
+                    layer = v.viewer.layers[layer_name]
+                    if layer is not trigger_layer:
+                        layer.refresh()
+        self._pending_refresh_layers.clear()
 
     def _emit_debounced_paint(self):
         """Emit signal after painting stops for 300ms."""

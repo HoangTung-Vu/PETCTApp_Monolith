@@ -97,30 +97,37 @@ class IterativeThresholdingEngine:
               {label, threshold, threshold_pct, n_voxels, i_source, i_background, iterations}
             - labels_array: ndarray from scipy.ndimage.label
         """
-        from scipy.ndimage import label as cc_label
+        from scipy.ndimage import label as cc_label, find_objects
 
         pet_data = pet_image.get_fdata(dtype=np.float32)
-        mask_data = mask_image.get_fdata()
+        mask_data = np.asarray(mask_image.dataobj, dtype=np.uint8)
         roi = roi_mask > 0
 
         self._validate_shapes(pet_data, mask_data, roi)
 
         voxel_volume_ml = get_voxel_volume_ml_from_affine(mask_image.affine)
         labels, num_components = cc_label(roi)
+        slices = find_objects(labels)
         components_info = []
 
-        for comp_id in range(1, num_components + 1):
-            comp = labels == comp_id
+        for comp_id, slc in enumerate(slices, start=1):
+            if slc is None:
+                continue
+
+            comp = labels[slc] == comp_id
+            pet_slc = pet_data[slc]
+            mask_slc = mask_data[slc]
+
             n_voxels = int(comp.sum())
             if n_voxels < 2:
                 continue
 
-            i_source = float(pet_data[comp].max())
+            i_source = float(pet_slc[comp].max())
             if i_source <= 0:
                 print(f"[Iterative] Component {comp_id}: I_source <= 0, skipping.")
                 continue
 
-            i_bg = self._estimate_background(pet_data, comp, mask_data)
+            i_bg = self._estimate_background(pet_slc, comp, mask_slc)
             sb_ratio = i_source / i_bg if i_bg > 0 else float("inf")
             bs_ratio = 1.0 / sb_ratio if sb_ratio != float("inf") else 0.0
 
@@ -131,7 +138,7 @@ class IterativeThresholdingEngine:
 
             for iteration in range(self.max_iterations):
                 iterations_used = iteration + 1
-                refined = self._threshold_mask(pet_data, comp, t_current)
+                refined = self._threshold_mask(pet_slc, comp, t_current)
                 volume_ml = float(refined[comp].sum()) * voxel_volume_ml
 
                 if volume_ml <= 0:
@@ -216,8 +223,8 @@ class IterativeThresholdingEngine:
         Returns:
             Refined binary mask NIfTI with the same affine/header as mask_image.
         """
-        pet_data = pet_image.get_fdata()
-        mask_data = mask_image.get_fdata()
+        pet_data = pet_image.get_fdata(dtype=np.float32)
+        mask_data = np.asarray(mask_image.dataobj, dtype=np.uint8)
         roi = roi_mask > 0
 
         self._validate_shapes(pet_data, mask_data, roi)

@@ -71,6 +71,7 @@ class RefinementHandlerMixin:
         self._preview_active = False
         self._painted_roi = None
         self._roi_labels = None
+        self._roi_slices = None
         self._components_info = None
         self._current_component_idx = 0
         self._cached_pet_f32 = None
@@ -236,6 +237,9 @@ class RefinementHandlerMixin:
         self._preview_active = True
         self._cached_pet_f32 = self.session_manager.pet_image.get_fdata(dtype=np.float32)
 
+        from scipy.ndimage import find_objects
+        self._roi_slices = find_objects(labels)
+
         print(
             f"[RefineHandler] {method_info}: {len(components_info)} component(s) found. "
             f"Showing threshold dialog(s)..."
@@ -272,11 +276,16 @@ class RefinementHandlerMixin:
         self._base_preview = np.zeros(self._painted_roi.shape, dtype=np.uint8)
         pet_data = self._cached_pet_f32
         for i, c in enumerate(self._components_info):
-            c_mask = self._roi_labels == c["label"]
+            label_id = c["label"]
+            slc = self._roi_slices[label_id - 1]
+            if slc is None:
+                continue
+
+            c_mask = self._roi_labels[slc] == label_id
             if i < self._current_component_idx:
-                self._base_preview[c_mask & (pet_data >= c["threshold"])] = 1
+                self._base_preview[slc][c_mask & (pet_data[slc] >= c["threshold"])] = 1
             elif i > self._current_component_idx:
-                self._base_preview[c_mask & (self._painted_roi > 0)] = 1
+                self._base_preview[slc][c_mask & (self._painted_roi[slc] > 0)] = 1
 
         # PRECOMPUTE: Extract 1D array of PET values and boolean 3D mask for CURRENT component
         self._active_comp_mask = (self._roi_labels == comp["label"])
@@ -300,9 +309,20 @@ class RefinementHandlerMixin:
         self._update_component_preview(comp["threshold"])
 
         # Live preview as user adjusts slider - lightning fast using precomputed 1D arrays
-        dialog.threshold_changed.connect(
-            lambda thresh: self._update_component_preview(thresh)
-        )
+        if not hasattr(self, '_preview_timer'):
+            from PyQt6.QtCore import QTimer
+            self._preview_timer = QTimer(self)
+            self._preview_timer.setSingleShot(True)
+            self._preview_timer.setInterval(60)
+            self._preview_timer.timeout.connect(
+                lambda: self._update_component_preview(getattr(self, '_pending_thresh', comp["threshold"]))
+            )
+
+        def _on_thresh_change(thresh):
+            self._pending_thresh = thresh
+            self._preview_timer.start()
+
+        dialog.threshold_changed.connect(_on_thresh_change)
 
         dialog.accepted.connect(lambda: self._on_component_accepted(dialog, comp, idx))
         dialog.rejected.connect(self._on_component_rejected)
@@ -330,6 +350,7 @@ class RefinementHandlerMixin:
         # Keep dirty state true natively as mask is restored
         self._painted_roi = None
         self._roi_labels = None
+        self._roi_slices = None
         self._components_info = None
         self._current_preview_dialog = None
         
@@ -395,12 +416,17 @@ class RefinementHandlerMixin:
         if self._painted_roi is None or self._roi_labels is None:
             return
 
-        pet_data = self.session_manager.pet_image.get_fdata()
+        pet_data = self.session_manager.pet_image.get_fdata(dtype=np.float32)
         result = np.zeros(self._painted_roi.shape, dtype=np.uint8)
 
         for comp in self._components_info:
-            comp_mask = self._roi_labels == comp["label"]
-            result[comp_mask & (pet_data >= comp["threshold"])] = 1
+            label_id = comp["label"]
+            slc = self._roi_slices[label_id - 1]
+            if slc is None:
+                continue
+            
+            comp_mask = self._roi_labels[slc] == label_id
+            result[slc][comp_mask & (pet_data[slc] >= comp["threshold"])] = 1
 
         # Update SUV spinbox with average threshold (for reference)
         if self._components_info:

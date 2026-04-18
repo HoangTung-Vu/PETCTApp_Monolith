@@ -863,13 +863,11 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             
         self._cached_data_zyx[mask_type] = data_zyx
         self._disconnect_mask_events()
-        # Push to ALL loaded viewers (not just visible) to avoid race
-        # conditions with the preload timer where non-visible but already-
-        # loaded viewers would miss the mask update.
-        for v in self._get_all_loaded_viewers():
+        # Push to visible layout only. Non-visible layouts are invalidated below
+        # and will lazy-load the updated data when shown.
+        for v in self._get_visible_viewers():
             v.load_mask_zyx(data_zyx, mask_type)
-        # Always push to 3D viewer if it has been loaded
-        if self._is_3d_loaded:
+        if self.stack.currentWidget() == self.view_3d_widget and self._is_3d_loaded:
             self.viewer_3d.load_mask_zyx(data_zyx, mask_type)
         self._invalidate_non_visible_layouts()
         self._connect_mask_events()
@@ -886,6 +884,10 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             self._loaded_layouts.add("mono")
         elif current == self.mono_single_widget:
             self._loaded_layouts.add("mono_single")
+            
+        # Invalidate 3D viewer if not currently on screen
+        if current != self.view_3d_widget:
+            self._is_3d_loaded = False
 
     def get_active_mask_data(self, layer_type: str):
         for viewer in self._get_visible_viewers():
@@ -912,10 +914,10 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         if self._is_3d_loaded and self._cached_data_zyx[mask_type] is not None:
             self.viewer_3d.load_mask_zyx(self._cached_data_zyx[mask_type], mask_type)
         
-        # Propagate the synced mask to ALL loaded viewers (not just visible)
-        # to prevent stale mask state in preloaded-but-non-visible layouts
+        # Propagate the synced mask ONLY to visible viewers.
+        # Hidden viewers are invalidated and will reload on-demand.
         if self._cached_data_zyx[mask_type] is not None:
-            for v in self._get_all_loaded_viewers():
+            for v in self._get_visible_viewers():
                 v.load_mask_zyx(self._cached_data_zyx[mask_type], mask_type)
             self._invalidate_non_visible_layouts()
 
