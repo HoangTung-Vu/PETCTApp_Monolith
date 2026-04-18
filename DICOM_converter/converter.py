@@ -83,14 +83,26 @@ def dicom_pet_series_to_nifti(dcm_dir: str, out_path: str) -> str:
         intercept = float(getattr(ds, "RescaleIntercept", 0.0))
         return ds.pixel_array.astype(np.float32) * slope + intercept
 
-    volume = np.stack([_apply_scale(s) for s in slices], axis=-1)  # (H, W, Z)
+    # pixel_array shape is (Rows, Cols) → stack gives (Rows, Cols, Z) = (Y, X, Z).
+    # NIfTI/nibabel convention is (X, Y, Z), so transpose axes 0 and 1.
+    volume = np.stack([_apply_scale(s) for s in slices], axis=-1)  # (Rows, Cols, Z)
+    volume = volume.transpose(1, 0, 2)  # → (Cols, Rows, Z) = (X, Y, Z)
 
-    # Build affine from DICOM geometry tags
+    # Build affine from DICOM geometry tags (RAS convention)
     affine = _build_affine(slices)
+
+    # Reorient to (L, A, S) so PET matches the orientation produced by
+    # dicom2nifti for CT — required for resample_utils and to_napari to work.
+    import nibabel.orientations as nibo
+    img = nib.Nifti1Image(volume, affine)
+    current_ornt = nibo.io_orientation(affine)
+    target_ornt  = nibo.axcodes2ornt(('L', 'A', 'S'))
+    transform    = nibo.ornt_transform(current_ornt, target_ornt)
+    img = img.as_reoriented(transform)
 
     out_path = os.path.abspath(out_path)
     os.makedirs(os.path.dirname(out_path), exist_ok=True)
-    nib.save(nib.Nifti1Image(volume, affine), out_path)
+    nib.save(img, out_path)
     return out_path
 
 
@@ -132,5 +144,9 @@ def _build_affine(slices: List[pydicom.Dataset]) -> np.ndarray:
     affine[:3, 1] = col_dir * dr
     affine[:3, 2] = slice_dir
     affine[:3, 3] = ipp0
+
+    # DICOM direction cosines and ImagePositionPatient are in LPS;
+    # NIfTI/nibabel expects RAS.  Negate X and Y to convert.
+    affine = np.diag([-1., -1., 1., 1.]) @ affine
 
     return affine

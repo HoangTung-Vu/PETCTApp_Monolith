@@ -19,7 +19,7 @@ class WorkflowTab(QWidget):
     sig_load_session_clicked = pyqtSignal(int)        # session_id
     sig_report_clicked = pyqtSignal()
     sig_toggle_lesion_ids = pyqtSignal(bool)
-    sig_load_from_dicom = pyqtSignal(str, str, str)   # dcm_folder, doctor, patient
+    sig_load_from_dicom = pyqtSignal(str, str, str, str)   # dcm_folder, doctor, patient, resample_mode
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -49,6 +49,11 @@ class WorkflowTab(QWidget):
         self.btn_load_dicom = QPushButton("Load from DICOM Folder…")
         self.btn_load_dicom.clicked.connect(self._emit_load_from_dicom)
         session_layout.addRow(self.btn_load_dicom)
+
+        self.combo_resample_mode = QComboBox()
+        self.combo_resample_mode.addItem("Resample to CT grid", "ct")
+        self.combo_resample_mode.addItem("Resample to PET grid", "pet")
+        session_layout.addRow("Resample:", self.combo_resample_mode)
 
         self.combo_sessions = QComboBox()
         self.btn_load_this_session = QPushButton("Load Selected")
@@ -138,7 +143,8 @@ class WorkflowTab(QWidget):
             return
         doc = self.input_doctor.text().strip()
         pat = self.input_patient.text().strip()
-        self.sig_load_from_dicom.emit(folder, doc, pat)
+        resample_mode = self.combo_resample_mode.currentData()
+        self.sig_load_from_dicom.emit(folder, doc, pat, resample_mode)
 
     def _emit_load_session(self):
         data = self.combo_sessions.currentData()

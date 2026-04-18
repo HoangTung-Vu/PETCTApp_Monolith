@@ -63,7 +63,7 @@ class ControlPanel(QWidget):
     sig_eraser_undo_clicked = pyqtSignal()
     sig_eraser_save_clicked = pyqtSignal()
 
-    sig_load_from_dicom = pyqtSignal(str, str, str)   # dcm_folder, doctor, patient
+    sig_load_from_dicom = pyqtSignal(str, str, str, str)   # dcm_folder, doctor, patient, resample_mode
 
     def __init__(self, parent=None):
         super().__init__(parent)

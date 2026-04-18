@@ -28,6 +28,30 @@ class EraserMixin:
                     pass
                 v._eraser_callback = None
 
+    def _world_to_data(self, position):
+        """Convert Napari world coordinates to integer ZYX data indices.
+
+        Napari world coords = data_index * scale, so invert by dividing.
+        Falls back to rounding if no scale is set.
+        """
+        scale = None
+        for v in self._get_all_2d_viewers():
+            s = getattr(v, '_scale_zyx', None)
+            if s is not None:
+                scale = s
+                break
+
+        pos = np.asarray(position, dtype=float)
+        if scale is not None:
+            sc = np.asarray(scale, dtype=float)
+            # trim/pad if dims differ (2D viewer may give fewer coords)
+            n = min(len(pos), len(sc))
+            idx = pos.copy()
+            idx[:n] = pos[:n] / sc[:n]
+        else:
+            idx = pos
+        return tuple(int(round(c)) for c in idx)
+
     def _make_eraser_callback(self):
         """Create a mouse callback that erases the connected component at click."""
         def on_click(viewer, event):

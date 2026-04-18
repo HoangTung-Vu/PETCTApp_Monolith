@@ -54,7 +54,14 @@ def resample_image_to_reference(
 
     if out_path:
         os.makedirs(os.path.dirname(os.path.abspath(out_path)) or ".", exist_ok=True)
-        sitk.WriteImage(resampled, out_path)
+        # SimpleITK uses LPS internally and flips axes when writing NIfTI (LPS→RAS),
+        # which causes a data mirror vs nibabel-written NIfTI files. Instead, extract
+        # the pixel array and write with nibabel using the reference image's affine so
+        # axis ordering stays consistent with the rest of the pipeline.
+        arr = sitk.GetArrayFromImage(resampled)   # SimpleITK returns (Z, Y, X)
+        arr_xyz = arr.transpose(2, 1, 0)          # → (X, Y, Z) nibabel convention
+        ref_nib = nib.load(reference_path)
+        nib.save(nib.Nifti1Image(arr_xyz, ref_nib.affine), out_path)
 
     return resampled
 

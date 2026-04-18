@@ -49,7 +49,7 @@ class ReportHandlerMixin:
         mask_opacity = lm._tumor_opacity
 
         session_id = self.session_manager.current_session_id
-        report_dir = Path(self._report_export_dir) / session_id
+        report_dir = Path(self._report_export_dir) / str(session_id)
 
         self.report_worker = ReportWorker(
             self.session_manager,

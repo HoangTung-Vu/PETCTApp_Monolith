@@ -25,7 +25,7 @@ class DicomImportHandlerMixin:
     # Entry point — Workflow tab "Load from DICOM Folder…"
     # ------------------------------------------------------------------
 
-    def _on_load_from_dicom(self, dcm_folder: str, doctor: str, patient: str):
+    def _on_load_from_dicom(self, dcm_folder: str, doctor: str, patient: str, resample_mode: str = "ct"):
         from ..workers.dicom_conversion_worker import DicomConversionWorker
 
         out_dir = os.path.join(dcm_folder, "nifti_output")
@@ -40,6 +40,7 @@ class DicomImportHandlerMixin:
             pid_str=pid_str,
             do_suv=True,
             do_resample=True,
+            resample_mode=resample_mode,
         )
         self.dicom_worker.sig_log.connect(self._on_dicom_log)
         self.dicom_worker.sig_finished.connect(self._on_dicom_auto_finished)
