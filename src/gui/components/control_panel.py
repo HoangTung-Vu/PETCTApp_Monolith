@@ -11,13 +11,11 @@ from PyQt6.QtCore import pyqtSignal
 from .tabs.workflow_tab import WorkflowTab
 from .tabs.view_display_tab import ViewDisplayTab
 from .tabs.refine_tab import RefineTab
-from .tabs.autopet_tab import AutoPETTab
 from .tabs.eraser_tab import EraserTab
-from .tabs.dicom_import_tab import DicomImportTab
 
 
 class ControlPanel(QWidget):
-    """Control Panel with Workflow, View & Display, Refine, AutoPET, and Eraser tabs."""
+    """Control Panel with Workflow, View & Display, Refine, and Eraser tabs."""
 
     # ── Re-exported Signals (flat surface for MainWindow) ──
 
@@ -60,20 +58,12 @@ class ControlPanel(QWidget):
     sig_confirm_roi_clicked = pyqtSignal()
     sig_save_refine_clicked = pyqtSignal()
 
-    # AutoPET
-    sig_autopet_click_mode_changed = pyqtSignal(str)
-    sig_autopet_run_clicked = pyqtSignal()
-    sig_autopet_save_clicked = pyqtSignal()
-    sig_autopet_clear_clicks = pyqtSignal()
-
     # Eraser
     sig_eraser_mode_toggled = pyqtSignal(bool)
     sig_eraser_undo_clicked = pyqtSignal()
     sig_eraser_save_clicked = pyqtSignal()
 
-    # DICOM Import
-    sig_dicom_run_conversion  = pyqtSignal(str, str, str, bool, bool)  # dcm_root, out_dir, pid, do_suv, do_resample
-    sig_dicom_load_into_session = pyqtSignal(str, str, str, str)       # ct_path, pet_path, doctor, patient
+    sig_load_from_dicom = pyqtSignal(str, str, str)   # dcm_folder, doctor, patient
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -84,16 +74,12 @@ class ControlPanel(QWidget):
         self.workflow_tab = WorkflowTab()
         self.view_display_tab = ViewDisplayTab()
         self.refine_tab = RefineTab()
-        self.autopet_tab = AutoPETTab()
         self.eraser_tab = EraserTab()
-        self.dicom_import_tab = DicomImportTab()
 
         self.tabs.addTab(self.workflow_tab, "Workflow")
         self.tabs.addTab(self.view_display_tab, "View & Display")
         self.tabs.addTab(self.refine_tab, "Refine")
-        self.tabs.addTab(self.autopet_tab, "AutoPET")
         self.tabs.addTab(self.eraser_tab, "Eraser")
-        self.tabs.addTab(self.dicom_import_tab, "DICOM Import")
 
         # Tab indices for the tab-change handler
         self._view_display_tab_index = 1
@@ -116,6 +102,7 @@ class ControlPanel(QWidget):
         w.sig_new_session_clicked.connect(self.sig_new_session_clicked)
         w.sig_load_session_clicked.connect(self.sig_load_session_clicked)
         w.sig_report_clicked.connect(self.sig_report_clicked)
+        w.sig_load_from_dicom.connect(self.sig_load_from_dicom)
         w.sig_toggle_lesion_ids.connect(self.sig_toggle_lesion_ids)
 
         # View & Display
@@ -149,23 +136,12 @@ class ControlPanel(QWidget):
         r.sig_confirm_roi_clicked.connect(self.sig_confirm_roi_clicked)
         r.sig_save_refine_clicked.connect(self.sig_save_refine_clicked)
 
-        # AutoPET
-        a = self.autopet_tab
-        a.sig_autopet_click_mode_changed.connect(self.sig_autopet_click_mode_changed)
-        a.sig_autopet_run_clicked.connect(self.sig_autopet_run_clicked)
-        a.sig_autopet_save_clicked.connect(self.sig_autopet_save_clicked)
-        a.sig_autopet_clear_clicks.connect(self.sig_autopet_clear_clicks)
-
         # Eraser
         e = self.eraser_tab
         e.sig_eraser_mode_toggled.connect(self.sig_eraser_mode_toggled)
         e.sig_eraser_undo_clicked.connect(self.sig_eraser_undo_clicked)
         e.sig_eraser_save_clicked.connect(self.sig_eraser_save_clicked)
 
-        # DICOM Import
-        d = self.dicom_import_tab
-        d.sig_run_conversion.connect(self.sig_dicom_run_conversion)
-        d.sig_load_into_session.connect(self.sig_dicom_load_into_session)
 
     # ── Proxy accessors (kept for backwards compat with MainWindow) ──
 
@@ -211,18 +187,6 @@ class ControlPanel(QWidget):
     def clear_report_results(self):
         self.workflow_tab.clear_report_results()
 
-    def show_autopet_progress(self):
-        self.autopet_tab.show_autopet_progress()
-
-    def hide_autopet_progress(self):
-        self.autopet_tab.hide_autopet_progress()
-
-    def add_autopet_click_item(self, coord_zyx, label):
-        self.autopet_tab.add_autopet_click_item(coord_zyx, label)
-
-    def clear_autopet_click_list(self):
-        self.autopet_tab.clear_autopet_click_list()
-
     def set_current_session_label(self, text: str):
         self.workflow_tab.set_current_session_label(text)
 
@@ -236,7 +200,7 @@ class ControlPanel(QWidget):
 
     def _on_tab_changed(self, index: int):
         """Reset mouse tool to pan/zoom on EVERY tab switch (except View & Display).
-        Also disable eraser mode and autopet click mode when leaving their tabs."""
+        Also disable eraser mode when leaving their tabs."""
         # Always reset tool to pan/zoom (except View & Display tab)
         if index != self._view_display_tab_index:
             self.refine_tab.btn_pan.setChecked(True)
@@ -247,15 +211,6 @@ class ControlPanel(QWidget):
         # Always disable eraser if it was enabled
         if self.eraser_tab.btn_eraser_toggle.isChecked():
             self.eraser_tab.btn_eraser_toggle.setChecked(False)
-
-        # Disable autopet click mode when leaving AutoPET tab
-        autopet_tab_index = -1
-        for i in range(self.tabs.count()):
-            if self.tabs.tabText(i) == "AutoPET":
-                autopet_tab_index = i
-                break
-        if autopet_tab_index >= 0 and index != autopet_tab_index:
-            self.sig_autopet_click_mode_changed.emit("")
 
         # Emit general tab changed signal for MainWindow/Handlers
         self.sig_tab_changed.emit(index)

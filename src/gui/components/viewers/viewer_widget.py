@@ -474,30 +474,6 @@ class ViewerWidget(QWidget):
                 yield
         return on_drag
 
-    # ── AutoPET click markers ────────────────────────────────────────────
-
-    CLICK_LAYER_NAME = "Click Markers"
-
-    def load_click_markers(self, data_zyx: np.ndarray):
-        name = self.CLICK_LAYER_NAME
-        if name in self.viewer.layers:
-            layer = self.viewer.layers[name]
-            if layer.data is not data_zyx:
-                layer.data = data_zyx
-            else:
-                layer.refresh()
-        else:
-            kwargs = dict(name=name, opacity=0.5)
-            if self._scale_zyx is not None:
-                kwargs['scale'] = self._scale_zyx
-            layer = self.viewer.add_labels(data_zyx, **kwargs)
-            layer.color = {1: 'red', 2: 'dodgerblue'}
-            layer.editable = False
-
-    def remove_click_markers(self):
-        if self.CLICK_LAYER_NAME in self.viewer.layers:
-            self.viewer.layers.remove(self.CLICK_LAYER_NAME)
-
     # ── Lesion ID Labels ────────────────────────────────────────────────
 
     LESION_LABEL_LAYER_NAME = "Lesion IDs"

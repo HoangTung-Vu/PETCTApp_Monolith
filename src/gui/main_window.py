@@ -14,7 +14,6 @@ from .components.layout import LayoutManager
 
 from .handlers.segmentation_handler import SegmentationHandlerMixin
 from .handlers.refinement_handler import RefinementHandlerMixin
-from .handlers.autopet_handler import AutoPETHandlerMixin
 from .handlers.eraser_handler import EraserHandlerMixin
 from .handlers.report_handler import ReportHandlerMixin
 from .handlers.dicom_import_handler import DicomImportHandlerMixin
@@ -23,7 +22,6 @@ from .handlers.dicom_import_handler import DicomImportHandlerMixin
 class MainWindow(
     SegmentationHandlerMixin,
     RefinementHandlerMixin,
-    AutoPETHandlerMixin,
     EraserHandlerMixin,
     ReportHandlerMixin,
     DicomImportHandlerMixin,
@@ -53,9 +51,6 @@ class MainWindow(
         self.brush_size = 10
         self._last_tab_index = 0
         self._init_refinement_state()
-
-        # AutoPET Interactive State
-        self.autopet_clicks = []
 
         # Eraser State
         self._eraser_undo_stack = []
@@ -118,13 +113,6 @@ class MainWindow(
         cp.sig_confirm_roi_clicked.connect(self._on_confirm_roi)
         cp.sig_save_refine_clicked.connect(self._on_confirm_and_save)
 
-        # AutoPET
-        cp.sig_autopet_click_mode_changed.connect(lm.enable_autopet_click_mode)
-        cp.sig_autopet_run_clicked.connect(self._on_autopet_run)
-        cp.sig_autopet_save_clicked.connect(self._on_confirm_and_save)
-        cp.sig_autopet_clear_clicks.connect(self._on_autopet_clear_clicks)
-        lm.sig_autopet_click_added.connect(self._on_autopet_click_added)
-
         # Eraser
         cp.sig_eraser_mode_toggled.connect(self._on_eraser_mode_toggled)
         cp.sig_eraser_undo_clicked.connect(self._on_eraser_undo)
@@ -137,8 +125,7 @@ class MainWindow(
         cp.sig_toggle_lesion_ids.connect(self._on_toggle_lesion_ids)
 
         # DICOM Import
-        cp.sig_dicom_run_conversion.connect(self._on_dicom_run_conversion)
-        cp.sig_dicom_load_into_session.connect(self._on_dicom_load_into_session)
+        cp.sig_load_from_dicom.connect(self._on_load_from_dicom)
 
         # Tabs
         cp.sig_tab_changed.connect(self._on_tab_changed)
@@ -181,7 +168,6 @@ class MainWindow(
         self.layout_manager.clear_all_viewers()
 
         # Clear application state
-        self.autopet_clicks.clear()
         self._eraser_undo_stack.clear()
         self.session_manager.roi_mask = None
 
@@ -332,15 +318,14 @@ class MainWindow(
     _TAB_WORKFLOW = 0
     _TAB_VIEW     = 1
     _TAB_REFINE   = 2
-    _TAB_AUTOPET  = 3
-    _TAB_ERASER   = 4
+    _TAB_ERASER   = 3
 
     def _on_tab_changed(self, index: int):
         """Delegate tab change events to specialized handlers."""
         self._on_refinement_tab_changed(index)
 
         # Disable crosshair overlay in paint/click tabs (crosshair interferes)
-        _PAINT_TABS = (self._TAB_REFINE, self._TAB_AUTOPET, self._TAB_ERASER)
+        _PAINT_TABS = (self._TAB_REFINE, self._TAB_ERASER)
         xhair_btn = self.control_panel.view_display_tab.btn_crosshair
         crosshair_was_on = xhair_btn.isChecked()
 
@@ -387,7 +372,6 @@ class MainWindow(
             getattr(self, 'loader_worker', None),
             getattr(self, 'refine_worker', None),
             getattr(self, '_threshold_worker', None),
-            getattr(self, 'autopet_worker', None),
             getattr(self, 'report_worker', None),
             getattr(self, 'worker', None),       # segmentation worker
             getattr(self, 'dicom_worker', None),

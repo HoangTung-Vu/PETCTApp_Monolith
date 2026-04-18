@@ -248,7 +248,6 @@ class RefinementHandlerMixin:
         for tab in [
             self.control_panel.refine_tab,
             self.control_panel.workflow_tab,
-            self.control_panel.autopet_tab,
             self.control_panel.eraser_tab
         ]:
             tab.setEnabled(False)
@@ -338,7 +337,6 @@ class RefinementHandlerMixin:
         for tab in [
             self.control_panel.refine_tab,
             self.control_panel.workflow_tab,
-            self.control_panel.autopet_tab,
             self.control_panel.eraser_tab
         ]:
             tab.setEnabled(True)
@@ -389,7 +387,6 @@ class RefinementHandlerMixin:
         for tab in [
             self.control_panel.refine_tab,
             self.control_panel.workflow_tab,
-            self.control_panel.autopet_tab,
             self.control_panel.eraser_tab
         ]:
             tab.setEnabled(True)
@@ -428,23 +425,22 @@ class RefinementHandlerMixin:
     # ── Tab entry/exit ──
 
     def _on_refinement_tab_changed(self, index: int):
-        """Handle roi_mask setup/teardown for Refine (2) and AutoPET (3) tabs."""
+        """Handle roi_mask setup/teardown for Refine (2) tab."""
         REFINE_TAB_INDEX = 2
-        AUTOPET_TAB_INDEX = 3
 
-        is_refine_mode = index in [REFINE_TAB_INDEX, AUTOPET_TAB_INDEX]
-        was_refine_mode = self._last_tab_index in [REFINE_TAB_INDEX, AUTOPET_TAB_INDEX]
+        is_refine_mode = index == REFINE_TAB_INDEX
+        was_refine_mode = self._last_tab_index == REFINE_TAB_INDEX
 
-        # LEAVING Refine/AutoPET Mode — sync ROI to session, then reset tools
+        # LEAVING Refine Mode — sync ROI to session, then reset tools
         if was_refine_mode and not is_refine_mode:
-            print("[RefineHandler] Leaving Refine/AutoPET. Syncing & keeping ROI mask.")
+            print("[RefineHandler] Leaving Refine. Syncing & keeping ROI mask.")
             self._sync_roi_from_viewer()
             self.control_panel.refine_tab.reset_tools()
             self.layout_manager.disable_shape_drag()
 
-        # ENTERING Refine/AutoPET Mode
+        # ENTERING Refine Mode
         if is_refine_mode and not was_refine_mode:
-            print("[RefineHandler] Entering Refine/AutoPET. Ensuring ROI mask exists...")
+            print("[RefineHandler] Entering Refine. Ensuring ROI mask exists...")
 
             if getattr(self, '_preview_active', False) and getattr(self, '_current_preview_dialog', None):
                 print("[RefineHandler] Preview active, restoring active threshold preview...")

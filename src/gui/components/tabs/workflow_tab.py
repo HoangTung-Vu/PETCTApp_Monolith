@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFormLayout, QGroupBox,
     QComboBox, QProgressBar, QLineEdit, QTableWidget, QTableWidgetItem,
-    QHeaderView, QCheckBox, QLabel
+    QHeaderView, QCheckBox, QLabel, QFileDialog
 )
 from PyQt6.QtCore import pyqtSignal
 
@@ -19,6 +19,7 @@ class WorkflowTab(QWidget):
     sig_load_session_clicked = pyqtSignal(int)        # session_id
     sig_report_clicked = pyqtSignal()
     sig_toggle_lesion_ids = pyqtSignal(bool)
+    sig_load_from_dicom = pyqtSignal(str, str, str)   # dcm_folder, doctor, patient
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -44,6 +45,10 @@ class WorkflowTab(QWidget):
         self.btn_new_session = QPushButton("New Session")
         self.btn_new_session.clicked.connect(self._emit_new_session)
         session_layout.addRow(self.btn_new_session)
+
+        self.btn_load_dicom = QPushButton("Load from DICOM Folder…")
+        self.btn_load_dicom.clicked.connect(self._emit_load_from_dicom)
+        session_layout.addRow(self.btn_load_dicom)
 
         self.combo_sessions = QComboBox()
         self.btn_load_this_session = QPushButton("Load Selected")
@@ -126,6 +131,14 @@ class WorkflowTab(QWidget):
         doc = self.input_doctor.text()
         pat = self.input_patient.text()
         self.sig_new_session_clicked.emit(doc, pat)
+
+    def _emit_load_from_dicom(self):
+        folder = QFileDialog.getExistingDirectory(self, "Select DICOM Folder")
+        if not folder:
+            return
+        doc = self.input_doctor.text().strip()
+        pat = self.input_patient.text().strip()
+        self.sig_load_from_dicom.emit(folder, doc, pat)
 
     def _emit_load_session(self):
         data = self.combo_sessions.currentData()

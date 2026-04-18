@@ -20,15 +20,13 @@ import napari
 from ..viewers.viewer_widget import ViewerWidget
 from ..viewers.viewer_sync import link_dims, link_camera, one_shot_sync_step
 from .mask_sync import MaskSyncMixin
-from .autopet_click_manager import AutoPETClickMixin
 from .eraser_manager import EraserMixin
 from ....utils.dimension_utils import get_spacing_from_affine
 
 
-class LayoutManager(MaskSyncMixin, AutoPETClickMixin, EraserMixin, QWidget):
+class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
     """Manages Grid, Overlay, Mono, MonoSingle, and 3D layouts."""
 
-    sig_autopet_click_added    = pyqtSignal(list, str)
     sig_eraser_region_removed  = pyqtSignal(object, object, object)
     sig_eraser_background_click = pyqtSignal()
     sig_mask_painted           = pyqtSignal(str)

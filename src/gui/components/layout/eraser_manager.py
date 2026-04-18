@@ -8,8 +8,6 @@ class EraserMixin:
 
     def enable_eraser_click_mode(self):
         """Install single-click callback on all 2D viewers for contour erasing."""
-        self.disable_autopet_click_mode()
-
         self._remove_eraser_callbacks()
 
         for v in self._get_all_2d_viewers():
