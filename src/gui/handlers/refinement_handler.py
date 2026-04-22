@@ -62,7 +62,10 @@ class RefinementHandlerMixin:
             roi_data[base_roi > 0] = result[base_roi > 0]
 
             self.session_manager.set_roi_mask(roi_data)
-            self._push_mask_to_all("roi", roi_data)
+            
+            # Pass pre-flipped/transposed view to bypass `to_napari` array copy
+            roi_data_zyx = np.flip(np.transpose(roi_data, (2, 1, 0)), axis=(0, 1))
+            self._push_mask_to_all("roi", roi_data, data_zyx=roi_data_zyx)
         except Exception as e:
             print(f"Apply ROI Failed: {e}")
 
@@ -109,17 +112,29 @@ class RefinementHandlerMixin:
             return
 
         base_roi = self._painted_roi if self._painted_roi is not None else roi_mask
-        pet_data = self.session_manager.pet_image.get_fdata(dtype=np.float32)
-        roi = base_roi > 0
 
-        result = np.zeros(base_roi.shape, dtype=np.uint8)
-        result[roi & (pet_data >= threshold)] = 1
+        from ..workers import SUVApplyWorker
+        self._set_ui_busy(True)
+        self.control_panel.show_refine_progress()
 
-        # Apply to ROI
+        self._suv_apply_worker_suv = SUVApplyWorker(
+            pet_image=self.session_manager.pet_image,
+            base_roi=base_roi,
+            threshold=threshold
+        )
+        self._suv_apply_worker_suv.apply_finished.connect(lambda result: self._on_suv_apply_finished(result, base_roi, threshold))
+        self._suv_apply_worker_suv.error.connect(self._on_refinement_error)
+        self._suv_apply_worker_suv.start()
+
+    def _on_suv_apply_finished(self, result, base_roi, threshold=None):
         self._apply_result_to_roi(result, base_roi)
         self._clear_refinement_state()
-
-        print(f"[RefineHandler] SUV threshold {threshold:.4f} applied to ROI.")
+        self._set_ui_busy(False)
+        self.control_panel.hide_refine_progress()
+        if threshold is not None:
+             print(f"[RefineHandler] SUV threshold {threshold:.4f} applied to ROI.")
+        else:
+             print("[RefineHandler] All component thresholds applied to ROI mask.")
 
     # ── Adaptive / Iterative — compute threshold only ──
 
@@ -400,7 +415,10 @@ class RefinementHandlerMixin:
         # 3. Assign 1D validation back into the 3D footprint
         preview[self._active_comp_mask] = valid_indices
 
-        self._push_mask_to_all("roi", preview)
+        # Pass a pre-transposed, pre-flipped view to avoid to_napari memory bloat
+        preview_zyx = np.flip(np.transpose(preview, (2, 1, 0)), axis=(0, 1))
+
+        self._push_mask_to_all("roi", preview, data_zyx=preview_zyx)
 
     def _apply_all_component_thresholds(self):
         """Apply the final per-component thresholds, merge into tumor_mask, clear ROI."""
@@ -416,28 +434,27 @@ class RefinementHandlerMixin:
         if self._painted_roi is None or self._roi_labels is None:
             return
 
-        pet_data = self.session_manager.pet_image.get_fdata(dtype=np.float32)
-        result = np.zeros(self._painted_roi.shape, dtype=np.uint8)
+        from ..workers import SUVApplyWorker
+        self._set_ui_busy(True)
+        self.control_panel.show_refine_progress()
 
-        for comp in self._components_info:
-            label_id = comp["label"]
-            slc = self._roi_slices[label_id - 1]
-            if slc is None:
-                continue
-            
-            comp_mask = self._roi_labels[slc] == label_id
-            result[slc][comp_mask & (pet_data[slc] >= comp["threshold"])] = 1
+        self._suv_apply_worker_comp = SUVApplyWorker(
+            pet_image=self.session_manager.pet_image,
+            base_roi=self._painted_roi,
+            components_info=self._components_info,
+            roi_labels=self._roi_labels,
+            roi_slices=self._roi_slices
+        )
+        base_roi_snapshot = self._painted_roi
 
         # Update SUV spinbox with average threshold (for reference)
         if self._components_info:
             avg = np.mean([c["threshold"] for c in self._components_info])
             self.control_panel.refine_tab.spin_suv.setValue(round(avg, 2))
 
-        # Apply threshold to ROI mask
-        self._apply_result_to_roi(result, self._painted_roi)
-        self._clear_refinement_state()
-
-        print("[RefineHandler] All component thresholds applied to ROI mask.")
+        self._suv_apply_worker_comp.apply_finished.connect(lambda result: self._on_suv_apply_finished(result, base_roi_snapshot))
+        self._suv_apply_worker_comp.error.connect(self._on_refinement_error)
+        self._suv_apply_worker_comp.start()
 
     # ── Error handling ──
 

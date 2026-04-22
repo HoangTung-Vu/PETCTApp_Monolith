@@ -82,3 +82,49 @@ class ThresholdComputeWorker(QThread):
             import traceback
             traceback.print_exc()
             self.error.emit(str(e))
+
+
+class SUVApplyWorker(QThread):
+    """
+    Applies the final threshold result off the main thread to avoid UI freezing.
+    Emits the final result array.
+    """
+    apply_finished = pyqtSignal(object)  # result_array
+    error = pyqtSignal(str)
+
+    def __init__(self, pet_image: nib.Nifti1Image, base_roi: np.ndarray, threshold: float = None, components_info=None, roi_labels=None, roi_slices=None):
+        super().__init__()
+        self.pet_image = pet_image
+        self.base_roi = base_roi
+        self.threshold = threshold
+        self.components_info = components_info
+        self.roi_labels = roi_labels
+        self.roi_slices = roi_slices
+
+    def run(self):
+        try:
+            pet_data = self.pet_image.get_fdata(dtype=np.float32)
+            result = np.zeros(self.base_roi.shape, dtype=np.uint8)
+
+            if self.components_info is not None:
+                # Apply per-component
+                for comp in self.components_info:
+                    label_id = comp["label"]
+                    slc = self.roi_slices[label_id - 1]
+                    if slc is None:
+                        continue
+                    comp_mask = self.roi_labels[slc] == label_id
+                    pet_thresh = pet_data[slc] >= comp["threshold"]
+                    # Use logical AND securely on contiguous representations
+                    np.copyto(result[slc], 1, where=(comp_mask & pet_thresh))
+            else:
+                # Apply global
+                roi = self.base_roi > 0
+                pet_thresh = pet_data >= self.threshold
+                np.copyto(result, 1, where=(roi & pet_thresh))
+
+            self.apply_finished.emit(result)
+        except Exception as e:
+            import traceback
+            traceback.print_exc()
+            self.error.emit(str(e))

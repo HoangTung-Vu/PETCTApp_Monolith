@@ -75,28 +75,48 @@ class EraserMixin:
                 self.sig_eraser_background_click.emit()
                 return
 
-            # Identify connected component at the click point
-            try:
-                from skimage.morphology import flood
-                component_mask = flood(mask_zyx, (z, y, x))
-                num_voxels = int(np.sum(component_mask))
-            except ImportError:
-                from scipy.ndimage import label as nd_label
-                labeled, num_features = nd_label(mask_zyx)
-                component_id = labeled[z, y, x]
-                component_mask = (labeled == component_id)
-                num_voxels = int(np.sum(component_mask))
+            from ...workers import EraserFloodWorker
+            
+            # Prevent multiple simultaneous eraser tasks
+            if hasattr(self, '_eraser_worker') and self._eraser_worker.isRunning():
+                print("[Eraser] Please wait, another eraser operation is running.")
+                return
 
-            # Convert back to Nibabel space (X, Y, Z) and emit signal
-            from ....utils.nifti_utils import from_napari
-            old_mask_xyz = from_napari(mask_zyx).copy()
+            self._eraser_worker = EraserFloodWorker(mask_zyx, coord_zyx)
+            
+            # Show a busy cursor/status by emitting up to the main window
+            from PyQt6.QtWidgets import QApplication
+            from PyQt6.QtCore import Qt
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
-            mask_zyx[component_mask] = 0
-            print(f"[Eraser] Removed component at {coord_zyx} ({num_voxels} voxels).")
+            def _on_component_found(component_mask_zyx):
+                QApplication.restoreOverrideCursor()
+                
+                num_voxels = int(np.sum(component_mask_zyx))
+                if num_voxels == 0:
+                    return
+                    
+                # Identify the exact 3D indices (in ZYX) to emit
+                component_indices_zyx = np.nonzero(component_mask_zyx)
+                
+                # Apply in-place removal to the master numpy array buffer
+                mask_zyx[component_mask_zyx] = 0
+                print(f"[Eraser] Removed component at {coord_zyx} ({num_voxels} voxels).")
+                
+                # Emit the diff directly instead of doing heavy numpy copies.
+                # old_mask_xyz vs new_mask_xyz is skipped in favor of a direct diff.
+                self.sig_eraser_region_removed.emit(component_indices_zyx, component_mask_zyx, mask_zyx)
+                
+            def _on_error(msg):
+                QApplication.restoreOverrideCursor()
+                print(f"[Eraser Worker Error] {msg}")
 
-            new_mask_xyz = from_napari(mask_zyx).copy()
-            self._cached_data["tumor"] = new_mask_xyz
-
-            self.sig_eraser_region_removed.emit(old_mask_xyz, new_mask_xyz, mask_zyx)
+            self._eraser_worker.component_found.connect(_on_component_found)
+            self._eraser_worker.error.connect(_on_error)
+            
+            # Safely release reference after it finishes
+            self._eraser_worker.finished.connect(self._eraser_worker.deleteLater)
+            
+            self._eraser_worker.start()
 
         return on_click

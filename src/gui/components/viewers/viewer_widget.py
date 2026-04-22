@@ -142,6 +142,7 @@ class ViewerWidget(QWidget):
         if name in self.viewer.layers:
             layer = self.viewer.layers[name]
             if layer.data is mask_data:
+                layer.refresh()
                 return
 
             # 2. In-place memory assignment skips destroying Napari's internal bindings

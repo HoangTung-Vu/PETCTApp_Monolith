@@ -860,6 +860,15 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         if data_zyx is None:
             from ....utils.nifti_utils import to_napari
             data_zyx = to_napari(mask_data.astype(np.uint8))
+
+        # IN-PLACE MEMORY REUSE:
+        # If we already have an active ZYX buffer for this mask type, we can copy the new values directly into it.
+        # This guarantees all viewers currently pointing to `self._cached_data_zyx` retain their memory reference,
+        # skipping the heavily blocking 6x deep-copy cascading on load_mask_zyx.
+        existing_zyx = self._cached_data_zyx.get(mask_type)
+        if existing_zyx is not None and getattr(existing_zyx, 'shape', None) == data_zyx.shape:
+            np.copyto(existing_zyx, data_zyx, casting='unsafe')
+            data_zyx = existing_zyx
             
         self._cached_data_zyx[mask_type] = data_zyx
         self._disconnect_mask_events()
@@ -911,8 +920,6 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 return
             from ....utils.nifti_utils import to_napari
             self._cached_data_zyx[mask_type] = to_napari(mask_data.astype(np.uint8))
-        if self._is_3d_loaded and self._cached_data_zyx[mask_type] is not None:
-            self.viewer_3d.load_mask_zyx(self._cached_data_zyx[mask_type], mask_type)
         
         # Propagate the synced mask ONLY to visible viewers.
         # Hidden viewers are invalidated and will reload on-demand.

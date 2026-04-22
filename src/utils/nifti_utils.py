@@ -114,11 +114,13 @@ def from_napari(data_zyx: np.ndarray) -> np.ndarray:
     """
     Converts Napari (Z, Y, X) back to Nibabel (X, Y, Z).
     """
-    # 1. Undo Flip
-    data_zyx = np.flip(data_zyx, axis=(0, 1))
-    # 2. Undo Transpose (transpose is its own inverse here)
-    data_xyz = np.transpose(data_zyx, (2, 1, 0))
-    return data_xyz
+    # Optimize cache line utilization during Flip & Transpose
+    # data_zyx is flipped on Z and Y, then transposed to X, Y, Z.
+    Z, Y, X = data_zyx.shape
+    res = np.zeros((X, Y, Z), dtype=data_zyx.dtype)
+    for z in range(Z):
+        res[:, :, Z - 1 - z] = data_zyx[z, ::-1, :].T
+    return res
 
 
 def nifti_to_bytes(img: nib.Nifti1Image) -> bytes:

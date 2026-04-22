@@ -106,7 +106,22 @@ class IterativeThresholdingEngine:
         self._validate_shapes(pet_data, mask_data, roi)
 
         voxel_volume_ml = get_voxel_volume_ml_from_affine(mask_image.affine)
-        labels, num_components = cc_label(roi)
+
+        # Bounding box crop optimization to prevent 10s label block on 512^3 arrays
+        z_nz, y_nz, x_nz = np.nonzero(roi)
+        if len(z_nz) == 0:
+            return [], None
+
+        z_min, z_max = z_nz.min(), z_nz.max() + 1
+        y_min, y_max = y_nz.min(), y_nz.max() + 1
+        x_min, x_max = x_nz.min(), x_nz.max() + 1
+
+        roi_cropped = roi[z_min:z_max, y_min:y_max, x_min:x_max]
+        labels_cropped, num_components = cc_label(roi_cropped)
+
+        labels = np.zeros(roi.shape, dtype=np.int32)
+        labels[z_min:z_max, y_min:y_max, x_min:x_max] = labels_cropped
+
         slices = find_objects(labels)
         components_info = []
 

@@ -22,15 +22,20 @@ class EraserHandlerMixin:
             self.layout_manager.disable_eraser_click_mode()
             print("[Eraser] Mode disabled.")
 
-    def _on_eraser_region_removed(self, old_mask_xyz, new_mask_xyz, mask_zyx=None):
+    def _on_eraser_region_removed(self, erased_indices_zyx, component_mask_zyx, mask_zyx=None):
         """Called after eraser removes a connected component. Preview only (no save)."""
-        # Store only the DIFF (erased voxel indices).
-        erased = (old_mask_xyz > 0) & (new_mask_xyz == 0)
-        erased_indices = np.nonzero(erased)
+        z_idx, y_idx, x_idx = erased_indices_zyx
+        shape_z, shape_y, shape_x = mask_zyx.shape
+        
+        # Convert ZYX back to XYZ to store in the undo stack
+        z_new = shape_z - 1 - z_idx
+        y_new = shape_y - 1 - y_idx
+        x_new = x_idx
+        erased_indices_xyz = (x_new, y_new, z_new)
 
         backup = {
-            "indices": erased_indices,
-            "shape": old_mask_xyz.shape,
+            "indices": erased_indices_xyz,
+            "shape": mask_zyx.shape,
         }
 
         # Limit undo stack depth to 5
@@ -39,8 +44,15 @@ class EraserHandlerMixin:
         self._eraser_undo_stack.append(backup)
 
         # Update session manager with erased mask (in-memory only)
-        self.session_manager.set_tumor_mask(new_mask_xyz)
-        self._push_mask_to_all("tumor", new_mask_xyz, data_zyx=mask_zyx)
+        current_mask = self.session_manager.get_tumor_mask_data()
+        if current_mask is not None:
+             current_mask[erased_indices_xyz] = 0
+             self.session_manager.set_tumor_mask(current_mask)
+
+        # Synchronize efficiently: the ZYX memory is already zeroed in eraser_manager,
+        # so sync_mask_cache will just re-trigger layer.refresh() on visible viewers!
+        if current_mask is not None:
+             self.layout_manager.sync_mask_cache(current_mask, "tumor")
 
         # Clear report UI and hide lesion IDs
         self.control_panel.clear_report_results()
