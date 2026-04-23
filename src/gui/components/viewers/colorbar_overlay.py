@@ -103,35 +103,37 @@ class ColorBarOverlay(QWidget):
             painter.setPen(QPen(QColor(128, 128, 128), 1))
             painter.drawRect(rect)
             
-            # Draw Text
+            # Draw Text and Ticks
             font = QFont("Arial", 10)
             painter.setFont(font)
             
-            # add shadow to text for visibility
             text_x = margin + bar_width + 6
-            t_min_y = y_offset + bar_height
-            t_max_y = y_offset + 10
+            num_ticks = 5
+            tick_values = np.linspace(cmin, cmax, num_ticks)
             
-            # Max text
-            max_str = f"{cmax:.1f}"
-            if name == ct_name:
-                max_str = f"{int(cmax)}"
-            
-            painter.setPen(Qt.GlobalColor.black)
-            painter.drawText(text_x + 1, t_max_y + 1, max_str)
-            painter.setPen(Qt.GlobalColor.white)
-            painter.drawText(text_x, t_max_y, max_str)
-            
-            # Min text
-            min_str = f"{cmin:.1f}"
-            if name == ct_name:
-                min_str = f"{int(cmin)}"
+            for i, val in enumerate(tick_values):
+                fraction = i / (num_ticks - 1)
+                t_y = y_offset + bar_height - (fraction * bar_height)
                 
-            painter.setPen(Qt.GlobalColor.black)
-            painter.drawText(text_x + 1, t_min_y + 1, min_str)
-            painter.setPen(Qt.GlobalColor.white)
-            painter.drawText(text_x, t_min_y, min_str)
-            
+                tick_str = f"{val:.1f}" if name != ct_name else f"{int(val)}"
+                
+                # Draw a small tick line
+                painter.setPen(QPen(Qt.GlobalColor.white, 1))
+                painter.drawLine(margin + bar_width, int(t_y), margin + bar_width + 4, int(t_y))
+                
+                text_y = int(t_y) + 4 # approximate vertical center adjust
+                
+                if i == 0:
+                    text_y = int(t_y)
+                elif i == num_ticks - 1:
+                    text_y = int(t_y) + 10
+                
+                # add shadow to text for visibility
+                painter.setPen(Qt.GlobalColor.black)
+                painter.drawText(text_x + 1, text_y + 1, tick_str)
+                painter.setPen(Qt.GlobalColor.white)
+                painter.drawText(text_x, text_y, tick_str)
+                
             y_offset += bar_height + margin + 10
 
         painter.end()
