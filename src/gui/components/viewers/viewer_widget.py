@@ -7,6 +7,7 @@ from typing import Optional, Tuple
 from ....utils.nifti_utils import to_napari, from_napari
 from ....utils.dimension_utils import get_spacing_from_affine
 from .crosshair_overlay import CrosshairOverlay
+from .colorbar_overlay import ColorBarOverlay
 
 
 class ViewerWidget(QWidget):
@@ -61,6 +62,9 @@ class ViewerWidget(QWidget):
         self._crosshair_enabled = False   # managed by LayoutManager
         self._crosshair_overlay = None    # created after canvas is ready
         self._crosshair_overlay = CrosshairOverlay(self, self.qt_viewer.canvas.native)
+
+        # ── ColorBar overlay ────────────────────────────────────────────
+        self._colorbar_overlay = ColorBarOverlay(self, self.qt_viewer.canvas.native)
 
         # Re-apply cursor and update overlay when camera or slice changes
         self.viewer.camera.events.zoom.connect(self._on_view_changed)
