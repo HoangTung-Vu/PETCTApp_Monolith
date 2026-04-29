@@ -17,12 +17,15 @@ class EnsureROIWorker(QThread):
         roi_data = self.session_manager.get_roi_mask_data()
         
         # Slow part: to_napari transformation
+        print("[EnsureROIWorker] Starting to_napari for ROI...")
         roi_zyx = None
         if roi_data is not None:
-            roi_zyx = to_napari(roi_data.astype(np.uint8))
+            roi_zyx = to_napari(roi_data.astype(np.uint8, copy=False))
             
+        print("[EnsureROIWorker] Starting to_napari for Tumor...")
         tumor_zyx = None
         if tumor_data is not None:
-            tumor_zyx = to_napari(tumor_data.astype(np.uint8))
+            tumor_zyx = to_napari(tumor_data.astype(np.uint8, copy=False))
             
+        print("[EnsureROIWorker] Emitting finished signal...")
         self.finished.emit(roi_data, tumor_data, roi_zyx, tumor_zyx)

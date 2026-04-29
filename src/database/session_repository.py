@@ -73,7 +73,9 @@ class SessionRepository:
         pet_path: Optional[str] = None,
         tumor_seg_path: Optional[str] = None,
         organ_seg_path: Optional[str] = None,
-        status: Optional[str] = None
+        status: Optional[str] = None,
+        doctor_name: Optional[str] = None,
+        patient_name: Optional[str] = None
     ) -> Optional[Session]:
         """Update session fields."""
         session = self.get_by_id(session_id)
@@ -90,6 +92,10 @@ class SessionRepository:
             session.organ_seg_path = organ_seg_path
         if status is not None:
             session.status = status
+        if doctor_name is not None:
+            session.doctor_name = doctor_name
+        if patient_name is not None:
+            session.patient_name = patient_name
         
         self.db.commit()
         self.db.refresh(session)

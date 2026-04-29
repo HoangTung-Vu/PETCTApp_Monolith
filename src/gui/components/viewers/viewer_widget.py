@@ -117,7 +117,13 @@ class ViewerWidget(QWidget):
                    opacity: float = 1.0):
         """Load an image into the viewer. image_data: (X, Y, Z) from nibabel."""
         data_zyx = self.to_napari(image_data)
+        self.load_image_zyx(data_zyx, affine, layer_type, colormap, blending, opacity)
 
+    def load_image_zyx(self, data_zyx: np.ndarray, affine: np.ndarray,
+                       layer_type: str, colormap: str = "gray",
+                       blending: str = "translucent",
+                       opacity: float = 1.0):
+        """Load an image pre-converted to Napari space (Z, Y, X)."""
         spacing_xyz = get_spacing_from_affine(affine)
         self._scale_zyx = (float(spacing_xyz[2]), float(spacing_xyz[1]), float(spacing_xyz[0]))
 
@@ -144,6 +150,7 @@ class ViewerWidget(QWidget):
                 blending=effective_blending,
                 opacity=opacity,
                 interpolation2d='linear',
+                multiscale=False,
             )
         self._enforce_layer_order()
 
@@ -175,7 +182,7 @@ class ViewerWidget(QWidget):
             layer.visible = was_visible
             layer.refresh()
         else:
-            kwargs = dict(name=name, opacity=0.7)
+            kwargs = dict(name=name, opacity=0.7, multiscale=False)
             if mask_type == "roi":
                 kwargs["opacity"] = 0.9
             if self._scale_zyx is not None:

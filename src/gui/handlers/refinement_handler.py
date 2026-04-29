@@ -195,10 +195,11 @@ class RefinementHandlerMixin:
             QMessageBox.warning(self, "Missing Data", "PET image required for Iterative Thresholding.")
             return
 
-        if self.session_manager.tumor_mask is None:
+        tumor_data = self.session_manager.get_tumor_mask_data()
+        if tumor_data is None or not np.any(tumor_data):
             QMessageBox.warning(
                 self, "Missing Data",
-                "No tumor mask available. Iterative thresholding needs an existing mask\n"
+                "No tumor mask available. Iterative thresholding needs an existing non-empty mask\n"
                 "for background estimation. Run segmentation first or use Adaptive Thresholding."
             )
             return
@@ -524,10 +525,16 @@ class RefinementHandlerMixin:
 
     def _on_roi_ready(self, roi_data, tumor_data, roi_zyx, tumor_zyx):
         """Callback when ROI worker finishes."""
+        print("[RefineHandler] _on_roi_ready called")
         if roi_data is not None:
+            print("[RefineHandler] Pushing ROI mask to all viewers...")
             self._push_mask_to_all("roi", roi_data, data_zyx=roi_zyx)
-        if tumor_data is not None:
+        if tumor_data is not None and np.any(tumor_data):
+            print("[RefineHandler] Pushing Tumor mask to all viewers...")
             self._push_mask_to_all("tumor", tumor_data, data_zyx=tumor_zyx)
+        else:
+            print("[RefineHandler] Tumor mask is empty, skipping push to save memory.")
+        print("[RefineHandler] _on_roi_ready finished")
 
         self._set_ui_busy(False)
         self.control_panel.hide_refine_progress()

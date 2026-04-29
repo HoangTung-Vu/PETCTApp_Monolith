@@ -255,6 +255,16 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         else:
             self._cached_data_zyx["roi"] = None
 
+        if ct_data is not None:
+            self._cached_data_zyx["ct"] = to_napari(ct_data)
+        else:
+            self._cached_data_zyx["ct"] = None
+
+        if pet_data is not None:
+            self._cached_data_zyx["pet"] = to_napari(pet_data)
+        else:
+            self._cached_data_zyx["pet"] = None
+
         # Init crosshair at volume centre
         ref = ct_data if ct_data is not None else pet_data
         if ref is not None:
@@ -272,8 +282,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         """Push cached data into all currently assigned pool viewers."""
         if not self._active_views:
             return
-        ct = self._cached_data.get("ct")
-        pet = self._cached_data.get("pet")
+        ct_zyx = self._cached_data_zyx.get("ct")
+        pet_zyx = self._cached_data_zyx.get("pet")
         ct_affine = self._cached_data.get("ct_affine")
         pet_affine = self._cached_data.get("pet_affine")
 
@@ -290,14 +300,14 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             wants_pet = modality in ("pet", "overlay")
 
             # Load image layers
-            if wants_ct and ct is not None and ct_affine is not None:
-                vw.load_image(ct, ct_affine, "ct", self._ct_colormap)
+            if wants_ct and ct_zyx is not None and ct_affine is not None:
+                vw.load_image_zyx(ct_zyx, ct_affine, "ct", self._ct_colormap)
                 ct_name = vw.LAYER_NAMES["ct"]
                 if ct_name in vw.viewer.layers:
                     vw.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
-            if wants_pet and pet is not None and pet_affine is not None:
+            if wants_pet and pet_zyx is not None and pet_affine is not None:
                 pet_opacity = 0.5 if modality == "overlay" else 1.0
-                vw.load_image(pet, pet_affine, "pet", self._pet_colormap, opacity=pet_opacity)
+                vw.load_image_zyx(pet_zyx, pet_affine, "pet", self._pet_colormap, opacity=pet_opacity)
                 pet_name = vw.LAYER_NAMES["pet"]
                 if pet_name in vw.viewer.layers:
                     vw.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
@@ -338,6 +348,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             if self._cached_lesion_data:
                 vw.show_lesion_ids(*self._cached_lesion_data)
 
+            from PyQt6.QtWidgets import QApplication
+            QApplication.processEvents()
+
         self._sync_viewer_slices()
 
     # ── 3D data loading ───────────────────────────────────────────────────────
@@ -347,13 +360,15 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             return
         ct = self._cached_data.get("ct")
         pet = self._cached_data.get("pet")
+        ct_zyx = self._cached_data_zyx.get("ct")
+        pet_zyx = self._cached_data_zyx.get("pet")
         ct_affine = self._cached_data.get("ct_affine")
         pet_affine = self._cached_data.get("pet_affine")
 
-        if ct is not None and ct_affine is not None:
-            self.viewer_3d.load_image(ct, ct_affine, "ct", self._ct_colormap)
-        if pet is not None and pet_affine is not None:
-            self.viewer_3d.load_image(pet, pet_affine, "pet", self._pet_colormap, opacity=1.0)
+        if ct_zyx is not None and ct_affine is not None:
+            self.viewer_3d.load_image_zyx(ct_zyx, ct_affine, "ct", self._ct_colormap)
+        if pet_zyx is not None and pet_affine is not None:
+            self.viewer_3d.load_image_zyx(pet_zyx, pet_affine, "pet", self._pet_colormap, opacity=1.0)
         if self._cached_data_zyx.get("tumor") is not None:
             self.viewer_3d.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
         if self._cached_data_zyx.get("roi") is not None:
@@ -687,12 +702,22 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             
         self._cached_data_zyx[mask_type] = data_zyx
 
+        print(f"[LayoutManager] update_mask: starting viewer loop for {mask_type}")
         self._disconnect_mask_events()
-        for v in self._get_visible_viewers():
+        from PyQt6.QtWidgets import QApplication
+        viewers = self._get_visible_viewers()
+        for i, v in enumerate(viewers):
+            print(f"[LayoutManager] update_mask: pushing to viewer {i+1}/{len(viewers)}...")
             v.load_mask_zyx(data_zyx, mask_type)
+            QApplication.processEvents()  # Prevent OS "Not Responding" freeze during heavy layer creation
+            
+        print(f"[LayoutManager] update_mask: pushing to 3D viewer...")
         if self._is_3d_loaded:
             self.viewer_3d.load_mask_zyx(data_zyx, mask_type)
+            
+        print(f"[LayoutManager] update_mask: connecting events...")
         self._connect_mask_events()
+        print(f"[LayoutManager] update_mask: finished for {mask_type}")
 
     def get_active_mask_data(self, layer_type: str):
         for vw in self._get_visible_viewers():
