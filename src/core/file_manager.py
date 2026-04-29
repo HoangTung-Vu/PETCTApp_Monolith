@@ -11,75 +11,45 @@ FileType = Literal["ct", "pet", "tumor_seg"]
 
 class FileManager:
     """Handles file I/O operations for session storage."""
-    
+
+    # ── New-style: path utilities ─────────────────────────────────────────
+
+    @staticmethod
+    def get_segmentation_path(ct_path: Path) -> Path:
+        """Return the segmentation output path next to the CT file.
+
+        E.g. /data/patient.nii.gz  →  /data/patient_Segmentation.nii.gz
+        """
+        p = Path(ct_path)
+        # Strip .nii.gz or .nii to get the base stem
+        name = p.name
+        for ext in (".nii.gz", ".nii"):
+            if name.endswith(ext):
+                stem = name[: -len(ext)]
+                break
+        else:
+            stem = p.stem
+        return p.parent / f"{stem}_Segmentation.nii.gz"
+
+    # ── Legacy helpers (kept for backward-compat with old storage/ sessions) ──
+
     @staticmethod
     def get_session_dir(session_id: int) -> Path:
-        """Get directory path for a session."""
         session_dir = settings.DATA_DIR / str(session_id)
         session_dir.mkdir(parents=True, exist_ok=True)
         return session_dir
-    
+
     @staticmethod
     def get_file_path(session_id: int, file_type: FileType) -> Path:
-        """Get the standard path for a file type in a session.
-        
-        Args:
-            session_id: Session ID
-            file_type: One of 'ct', 'pet', 'tumor_seg', 'organ_seg'
-            
-        Returns:
-            Path to the file
-        """
         session_dir = FileManager.get_session_dir(session_id)
         return session_dir / f"{file_type}.nii.gz"
-    
-    @staticmethod
-    def copy_to_storage(src_path: Path, session_id: int, file_type: FileType) -> Path:
-        """Copy a file to session storage with standard naming.
-        
-        Args:
-            src_path: Source file path
-            session_id: Session ID
-            file_type: Type of file ('ct', 'pet', etc.)
-            
-        Returns:
-            Path to copied file in storage
-        """
-        dest_path = FileManager.get_file_path(session_id, file_type)
-        shutil.copy2(src_path, dest_path)
-        print(f"[FileManager] Copied {src_path} -> {dest_path}")
-        return dest_path
-    
+
     @staticmethod
     def file_exists(session_id: int, file_type: FileType) -> bool:
-        """Check if a file exists in session storage."""
         return FileManager.get_file_path(session_id, file_type).exists()
-    
-    @staticmethod
-    def save_nifti(image, session_id: int, file_type: FileType) -> Path:
-        """Save a Nifti1Image to session storage.
-        
-        Args:
-            image: nib.Nifti1Image object
-            session_id: Session ID
-            file_type: Type of file
-            
-        Returns:
-            Path to saved file
-        """
-        import nibabel as nib
-        dest_path = FileManager.get_file_path(session_id, file_type)
-        nib.save(image, dest_path)
-        print(f"[FileManager] Saved Nifti to {dest_path}")
-        return dest_path
 
     @staticmethod
     def load_nifti(session_id: int, file_type: FileType):
-        """Load a Nifti1Image from session storage.
-        
-        Returns:
-            nib.Nifti1Image object
-        """
         import nibabel as nib
         file_path = FileManager.get_file_path(session_id, file_type)
         if not file_path.exists():
@@ -87,10 +57,16 @@ class FileManager:
         return nib.load(file_path)
 
     @staticmethod
+    def save_nifti(image, session_id: int, file_type: FileType) -> Path:
+        import nibabel as nib
+        dest_path = FileManager.get_file_path(session_id, file_type)
+        nib.save(image, dest_path)
+        print(f"[FileManager] Saved Nifti to {dest_path}")
+        return dest_path
+
+    @staticmethod
     def delete_session_files(session_id: int) -> None:
-        """Delete all files for a session."""
         session_dir = FileManager.get_session_dir(session_id)
         if session_dir.exists():
             shutil.rmtree(session_dir)
             print(f"[FileManager] Deleted session dir: {session_dir}")
-

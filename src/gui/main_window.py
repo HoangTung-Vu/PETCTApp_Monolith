@@ -79,7 +79,8 @@ class MainWindow(
         cp.sig_load_ct_clicked.connect(self.load_ct_dialog)
         cp.sig_load_pet_clicked.connect(self.load_pet_dialog)
         cp.sig_segment_clicked.connect(self.run_segmentation_dialog)
-        cp.sig_layout_changed.connect(lm.set_view_mode)
+        cp.sig_active_views_changed.connect(lm.set_active_views)
+        cp.sig_layout_changed.connect(lm.set_view_mode)      # "3d" only
         cp.sig_toggle_3d_pet.connect(lm.toggle_3d_pet)
 
         # Display
@@ -281,15 +282,31 @@ class MainWindow(
         ct_data = self.session_manager.get_ct_data()
         pet_data = self.session_manager.get_pet_data()
 
-        affine = None
-        if self.session_manager.ct_image:
-            affine = self.session_manager.ct_image.affine
-        elif self.session_manager.pet_image:
-            affine = self.session_manager.pet_image.affine
+        ct_affine = self.session_manager.ct_image.affine if self.session_manager.ct_image else None
+        pet_affine = self.session_manager.pet_image.affine if self.session_manager.pet_image else None
 
-        if affine is not None:
+        ct_filename = ""
+        pet_filename = ""
+        session_id = self.session_manager.current_session_id
+        if session_id is not None:
+            session = self.session_manager.repository.get_by_id(session_id)
+            if session:
+                if session.ct_path:
+                    ct_filename = Path(session.ct_path).name
+                if session.pet_path:
+                    pet_filename = Path(session.pet_path).name
+
+        if ct_affine is not None or pet_affine is not None:
             tumor_mask = self.session_manager.get_tumor_mask_data()
-            self.layout_manager.load_data(ct_data, pet_data, affine, tumor_mask)
+            self.layout_manager.load_data(
+                ct_data=ct_data, 
+                pet_data=pet_data, 
+                ct_affine=ct_affine, 
+                pet_affine=pet_affine, 
+                tumor_mask=tumor_mask, 
+                ct_filename=ct_filename, 
+                pet_filename=pet_filename
+            )
         else:
             print("No affine available (no images loaded?)")
 
@@ -352,12 +369,7 @@ class MainWindow(
         self.hide()
         
         # Close all viewers properly
-        all_viewers = (
-            list(self.layout_manager.grid_viewers.values())
-            + [self.layout_manager.overlay_viewer]
-            + list(self.layout_manager.mono_viewers.values())
-            + [self.layout_manager.viewer_3d]
-        )
+        all_viewers = list(self.layout_manager._viewer_pool) + [self.layout_manager.viewer_3d]
         for v in all_viewers:
             if v is not None:
                 try:

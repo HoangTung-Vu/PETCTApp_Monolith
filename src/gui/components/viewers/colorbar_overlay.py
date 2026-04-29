@@ -60,21 +60,27 @@ class ColorBarOverlay(QWidget):
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, False)
 
         margin = 15
-        bar_width = 12
-        bar_height = 100
-        
-        y_offset = margin
+        bar_width = 10
+        bar_height = 120
         
         ct_name = self._vw.LAYER_NAMES.get("ct")
         pet_name = self._vw.LAYER_NAMES.get("pet")
         
+        visible_layers = []
         for name in [pet_name, ct_name]:
-            if not name or name not in self._vw.viewer.layers:
-                continue
-            layer = self._vw.viewer.layers[name]
-            if not layer.visible or layer.opacity == 0:
-                continue
-                
+            if name and name in self._vw.viewer.layers:
+                layer = self._vw.viewer.layers[name]
+                if layer.visible and layer.opacity > 0:
+                    visible_layers.append(layer)
+                    
+        if not visible_layers:
+            painter.end()
+            return
+
+        total_height = len(visible_layers) * bar_height + max(0, len(visible_layers) - 1) * (margin + 10)
+        y_offset = (self.height() - total_height) / 2
+        
+        for layer in visible_layers:
             cmin, cmax = layer.contrast_limits
             
             # Map colors from colormap
@@ -93,7 +99,7 @@ class ColorBarOverlay(QWidget):
                 grad.setColorAt(1, Qt.GlobalColor.white)
                 
             # Draw background black
-            rect = QRect(margin, y_offset, bar_width, bar_height)
+            rect = QRect(margin, int(y_offset), bar_width, bar_height)
             painter.fillRect(rect, Qt.GlobalColor.black)
             
             # Draw gradient
@@ -104,10 +110,10 @@ class ColorBarOverlay(QWidget):
             painter.drawRect(rect)
             
             # Draw Text and Ticks
-            font = QFont("Arial", 10)
+            font = QFont("Arial", 14, QFont.Weight.Bold)
             painter.setFont(font)
             
-            text_x = margin + bar_width + 6
+            text_x = margin + bar_width + 8
             num_ticks = 5
             tick_values = np.linspace(cmin, cmax, num_ticks)
             

@@ -1,4 +1,4 @@
-from PyQt6.QtWidgets import QWidget, QVBoxLayout
+from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PyQt6.QtCore import QObject, QEvent, Qt, pyqtSignal
 import napari
 import numpy as np
@@ -26,6 +26,8 @@ class ViewerWidget(QWidget):
 
     # Emitted when arrow key pressed while crosshair is active: (dim_index, delta)
     sig_crosshair_arrow = pyqtSignal(int, int)
+
+    sig_camera_changed = pyqtSignal(object)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -65,6 +67,17 @@ class ViewerWidget(QWidget):
 
         # ── ColorBar overlay ────────────────────────────────────────────
         self._colorbar_overlay = ColorBarOverlay(self, self.qt_viewer.canvas.native)
+
+        # ── View name label (top-left of canvas) ────────────────────────
+        self._view_label = QLabel("", self.qt_viewer.canvas.native)
+        self._view_label.setStyleSheet(
+            "QLabel { color: #cccccc; background: rgba(0,0,0,160);"
+            " font-size: 14px; padding: 4px 10px;"
+            " border-bottom-right-radius: 4px; }"
+        )
+        self._view_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
+        self._view_label.move(0, 0)
+        self._view_label.hide()
 
         # Re-apply cursor and update overlay when camera or slice changes
         self.viewer.camera.events.zoom.connect(self._on_view_changed)
@@ -132,6 +145,7 @@ class ViewerWidget(QWidget):
                 opacity=opacity,
                 interpolation2d='linear',
             )
+        self._enforce_layer_order()
 
     def load_mask(self, mask_data: np.ndarray, layer_type: str, color: Optional[int] = None):
         mask_data = mask_data.astype(np.uint8)
@@ -182,6 +196,31 @@ class ViewerWidget(QWidget):
         if self.is_3d:
             layer.editable = False
 
+        self._enforce_layer_order()
+
+    def _enforce_layer_order(self):
+        """Ensure rendering order: CT < PET < Tumor < ROI < Preview < Lesion"""
+        desired_order = [
+            self.LAYER_NAMES.get("ct", "CT Image"),
+            self.LAYER_NAMES.get("pet", "PET Image"),
+            self.LAYER_NAMES.get("tumor", "Tumor Mask"),
+            self.LAYER_NAMES.get("roi", "ROI Mask"),
+            self.SHAPE_PREVIEW_LAYER,
+            self.LESION_LABEL_LAYER_NAME
+        ]
+        changed = True
+        while changed:
+            changed = False
+            for i in range(len(self.viewer.layers) - 1):
+                name1 = self.viewer.layers[i].name
+                name2 = self.viewer.layers[i+1].name
+                idx1 = desired_order.index(name1) if name1 in desired_order else -1
+                idx2 = desired_order.index(name2) if name2 in desired_order else -1
+                
+                if idx1 > -1 and idx2 > -1 and idx1 > idx2:
+                    self.viewer.layers.move(i, i+1)
+                    changed = True
+
     # Shared across all ViewerWidget instances — created once
     _roi_colormap = None
 
@@ -215,11 +254,11 @@ class ViewerWidget(QWidget):
             elif mode == "paint":
                 layer.mode = "paint"
                 layer.brush_size = brush_size
-                layer.n_edit_dimensions = 3
+                layer.n_edit_dimensions = 2
             elif mode == "erase":
                 layer.mode = "erase"
                 layer.brush_size = brush_size
-                layer.n_edit_dimensions = 3
+                layer.n_edit_dimensions = 2
             elif mode == "fill":
                 layer.mode = "fill"
 
@@ -342,6 +381,17 @@ class ViewerWidget(QWidget):
         self._crosshair_enabled = False
         self._crosshair_overlay.set_enabled(False)
 
+    def set_view_label(self, text: str):
+        """Show a view-name badge in the top-left corner of the canvas."""
+        if text:
+            self._view_label.setText(text)
+            self._view_label.adjustSize()
+            self._view_label.move(0, 0)
+            self._view_label.show()
+            self._view_label.raise_()
+        else:
+            self._view_label.hide()
+
     def set_pan_mode(self, pan_on: bool):
         """Pan mode: disable crosshair overlay, let camera pan on drag."""
         self._crosshair_enabled = False
@@ -352,6 +402,7 @@ class ViewerWidget(QWidget):
         """Camera or slice changed — refresh overlay."""
         if self._crosshair_enabled:
             self._crosshair_overlay.update()
+        self.sig_camera_changed.emit(self)
 
     def _on_slice_changed(self, event=None):
         """Emit step tuple when slice scrolling happens."""
@@ -518,6 +569,7 @@ class ViewerWidget(QWidget):
             kwargs['scale'] = self._scale_zyx
         layer = self.viewer.add_points(points, **kwargs)
         layer.editable = False
+        self._enforce_layer_order()
 
     def hide_lesion_ids(self):
         if self.LESION_LABEL_LAYER_NAME in self.viewer.layers:
@@ -601,6 +653,7 @@ class ViewerWidget(QWidget):
             layer.affine = target_layer.affine
         self.viewer.layers[self.SHAPE_PREVIEW_LAYER].visible = True
         self.viewer.layers[self.SHAPE_PREVIEW_LAYER].editable = True
+        self._enforce_layer_order()
 
     def _on_shape_added(self, event):
         shapes_layer = self.viewer.layers[self.SHAPE_PREVIEW_LAYER]

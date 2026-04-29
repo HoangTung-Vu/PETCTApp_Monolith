@@ -1,40 +1,82 @@
-"""Layout Manager — manages view switching, data loading, and display settings.
+"""Layout Manager — dynamic 9-view grid driven by active-view checklist.
 
-Performance optimizations:
-- **Lazy loading**: Only pushes data to the CURRENTLY VISIBLE layout.
-- **One-shot sync**: When switching view mode, slice position is copied once.
-- **No cross-layout sync**: Removed cascading 9-viewer sync that caused
-  ~30+ events per scroll.
-- **Crosshair**: Global position tracked as (z, y, x) data coords; each
-  overlay repaints itself using the Vispy camera transform at paint time.
+Architecture
+------------
+* A pool of 9 ``ViewerWidget`` instances is pre-created at init.
+* ``set_active_views(view_list)`` assigns pool viewers to the requested views,
+  builds a QGridLayout (max 2 cols, ceil(N/2) rows), loads data, and syncs
+  crosshair state.
+* A QStackedWidget holds [dynamic_grid_container, 3d_widget] so the 3D viewer
+  can take over the whole area when requested.
+* Crosshair sync: ``_xhair_pos = [z, y, x]`` in Napari data space drives all
+  visible 2D viewers via ``_sync_viewer_slices()`` / ``_refresh_all_crosshairs()``.
 """
 
+import math
 from PyQt6.QtWidgets import (
-    QWidget, QGridLayout, QStackedWidget, QVBoxLayout, QApplication,
-    QLabel, QComboBox, QHBoxLayout
+    QWidget, QGridLayout, QStackedWidget, QVBoxLayout, QApplication, QLabel,
 )
-from PyQt6.QtCore import pyqtSignal, QTimer, Qt
+from PyQt6.QtCore import pyqtSignal, Qt
 import numpy as np
 import napari
 
 from ..viewers.viewer_widget import ViewerWidget
-from ..viewers.viewer_sync import link_dims, link_camera, one_shot_sync_step
 from .mask_sync import MaskSyncMixin
 from .eraser_manager import EraserMixin
 from ....utils.dimension_utils import get_spacing_from_affine
 
 
+# ── View metadata ────────────────────────────────────────────────────────────
+
+# Plane → Napari display axis
+_PLANE_AXIS = {"axial": 0, "coronal": 1, "sagittal": 2}
+
+# Sort keys for layout order (same-plane views end up adjacent → same row)
+_PLANE_ORDER = {"axial": 0, "coronal": 1, "sagittal": 2}
+_MOD_ORDER   = {"ct": 0, "pet": 1, "overlay": 2}
+
+VIEW_LABELS = {
+    "axial_ct":         "Axial — CT",
+    "axial_pet":        "Axial — PET",
+    "axial_overlay":    "Axial — Overlay",
+    "coronal_ct":       "Coronal — CT",
+    "coronal_pet":      "Coronal — PET",
+    "coronal_overlay":  "Coronal — Overlay",
+    "sagittal_ct":      "Sagittal — CT",
+    "sagittal_pet":     "Sagittal — PET",
+    "sagittal_overlay": "Sagittal — Overlay",
+}
+
+
+def _view_axis(view_id: str) -> int:
+    return _PLANE_AXIS[view_id.split("_")[0]]
+
+
+def _view_modality(view_id: str) -> str:
+    # "axial_ct" → "ct"  |  "sagittal_overlay" → "overlay"
+    return view_id.split("_")[-1]
+
+
+def _view_sort_key(view_id: str):
+    parts = view_id.split("_")
+    return (_PLANE_ORDER[parts[0]], _MOD_ORDER[parts[-1]])
+
+
+# ── Main class ───────────────────────────────────────────────────────────────
+
 class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
-    """Manages Grid, Overlay, Mono, MonoSingle, and 3D layouts."""
+    """Dynamic multi-view layout manager with a pool of 9 ViewerWidgets."""
 
-    sig_eraser_region_removed  = pyqtSignal(object, object, object)
+    sig_eraser_region_removed   = pyqtSignal(object, object, object)
     sig_eraser_background_click = pyqtSignal()
-    sig_mask_painted           = pyqtSignal(str)
-    sig_shape_committed        = pyqtSignal(str)
-    sig_cursor_intensity       = pyqtSignal(str)
+    sig_mask_painted            = pyqtSignal(str)
+    sig_shape_committed         = pyqtSignal(str)
+    sig_cursor_intensity        = pyqtSignal(str)
 
-    # (z_vox, y_vox, x_vox, z_mm, y_mm, x_mm, hu, suv)
+    # (z_vox, y_vox, x_vox, z_mm, y_mm, x_mm, hu_str, suv_str)
     sig_crosshair_pos = pyqtSignal(float, float, float, float, float, float, str, str)
+
+    # ── Init ─────────────────────────────────────────────────────────────────
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -42,6 +84,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        # Stack: index 0 = 2D dynamic grid, index 1 = 3D viewer
         self.stack = QStackedWidget()
         main_layout.addWidget(self.stack)
 
@@ -57,25 +100,36 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._info_label.hide()
         self._info_label.raise_()
 
-        # Initialize layouts
-        self._init_grid_view()
-        self._init_overlay_view()
-        self._init_mono_view()
-        self._init_mono_single_view()
-        self._init_3d_view()
+        # 2D dynamic grid container
+        self._grid_container = QWidget()
+        self._dynamic_grid = QGridLayout(self._grid_container)
+        self._dynamic_grid.setContentsMargins(0, 0, 0, 0)
+        self._dynamic_grid.setSpacing(1)
+        self.stack.addWidget(self._grid_container)
 
-        # Sync within layouts
-        self._sync_grid_views()
-        self._sync_mono_views()
+        # Pool of 9 reusable 2D viewers
+        self._viewer_pool: list[ViewerWidget] = [ViewerWidget() for _ in range(9)]
+        for vw in self._viewer_pool:
+            vw.hide()
+
+        # Fixed view assignment: view_id → ViewerWidget
+        self._fixed_view_map: dict[str, ViewerWidget] = {}
+        for i, view_id in enumerate(VIEW_LABELS.keys()):
+            if i < len(self._viewer_pool):
+                self._fixed_view_map[view_id] = self._viewer_pool[i]
+
+        # 3D viewer
+        self._init_3d_view()
 
         self._init_mask_sync()
 
         # Data cache
-        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None}
+        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None, "ct_filename": "", "pet_filename": ""}
         self._cached_data_zyx = {"tumor": None, "roi": None}
         self._is_3d_loaded = False
         self._cached_lesion_data = None
-        self._loaded_layouts = set()
+
+        self._active_views: list[str] = []
 
         # Display state
         self._ct_wl = (350.0, 35.0)
@@ -87,107 +141,12 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         # Crosshair state
         self._crosshair_enabled = False
         self._pan_mode = False
-        self._xhair_pos = [0.0, 0.0, 0.0]   # [z, y, x] in Napari data space
+        self._xhair_pos = [0.0, 0.0, 0.0]   # [z, y, x] Napari data space
 
-        # For cross-view scroll sync: subscribe to CT viewer dims in grid
-        self._scroll_sync_connected = False
+        # Initialise default layout so grid cells exist before first data load
+        self.set_active_views(["axial_ct", "axial_pet"])
 
-        self._preload_queue = []
-
-    # ── View Initialization ──────────────────────────────────────────────
-
-    def _init_grid_view(self):
-        """6-Cell Grid: Axial/Sagittal/Coronal × CT/PET."""
-        self.grid_widget = QWidget()
-        self.grid_layout = QGridLayout(self.grid_widget)
-        self.grid_layout.setContentsMargins(0, 0, 0, 0)
-        self.grid_layout.setSpacing(1)
-        self.grid_layout.setColumnStretch(0, 1)
-        self.grid_layout.setColumnStretch(1, 1)
-
-        self.grid_viewers = {}
-        for r in range(3):
-            for c in range(2):
-                v = ViewerWidget()
-                self.grid_layout.addWidget(v, r, c)
-                self.grid_viewers[(r, c)] = v
-                if r == 0: v.set_camera_view(0)   # Axial
-                if r == 1: v.set_camera_view(2)   # Sagittal
-                if r == 2: v.set_camera_view(1)   # Coronal
-
-        self.stack.addWidget(self.grid_widget)
-
-    def _init_overlay_view(self):
-        self.overlay_widget = QWidget()
-        layout = QVBoxLayout(self.overlay_widget)
-        layout.setContentsMargins(0, 0, 0, 0)
-        self.overlay_viewer = ViewerWidget()
-        self.overlay_viewer.set_camera_view(0)
-        layout.addWidget(self.overlay_viewer)
-        self.stack.addWidget(self.overlay_widget)
-
-    def _init_mono_view(self):
-        """Side-by-side: CT (Left), PET (Right)."""
-        self.mono_widget = QWidget()
-        self.mono_layout = QGridLayout(self.mono_widget)
-        self.mono_layout.setContentsMargins(0, 0, 0, 0)
-        self.mono_layout.setSpacing(1)
-        self.mono_layout.setColumnStretch(0, 1)
-        self.mono_layout.setColumnStretch(1, 1)
-        self.mono_viewers = {}
-        for i in range(2):
-            v = ViewerWidget()
-            self.mono_layout.addWidget(v, 0, i)
-            self.mono_viewers[i] = v
-            v.set_camera_view(0)
-        self.stack.addWidget(self.mono_widget)
-
-    def _init_mono_single_view(self):
-        """2×2 grid: 3 orthogonal views of ONE modality + empty cell."""
-        self.mono_single_widget = QWidget()
-        ms_outer = QVBoxLayout(self.mono_single_widget)
-        ms_outer.setContentsMargins(0, 0, 0, 0)
-        ms_outer.setSpacing(0)
-
-        # Modality selector bar
-        sel_bar = QWidget()
-        sel_bar.setFixedHeight(32)
-        sel_lay = QHBoxLayout(sel_bar)
-        sel_lay.setContentsMargins(4, 2, 4, 2)
-        sel_lay.addWidget(QLabel("Modality:"))
-        self._mono_single_combo = QComboBox()
-        self._mono_single_combo.addItems(["CT", "PET"])
-        self._mono_single_combo.currentTextChanged.connect(self._reload_mono_single)
-        sel_lay.addWidget(self._mono_single_combo)
-        sel_lay.addStretch()
-        ms_outer.addWidget(sel_bar)
-
-        # 2×2 grid
-        ms_grid_widget = QWidget()
-        ms_grid = QGridLayout(ms_grid_widget)
-        ms_grid.setContentsMargins(0, 0, 0, 0)
-        ms_grid.setSpacing(1)
-        ms_grid.setColumnStretch(0, 1)
-        ms_grid.setColumnStretch(1, 1)
-        ms_grid.setRowStretch(0, 1)
-        ms_grid.setRowStretch(1, 1)
-
-        self.mono_single_viewers = {}
-        # (0,0)=Axial, (0,1)=Coronal, (1,0)=Sagittal, (1,1)=empty
-        axes = {(0, 0): 0, (0, 1): 1, (1, 0): 2}
-        for (r, c), axis in axes.items():
-            v = ViewerWidget()
-            ms_grid.addWidget(v, r, c)
-            self.mono_single_viewers[(r, c)] = v
-            v.set_camera_view(axis)
-
-        # Empty placeholder cell
-        empty = QLabel()
-        empty.setStyleSheet("background: #111;")
-        ms_grid.addWidget(empty, 1, 1)
-        ms_outer.addWidget(ms_grid_widget)
-
-        self.stack.addWidget(self.mono_single_widget)
+    # ── 3D viewer init ───────────────────────────────────────────────────────
 
     def _init_3d_view(self):
         self.view_3d_widget = QWidget()
@@ -198,25 +157,251 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         layout.addWidget(self.viewer_3d)
         self.stack.addWidget(self.view_3d_widget)
 
-    # ── Intra-layout Sync ────────────────────────────────────────────────
+    # ── Active view management ────────────────────────────────────────────────
 
-    def _sync_grid_views(self):
-        for r in range(3):
-            v1 = self.grid_viewers[(r, 0)].viewer
-            v2 = self.grid_viewers[(r, 1)].viewer
-            link_dims(v1, v2)
-            link_camera(v1, v2)
+    def set_active_views(self, view_list: list):
+        """Rebuild the dynamic grid for the requested set of views."""
+        # Switch stack to the 2D grid pane
+        self.stack.setCurrentWidget(self._grid_container)
 
-    def _sync_mono_views(self):
-        v1 = self.mono_viewers[0].viewer
-        v2 = self.mono_viewers[1].viewer
-        link_dims(v1, v2)
-        link_camera(v1, v2)
+        # Remove all widgets from the grid without destroying them
+        self._clear_dynamic_grid()
 
-    # ── Crosshair event handling ─────────────────────────────────────────
+        if not view_list:
+            for vw in self._viewer_pool:
+                vw.hide()
+            self._active_views = []
+            return
+
+        # Do not sort, preserve the requested list order
+        sorted_views = list(view_list)
+        n = len(sorted_views)
+        cols = 1 if n == 1 else 2
+        rows = math.ceil(n / cols)
+
+        # Remove all widgets from the grid without destroying them (already done above)
+
+        self._active_views = sorted_views
+
+        # Hide unassigned pool viewers and clear their memory
+        assigned_views = set(sorted_views)
+        for view_id, vw in self._fixed_view_map.items():
+            if view_id not in assigned_views:
+                vw.hide()
+                vw.viewer.layers.clear()
+
+        # Place assigned viewers into grid
+        for i, view_id in enumerate(sorted_views):
+            row, col = divmod(i, cols)
+            vw = self._fixed_view_map[view_id]
+            self._dynamic_grid.addWidget(vw, row, col)
+            vw.show()
+
+        for c in range(cols):
+            self._dynamic_grid.setColumnStretch(c, 1)
+        for r in range(rows):
+            self._dynamic_grid.setRowStretch(r, 1)
+
+        self._active_views = sorted_views
+
+        # Load data into viewers if already cached
+        self._load_active_views()
+        self._connect_mask_events()
+
+        if self._crosshair_enabled:
+            self.enable_crosshair_mode()
+        else:
+            self._connect_crosshair_events()
+
+    def _clear_dynamic_grid(self):
+        """Remove all widgets from the dynamic grid (does not destroy them)."""
+        while self._dynamic_grid.count():
+            item = self._dynamic_grid.takeAt(0)
+            w = item.widget()
+            if w:
+                w.hide()
+                self._dynamic_grid.removeWidget(w)
+        for i in range(self._dynamic_grid.rowCount()):
+            self._dynamic_grid.setRowStretch(i, 0)
+        for i in range(self._dynamic_grid.columnCount()):
+            self._dynamic_grid.setColumnStretch(i, 0)
+
+    # ── Data loading ──────────────────────────────────────────────────────────
+
+    def load_data(self, ct_data=None, pet_data=None, ct_affine=None, pet_affine=None, tumor_mask=None, roi_mask=None, ct_filename: str = "", pet_filename: str = "", affine=None):
+        if ct_affine is None and affine is not None:
+            ct_affine = affine
+        if pet_affine is None and affine is not None:
+            pet_affine = affine
+            
+        self._cached_data["ct"] = ct_data
+        self._cached_data["pet"] = pet_data
+        self._cached_data["ct_affine"] = ct_affine
+        self._cached_data["pet_affine"] = pet_affine
+        self._cached_data["affine"] = ct_affine if ct_affine is not None else pet_affine
+        self._cached_data["tumor"] = tumor_mask
+        self._cached_data["roi"] = roi_mask
+        self._cached_data["ct_filename"] = ct_filename
+        self._cached_data["pet_filename"] = pet_filename
+        self._is_3d_loaded = False
+
+        from ....utils.nifti_utils import to_napari
+        if tumor_mask is not None:
+            self._cached_data_zyx["tumor"] = to_napari(tumor_mask.astype(np.uint8, copy=False))
+        else:
+            self._cached_data_zyx["tumor"] = None
+        if roi_mask is not None:
+            self._cached_data_zyx["roi"] = to_napari(roi_mask.astype(np.uint8, copy=False))
+        else:
+            self._cached_data_zyx["roi"] = None
+
+        # Init crosshair at volume centre
+        ref = ct_data if ct_data is not None else pet_data
+        if ref is not None:
+            sh = ref.shape   # XYZ nibabel
+            self._xhair_pos = [sh[2] / 2.0, sh[1] / 2.0, sh[0] / 2.0]
+
+        if affine is not None:
+            sxyz = get_spacing_from_affine(affine)
+            self._scale_zyx = (float(sxyz[2]), float(sxyz[1]), float(sxyz[0]))
+
+        self._load_active_views()
+        self._connect_mask_events()
+
+    def _load_active_views(self):
+        """Push cached data into all currently assigned pool viewers."""
+        if not self._active_views:
+            return
+        ct = self._cached_data.get("ct")
+        pet = self._cached_data.get("pet")
+        ct_affine = self._cached_data.get("ct_affine")
+        pet_affine = self._cached_data.get("pet_affine")
+
+        c_min = self._ct_wl[1] - self._ct_wl[0] / 2
+        c_max = self._ct_wl[1] + self._ct_wl[0] / 2
+        p_min = max(0.0, self._pet_wl[1] - self._pet_wl[0] / 2)
+        p_max = self._pet_wl[1] + self._pet_wl[0] / 2
+
+        for view_id in self._active_views:
+            vw = self._fixed_view_map[view_id]
+            axis = _view_axis(view_id)
+            modality = _view_modality(view_id)
+            wants_ct  = modality in ("ct",  "overlay")
+            wants_pet = modality in ("pet", "overlay")
+
+            # Load image layers
+            if wants_ct and ct is not None and ct_affine is not None:
+                vw.load_image(ct, ct_affine, "ct", self._ct_colormap)
+                ct_name = vw.LAYER_NAMES["ct"]
+                if ct_name in vw.viewer.layers:
+                    vw.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
+            if wants_pet and pet is not None and pet_affine is not None:
+                pet_opacity = 0.5 if modality == "overlay" else 1.0
+                vw.load_image(pet, pet_affine, "pet", self._pet_colormap, opacity=pet_opacity)
+                pet_name = vw.LAYER_NAMES["pet"]
+                if pet_name in vw.viewer.layers:
+                    vw.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
+
+            # Set layer visibility
+            ct_name  = vw.LAYER_NAMES["ct"]
+            pet_name = vw.LAYER_NAMES["pet"]
+            if ct_name in vw.viewer.layers:
+                vw.viewer.layers[ct_name].visible = wants_ct
+            if pet_name in vw.viewer.layers:
+                vw.viewer.layers[pet_name].visible = wants_pet
+
+            # Load masks
+            if self._cached_data_zyx.get("tumor") is not None:
+                vw.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+            if self._cached_data_zyx.get("roi") is not None:
+                vw.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
+
+            # Camera and reset
+            vw.set_camera_view(axis)
+            if len(vw.viewer.layers) > 0:
+                vw.viewer.reset_view()
+
+            # View name badge
+            label_text = VIEW_LABELS.get(view_id, view_id)
+            ct_name = self._cached_data.get("ct_filename", "")
+            pet_name = self._cached_data.get("pet_filename", "")
+            
+            if wants_ct and not wants_pet and ct_name:
+                label_text += f" ({ct_name})"
+            elif wants_pet and not wants_ct and pet_name:
+                label_text += f" ({pet_name})"
+            elif wants_ct and wants_pet:
+                label_text += " (Overlay)"
+                
+            vw.set_view_label(label_text)
+
+            if self._cached_lesion_data:
+                vw.show_lesion_ids(*self._cached_lesion_data)
+
+        self._sync_viewer_slices()
+
+    # ── 3D data loading ───────────────────────────────────────────────────────
+
+    def _load_3d_data(self):
+        if self._is_3d_loaded:
+            return
+        ct = self._cached_data.get("ct")
+        pet = self._cached_data.get("pet")
+        ct_affine = self._cached_data.get("ct_affine")
+        pet_affine = self._cached_data.get("pet_affine")
+
+        if ct is not None and ct_affine is not None:
+            self.viewer_3d.load_image(ct, ct_affine, "ct", self._ct_colormap)
+        if pet is not None and pet_affine is not None:
+            self.viewer_3d.load_image(pet, pet_affine, "pet", self._pet_colormap, opacity=1.0)
+        if self._cached_data_zyx.get("tumor") is not None:
+            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+        if self._cached_data_zyx.get("roi") is not None:
+            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
+        if self._cached_lesion_data:
+            self.viewer_3d.show_lesion_ids(*self._cached_lesion_data)
+
+        ct_name  = self.viewer_3d.LAYER_NAMES["ct"]
+        pet_name = self.viewer_3d.LAYER_NAMES["pet"]
+        c_min = self._ct_wl[1] - self._ct_wl[0] / 2
+        c_max = self._ct_wl[1] + self._ct_wl[0] / 2
+        p_min = max(0.0, self._pet_wl[1] - self._pet_wl[0] / 2)
+        p_max = self._pet_wl[1] + self._pet_wl[0] / 2
+        if ct is not None and ct_name in self.viewer_3d.viewer.layers:
+            self.viewer_3d.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
+        if pet is not None and pet_name in self.viewer_3d.viewer.layers:
+            self.viewer_3d.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
+            self.viewer_3d.viewer.layers[pet_name].visible = False
+
+        self.viewer_3d.viewer.dims.ndisplay = 3
+        self._is_3d_loaded = True
+
+    # ── View mode (3D only) ───────────────────────────────────────────────────
+
+    def set_view_mode(self, mode: str):
+        """Handles 3D mode toggling. 2D views use set_active_views instead."""
+        if mode == "3d":
+            self.stack.setCurrentWidget(self.view_3d_widget)
+            self._load_3d_data()
+            self.viewer_3d.viewer.dims.ndisplay = 3
+            self.viewer_3d.viewer.camera.mouse_pan = True
+            self.viewer_3d.viewer.camera.mouse_zoom = True
+            for layer in self.viewer_3d.viewer.layers:
+                if isinstance(layer, napari.layers.Labels):
+                    layer.editable = False
+                    layer.mode = "pan_zoom"
+        else:
+            # Return to 2D grid (e.g. if something sends a legacy mode string)
+            self.stack.setCurrentWidget(self._grid_container)
+
+        self._connect_mask_events()
+        if self._crosshair_enabled:
+            self.enable_crosshair_mode()
+
+    # ── Crosshair event handling ──────────────────────────────────────────────
 
     def _connect_crosshair_events(self):
-        """Connect click, scroll, and arrow-key signals from all visible viewers."""
+        """Connect click / scroll / arrow-key signals from all visible 2D viewers."""
         for vw in self._get_all_2d_viewers():
             try:
                 vw.sig_crosshair_clicked.disconnect(self._on_viewer_crosshair_click)
@@ -230,6 +415,10 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 vw.sig_crosshair_arrow.disconnect(self._on_crosshair_arrow)
             except (TypeError, RuntimeError):
                 pass
+            try:
+                vw.sig_camera_changed.disconnect(self._on_viewer_camera_changed)
+            except (TypeError, RuntimeError):
+                pass
 
         for vw in self._get_visible_viewers():
             if not vw.is_3d:
@@ -238,12 +427,10 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                     lambda step, v=vw: self._on_viewer_slice_changed(step, v)
                 )
                 vw.sig_crosshair_arrow.connect(self._on_crosshair_arrow)
+                vw.sig_camera_changed.connect(self._on_viewer_camera_changed)
 
     def _on_viewer_slice_changed(self, current_step: tuple, viewer_widget_ref):
-        """Update _xhair_pos based on the non-displayed dimensions of the viewer."""
-        if not self._crosshair_enabled:
-            return
-            
+        """Update _xhair_pos when a viewer is scrolled."""
         dims_d = list(viewer_widget_ref.viewer.dims.displayed)
         changed = False
         for d in range(viewer_widget_ref.viewer.dims.ndim):
@@ -252,33 +439,27 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 if self._xhair_pos[d] != new_val:
                     self._xhair_pos[d] = new_val
                     changed = True
-        
         if changed:
             self._sync_viewer_slices()
             self._emit_crosshair_coords()
             self._refresh_all_crosshairs()
 
     def jump_to_position(self, z: float, y: float, x: float):
-        """Jump all viewers to the given position (ZYX Napari coords)."""
         self._xhair_pos = [z, y, x]
         self._sync_viewer_slices()
         self._refresh_all_crosshairs()
         self._emit_crosshair_coords()
 
     def _on_viewer_crosshair_click(self, pos_zyx: list):
-        """Update crosshair position from a viewer click and sync all views."""
         self._xhair_pos = [pos_zyx[0], pos_zyx[1], pos_zyx[2]]
         self._sync_viewer_slices()
         self._refresh_all_crosshairs()
         self._emit_crosshair_coords()
 
     def _on_crosshair_arrow(self, dim: int, delta: int):
-        """Move crosshair by one voxel along dim when an arrow key is pressed."""
         if not self._crosshair_enabled:
             return
-        # Clamp within volume bounds if available
         new_val = self._xhair_pos[dim] + delta
-        # Try to get the max extent for this dimension from any loaded viewer
         for vw in self._get_visible_viewers():
             if not vw.is_3d and vw.viewer.dims.ndim > dim:
                 limit = vw.viewer.dims.range[dim][1]
@@ -289,31 +470,42 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._refresh_all_crosshairs()
         self._emit_crosshair_coords()
 
+    def _on_viewer_camera_changed(self, source_vw):
+        if getattr(self, '_is_syncing_camera', False):
+            return
+        self._is_syncing_camera = True
+        try:
+            source_order = source_vw.viewer.dims.order
+            source_zoom = source_vw.viewer.camera.zoom
+            source_center = source_vw.viewer.camera.center
+            for vw in self._get_visible_viewers():
+                if vw is not source_vw and not vw.is_3d:
+                    if vw.viewer.dims.order == source_order:
+                        vw.viewer.camera.zoom = source_zoom
+                        vw.viewer.camera.center = source_center
+        finally:
+            self._is_syncing_camera = False
+
     def _sync_viewer_slices(self):
-        """Update the slice index of all visible 2D viewers to match _xhair_pos."""
+        """Set slice index in all active 2D viewers to match _xhair_pos."""
         if getattr(self, '_is_syncing_slices', False):
             return
-            
         self._is_syncing_slices = True
         try:
             for vw in self._get_visible_viewers():
                 if vw.is_3d:
                     continue
-                
                 step = list(vw.viewer.dims.current_step)
                 dims_d = list(vw.viewer.dims.displayed)
                 changed = False
-                
                 for d in range(vw.viewer.dims.ndim):
                     if d not in dims_d:
-                        target_slice = int(round(self._xhair_pos[d]))
-                        # Limit is the max range of the dimension
-                        limit = vw.viewer.dims.range[d][1]
-                        target_slice = max(0, min(int(limit) - 1, target_slice))
-                        if step[d] != target_slice:
-                            step[d] = target_slice
+                        target = int(round(self._xhair_pos[d]))
+                        limit  = vw.viewer.dims.range[d][1]
+                        target = max(0, min(int(limit) - 1, target))
+                        if step[d] != target:
+                            step[d] = target
                             changed = True
-                
                 if changed:
                     vw.viewer.dims.current_step = tuple(step)
         except Exception:
@@ -322,40 +514,29 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             self._is_syncing_slices = False
 
     def _refresh_all_crosshairs(self):
-        """Push new crosshair position to all loaded 2D viewer overlays."""
         pos = list(self._xhair_pos)
         for vw in self._get_all_2d_viewers():
             vw.update_crosshair(pos)
 
     def _emit_crosshair_coords(self):
-        """Emit crosshair coordinates for the info overlay."""
         z, y, x = self._xhair_pos
-        affine = self._cached_data.get("affine")
-
+        affine  = self._cached_data.get("affine")
         ct_data = self._cached_data.get("ct")
         pet_data = self._cached_data.get("pet")
         ref_data = ct_data if ct_data is not None else pet_data
 
         if affine is not None and ref_data is not None:
-            # Transform from Napari (Z, Y, X) back to Nibabel (X, Y, Z)
-            shape_xyz = ref_data.shape
-            shape_z, shape_y, shape_x = shape_xyz[2], shape_xyz[1], shape_xyz[0]
-
-            # Undo Napari flip on Z and Y axes
-            z_prime = shape_z - 1 - z
-            y_prime = shape_y - 1 - y
+            sh = ref_data.shape   # XYZ nibabel
+            z_prime = sh[2] - 1 - z
+            y_prime = sh[1] - 1 - y
             x_prime = x
-
-            # Apply affine mathematically
             vec = np.array([x_prime, y_prime, z_prime, 1.0])
-            mm_coords = affine @ vec
-            x_mm, y_mm, z_mm = float(mm_coords[0]), float(mm_coords[1]), float(mm_coords[2])
+            mm = affine @ vec
+            x_mm, y_mm, z_mm = float(mm[0]), float(mm[1]), float(mm[2])
         else:
             z_mm = y_mm = x_mm = 0.0
 
-        # Read HU and SUV at crosshair position — iterate ALL visible viewers
-        hu_str = "---"
-        suv_str = "---"
+        hu_str = suv_str = "---"
         zi, yi, xi = int(round(z)), int(round(y)), int(round(x))
         for vw in self._get_visible_viewers():
             if vw.is_3d:
@@ -363,7 +544,10 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             for lt, label in [("ct", "CT"), ("pet", "PET")]:
                 name = vw.LAYER_NAMES.get(lt)
                 if name and name in vw.viewer.layers:
-                    d = vw.viewer.layers[name].data
+                    layer = vw.viewer.layers[name]
+                    if not layer.visible:
+                        continue
+                    d = layer.data
                     if 0 <= zi < d.shape[0] and 0 <= yi < d.shape[1] and 0 <= xi < d.shape[2]:
                         val = float(d[zi, yi, xi])
                         if label == "CT" and hu_str == "---":
@@ -371,15 +555,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                         elif label == "PET" and suv_str == "---":
                             suv_str = f"{val:.2f}"
             if hu_str != "---" and suv_str != "---":
-                break  # Got both values, no need to check more viewers
-
-        # In mono-single mode only one modality is shown
-        if self.stack.currentWidget() == self.mono_single_widget:
-            modality = self._mono_single_combo.currentText().lower()
-            if modality == "ct":
-                suv_str = "N/A"
-            else:
-                hu_str = "N/A"
+                break
 
         self.sig_crosshair_pos.emit(z, y, x, z_mm, y_mm, x_mm, hu_str, suv_str)
         self._update_info_label(z, y, x, z_mm, y_mm, x_mm, hu_str, suv_str)
@@ -392,397 +568,42 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         )
         self._info_label.setText(text)
         self._info_label.adjustSize()
-        # Position: top-right corner
         margin = 8
-        lw = self._info_label.width()
-        self._info_label.move(self.width() - lw - margin, margin)
+        self._info_label.move(self.width() - self._info_label.width() - margin, margin)
         if self._crosshair_enabled:
             self._info_label.show()
             self._info_label.raise_()
-
-    # ── Layout resize: keep info label in top-right ──────────────────────
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
         if self._info_label.isVisible():
             margin = 8
-            lw = self._info_label.width()
-            self._info_label.move(self.width() - lw - margin, margin)
+            self._info_label.move(self.width() - self._info_label.width() - margin, margin)
 
-    # ── Data Loading (Lazy) ──────────────────────────────────────────────
-
-    def load_data(self, ct_data, pet_data, affine, tumor_mask=None, roi_mask=None):
-        self._cached_data["ct"] = ct_data
-        self._cached_data["pet"] = pet_data
-        self._cached_data["affine"] = affine
-        self._cached_data["tumor"] = tumor_mask
-        self._cached_data["roi"] = roi_mask
-        self._is_3d_loaded = False
-        self._loaded_layouts.clear()
-
-        from ....utils.nifti_utils import to_napari
-        if tumor_mask is not None:
-            self._cached_data_zyx["tumor"] = to_napari(tumor_mask.astype(np.uint8))
-        else:
-            self._cached_data_zyx["tumor"] = None
-        if roi_mask is not None:
-            self._cached_data_zyx["roi"] = to_napari(roi_mask.astype(np.uint8))
-        else:
-            self._cached_data_zyx["roi"] = None
-
-        # Init crosshair at center of data
-        if ct_data is not None:
-            sh = ct_data.shape  # XYZ nibabel
-            # Napari ZYX: Z=sh[2], Y=sh[1], X=sh[0]
-            self._xhair_pos = [sh[2] / 2.0, sh[1] / 2.0, sh[0] / 2.0]
-        elif pet_data is not None:
-            sh = pet_data.shape
-            self._xhair_pos = [sh[2] / 2.0, sh[1] / 2.0, sh[0] / 2.0]
-
-        # Cache scale for coordinate display
-        if affine is not None:
-            from ....utils.dimension_utils import get_spacing_from_affine
-            sxyz = get_spacing_from_affine(affine)
-            self._scale_zyx = (float(sxyz[2]), float(sxyz[1]), float(sxyz[0]))
-
-        self._load_current_layout()
-        self._connect_mask_events()
-        self._schedule_preload()
-
-    def _load_current_layout(self):
-        current = self.stack.currentWidget()
-        if current == self.grid_widget:
-            self._load_grid()
-        elif current == self.overlay_widget:
-            self._load_overlay()
-        elif current == self.mono_widget:
-            self._load_mono()
-        elif current == self.mono_single_widget:
-            self._load_mono_single()
-        elif current == self.view_3d_widget:
-            self._load_3d_data()
-
-    def _load_grid(self):
-        if "grid" in self._loaded_layouts:
-            return
-        ct = self._cached_data["ct"]
-        pet = self._cached_data["pet"]
-        affine = self._cached_data["affine"]
-
-        for (r, c), widget in self.grid_viewers.items():
-            if c == 0 and ct is not None:
-                widget.load_image(ct, affine, "ct", self._ct_colormap)
-            elif c == 1 and pet is not None:
-                widget.load_image(pet, affine, "pet", self._pet_colormap)
-            if self._cached_data_zyx["tumor"] is not None:
-                widget.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-            if self._cached_data_zyx["roi"] is not None:
-                widget.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
-            if r == 0: widget.set_camera_view(0)
-            elif r == 1: widget.set_camera_view(2)
-            elif r == 2: widget.set_camera_view(1)
-
-            ct_name = widget.LAYER_NAMES["ct"]
-            pet_name = widget.LAYER_NAMES["pet"]
-            if ct is not None and ct_name in widget.viewer.layers:
-                c_min = self._ct_wl[1] - (self._ct_wl[0] / 2)
-                c_max = self._ct_wl[1] + (self._ct_wl[0] / 2)
-                widget.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
-            if pet is not None and pet_name in widget.viewer.layers:
-                p_min = max(0, self._pet_wl[1] - (self._pet_wl[0] / 2))
-                p_max = self._pet_wl[1] + (self._pet_wl[0] / 2)
-                widget.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
-
-            if len(widget.viewer.layers) > 0:
-                widget.viewer.reset_view()
-            if self._cached_lesion_data:
-                widget.show_lesion_ids(*self._cached_lesion_data)
-
-        QApplication.processEvents()
-
-        if ct is not None:
-            D_x, D_y, D_z = ct.shape
-            spacing_xyz = get_spacing_from_affine(affine)
-            sx, sy, sz = float(spacing_xyz[0]), float(spacing_xyz[1]), float(spacing_xyz[2])
-            self.grid_layout.setRowStretch(0, int(D_y * sy))
-            self.grid_layout.setRowStretch(1, int(D_z * sz))
-            self.grid_layout.setRowStretch(2, int(D_z * sz))
-
-        self._loaded_layouts.add("grid")
-
-    def _load_overlay(self):
-        if "overlay" in self._loaded_layouts:
-            return
-        ct = self._cached_data["ct"]
-        pet = self._cached_data["pet"]
-        affine = self._cached_data["affine"]
-
-        if ct is not None:
-            self.overlay_viewer.load_image(ct, affine, "ct", self._ct_colormap)
-        if pet is not None:
-            self.overlay_viewer.load_image(pet, affine, "pet", self._pet_colormap, opacity=0.5)
-        if self._cached_data_zyx["tumor"] is not None:
-            self.overlay_viewer.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-        if self._cached_data_zyx["roi"] is not None:
-            self.overlay_viewer.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
-
-        ct_name = self.overlay_viewer.LAYER_NAMES["ct"]
-        pet_name = self.overlay_viewer.LAYER_NAMES["pet"]
-        if ct is not None and ct_name in self.overlay_viewer.viewer.layers:
-            c_min = self._ct_wl[1] - (self._ct_wl[0] / 2)
-            c_max = self._ct_wl[1] + (self._ct_wl[0] / 2)
-            self.overlay_viewer.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
-        if pet is not None and pet_name in self.overlay_viewer.viewer.layers:
-            p_min = max(0, self._pet_wl[1] - (self._pet_wl[0] / 2))
-            p_max = self._pet_wl[1] + (self._pet_wl[0] / 2)
-            self.overlay_viewer.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
-
-        if len(self.overlay_viewer.viewer.layers) > 0:
-            self.overlay_viewer.viewer.reset_view()
-        if self._cached_lesion_data:
-            self.overlay_viewer.show_lesion_ids(*self._cached_lesion_data)
-        self._loaded_layouts.add("overlay")
-
-    def _load_mono(self):
-        if "mono" in self._loaded_layouts:
-            return
-        ct = self._cached_data["ct"]
-        pet = self._cached_data["pet"]
-        affine = self._cached_data["affine"]
-
-        if ct is not None:
-            self.mono_viewers[0].load_image(ct, affine, "ct", self._ct_colormap)
-        if pet is not None:
-            self.mono_viewers[1].load_image(pet, affine, "pet", self._pet_colormap)
-
-        for v in self.mono_viewers.values():
-            if self._cached_data_zyx["tumor"] is not None:
-                v.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-            if self._cached_data_zyx["roi"] is not None:
-                v.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
-            ct_name = v.LAYER_NAMES["ct"]
-            pet_name = v.LAYER_NAMES["pet"]
-            if ct is not None and ct_name in v.viewer.layers:
-                c_min = self._ct_wl[1] - (self._ct_wl[0] / 2)
-                c_max = self._ct_wl[1] + (self._ct_wl[0] / 2)
-                v.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
-            if pet is not None and pet_name in v.viewer.layers:
-                p_min = max(0, self._pet_wl[1] - (self._pet_wl[0] / 2))
-                p_max = self._pet_wl[1] + (self._pet_wl[0] / 2)
-                v.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
-            if len(v.viewer.layers) > 0:
-                v.viewer.reset_view()
-            if self._cached_lesion_data:
-                v.show_lesion_ids(*self._cached_lesion_data)
-
-        self._loaded_layouts.add("mono")
-
-    def _load_mono_single(self):
-        if "mono_single" in self._loaded_layouts:
-            return
-            
-        affine = self._cached_data["affine"]
-        if affine is None:
-            return
-
-        tumor_zyx = self._cached_data_zyx["tumor"]
-        roi_zyx = self._cached_data_zyx["roi"]
-        
-        c_min, c_max = self._ct_wl[1] - self._ct_wl[0] / 2, self._ct_wl[1] + self._ct_wl[0] / 2
-        p_min, p_max = max(0, self._pet_wl[1] - self._pet_wl[0] / 2), self._pet_wl[1] + self._pet_wl[0] / 2
-
-        axes = {(0, 0): 0, (0, 1): 1, (1, 0): 2}
-
-        for (r, c), vw in self.mono_single_viewers.items():
-            # Load CT if available
-            if self._cached_data["ct"] is not None:
-                vw.load_image(self._cached_data["ct"], affine, "ct", self._ct_colormap)
-                ct_name = vw.LAYER_NAMES["ct"]
-                if ct_name in vw.viewer.layers:
-                    vw.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
-
-            # Load PET if available
-            if self._cached_data["pet"] is not None:
-                vw.load_image(self._cached_data["pet"], affine, "pet", self._pet_colormap)
-                pet_name = vw.LAYER_NAMES["pet"]
-                if pet_name in vw.viewer.layers:
-                    vw.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
-
-            if tumor_zyx is not None:
-                vw.load_mask_zyx(tumor_zyx, "tumor")
-            if roi_zyx is not None:
-                vw.load_mask_zyx(roi_zyx, "roi")
-
-            # Ensure mask layers are on top (only move if needed)
-            n_layers = len(vw.viewer.layers)
-            if n_layers > 1:
-                for mask_key in ("tumor", "roi"):
-                    mask_name = vw.LAYER_NAMES.get(mask_key)
-                    if mask_name and mask_name in vw.viewer.layers:
-                        idx = list(vw.viewer.layers).index(vw.viewer.layers[mask_name])
-                        if idx < len(vw.viewer.layers) - 1:
-                            vw.viewer.layers.move(idx, len(vw.viewer.layers) - 1)
-
-            if self._cached_lesion_data:
-                vw.show_lesion_ids(*self._cached_lesion_data)
-
-            axis = axes.get((r, c), 0)
-            vw.set_camera_view(axis)
-            if n_layers > 0:
-                vw.viewer.reset_view()
-
-        self._loaded_layouts.add("mono_single")
-        self._update_mono_single_visibility()
-
-    def _update_mono_single_visibility(self):
-        modality = self._mono_single_combo.currentText().lower()
-        other_modality = "pet" if modality == "ct" else "ct"
-
-        for (r, c), vw in self.mono_single_viewers.items():
-            name = vw.LAYER_NAMES[modality]
-            if name in vw.viewer.layers:
-                vw.viewer.layers[name].visible = True
-
-            other_name = vw.LAYER_NAMES[other_modality]
-            if other_name in vw.viewer.layers:
-                vw.viewer.layers[other_name].visible = False
-
-            # Ensure mask layers are always visible (not affected by modality toggle)
-            for mask_key in ("tumor", "roi"):
-                mask_name = vw.LAYER_NAMES.get(mask_key)
-                if mask_name and mask_name in vw.viewer.layers:
-                    vw.viewer.layers[mask_name].visible = True
-
-    def _reload_mono_single(self, modality_text):
-        """Called when the modality combo changes."""
-        if self.stack.currentWidget() == self.mono_single_widget:
-            self._update_mono_single_visibility()
-
-    def _load_3d_data(self):
-        if self._is_3d_loaded:
-            return
-        ct = self._cached_data["ct"]
-        pet = self._cached_data["pet"]
-        affine = self._cached_data["affine"]
-
-        if ct is not None:
-            self.viewer_3d.load_image(ct, affine, "ct", self._ct_colormap)
-        if pet is not None:
-            self.viewer_3d.load_image(pet, affine, "pet", self._pet_colormap, opacity=1.0)
-        if self._cached_data_zyx["tumor"] is not None:
-            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-        if self._cached_data_zyx["roi"] is not None:
-            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
-        if self._cached_lesion_data:
-            self.viewer_3d.show_lesion_ids(*self._cached_lesion_data)
-
-        ct_name = self.viewer_3d.LAYER_NAMES["ct"]
-        pet_name = self.viewer_3d.LAYER_NAMES["pet"]
-        if ct is not None and ct_name in self.viewer_3d.viewer.layers:
-            c_min = self._ct_wl[1] - (self._ct_wl[0] / 2)
-            c_max = self._ct_wl[1] + (self._ct_wl[0] / 2)
-            self.viewer_3d.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
-        if pet is not None and pet_name in self.viewer_3d.viewer.layers:
-            p_min = max(0, self._pet_wl[1] - (self._pet_wl[0] / 2))
-            p_max = self._pet_wl[1] + (self._pet_wl[0] / 2)
-            self.viewer_3d.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
-        if pet is not None and pet_name in self.viewer_3d.viewer.layers:
-            self.viewer_3d.viewer.layers[pet_name].visible = False
-
-        self.viewer_3d.viewer.dims.ndisplay = 3
-        self._is_3d_loaded = True
-        self._loaded_layouts.add("3d")
-
-    # ── View Mode Switching ──────────────────────────────────────────────
-
-    def set_view_mode(self, mode: str):
-        old_viewers = self._get_visible_viewers()
-        old_viewer = old_viewers[0].viewer if old_viewers else None
-
-        if mode == "grid":
-            self.stack.setCurrentWidget(self.grid_widget)
-            self._load_grid()
-
-        elif mode.startswith("mono_single"):
-            modality = "PET" if "pet" in mode else "CT"
-            current_modality = self._mono_single_combo.currentText()
-            
-            self._mono_single_combo.blockSignals(True)
-            self._mono_single_combo.setCurrentText(modality)
-            self._mono_single_combo.blockSignals(False)
-            
-            self.stack.setCurrentWidget(self.mono_single_widget)
-            self._load_mono_single()
-            # Visibility toggle is instant — no need to discard/reload layout
-            if current_modality.upper() != modality.upper():
-                self._update_mono_single_visibility()
-
-        elif mode.startswith("mono"):
-            self.stack.setCurrentWidget(self.mono_widget)
-            self._load_mono()
-            axis_map = {"axial": 0, "coronal": 1, "sagittal": 2}
-            axis = next((v for k, v in axis_map.items() if k in mode), 0)
-            for v in self.mono_viewers.values():
-                v.set_camera_view(axis)
-                v.viewer.reset_view()
-
-        elif mode.startswith("overlay"):
-            self.stack.setCurrentWidget(self.overlay_widget)
-            self._load_overlay()
-            axis_map = {"axial": 0, "coronal": 1, "sagittal": 2}
-            axis = next((v for k, v in axis_map.items() if k in mode), 0)
-            self.overlay_viewer.set_camera_view(axis)
-
-        elif mode == "3d":
-            self.stack.setCurrentWidget(self.view_3d_widget)
-            self._load_3d_data()
-            # Ensure 3D viewer is in a clean interactive state:
-            # reset ndisplay, disable editing on all label layers, restore camera
-            self.viewer_3d.viewer.dims.ndisplay = 3
-            self.viewer_3d.viewer.camera.mouse_pan = True
-            self.viewer_3d.viewer.camera.mouse_zoom = True
-            for layer in self.viewer_3d.viewer.layers:
-                if isinstance(layer, napari.layers.Labels):
-                    layer.editable = False
-                    layer.mode = "pan_zoom"
-
-        # One-shot slice sync
-        if old_viewer is not None:
-            new_viewers = self._get_visible_viewers()
-            target_napari = [v.viewer for v in new_viewers]
-            one_shot_sync_step(old_viewer, target_napari)
-
-        self._connect_mask_events()
-
-        if self._crosshair_enabled:
-            self.enable_crosshair_mode()
-
-    # ── Display Settings ─────────────────────────────────────────────────
+    # ── Display settings ──────────────────────────────────────────────────────
 
     def reset_zoom(self):
         for v in self._get_visible_viewers():
             v.viewer.reset_view()
 
     def set_pet_opacity(self, value: float):
-        for widget in self._get_all_loaded_viewers():
-            for layer in widget.viewer.layers:
-                if layer.name == widget.LAYER_NAMES["pet"]:
-                    layer.opacity = value
+        for vw in self._get_all_loaded_viewers():
+            name = vw.LAYER_NAMES["pet"]
+            if name in vw.viewer.layers:
+                vw.viewer.layers[name].opacity = value
 
     def set_tumor_opacity(self, value: float):
         self._tumor_opacity = value
-        for widget in self._get_all_loaded_viewers():
-            name = widget.LAYER_NAMES.get("tumor", "tumor")
-            for layer in widget.viewer.layers:
-                if layer.name == name:
-                    layer.opacity = value
+        for vw in self._get_all_loaded_viewers():
+            name = vw.LAYER_NAMES.get("tumor", "Tumor Mask")
+            if name in vw.viewer.layers:
+                vw.viewer.layers[name].opacity = value
 
     def set_roi_opacity(self, value: float):
-        for widget in self._get_all_loaded_viewers():
-            name = widget.LAYER_NAMES.get("roi", "roi")
-            for layer in widget.viewer.layers:
-                if layer.name == name:
-                    layer.opacity = value
+        for vw in self._get_all_loaded_viewers():
+            name = vw.LAYER_NAMES.get("roi", "ROI Mask")
+            if name in vw.viewer.layers:
+                vw.viewer.layers[name].opacity = value
 
     def set_ct_window_level(self, window: float, level: float):
         self._ct_wl = (window, level)
@@ -790,41 +611,32 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
     def set_pet_window_level(self, window: float, level: float):
         self._pet_wl = (window, level)
-        min_val = max(0, level - window / 2)
-        self._set_contrast_limits("pet", min_val, level + window / 2)
+        self._set_contrast_limits("pet", max(0.0, level - window / 2), level + window / 2)
 
     def _set_contrast_limits(self, layer_type: str, min_val: float, max_val: float):
-        all_viewers = self._get_all_loaded_viewers()
-        if not all_viewers:
+        loaded = self._get_all_loaded_viewers()
+        if not loaded:
             return
-        name = all_viewers[0].LAYER_NAMES.get(layer_type, layer_type)
-        for widget in all_viewers:
-            for layer in widget.viewer.layers:
-                if layer.name == name:
-                    layer.contrast_limits = (min_val, max_val)
+        name = loaded[0].LAYER_NAMES.get(layer_type, layer_type)
+        for vw in loaded:
+            if name in vw.viewer.layers:
+                vw.viewer.layers[name].contrast_limits = (min_val, max_val)
 
     def set_zoom(self, value: float):
         zoom_factor = 0.1 + (value / 100.0) * 4.9
-        current = self.stack.currentWidget()
-        if current == self.grid_widget:
-            self.grid_viewers[(0, 0)].viewer.camera.zoom = zoom_factor
-            self.grid_viewers[(1, 0)].viewer.camera.zoom = zoom_factor
-            self.grid_viewers[(2, 0)].viewer.camera.zoom = zoom_factor
-        elif current == self.overlay_widget:
-            self.overlay_viewer.viewer.camera.zoom = zoom_factor
-        elif current == self.mono_widget:
-            self.mono_viewers[0].viewer.camera.zoom = zoom_factor
+        for vw in self._get_visible_viewers():
+            if not vw.is_3d:
+                vw.viewer.camera.zoom = zoom_factor
 
     def toggle_mask(self, mask_type: str, visible: bool):
         name_map = {"tumor": "Tumor Mask", "roi": "ROI Mask"}
         target_name = name_map.get(mask_type, mask_type)
-        for widget in self._get_all_loaded_viewers():
-            for layer in widget.viewer.layers:
-                if layer.name == target_name:
-                    layer.visible = visible
+        for vw in self._get_all_loaded_viewers():
+            if target_name in vw.viewer.layers:
+                vw.viewer.layers[target_name].visible = visible
 
     def toggle_3d_pet(self, pet_mode: bool):
-        ct_name = self.viewer_3d.LAYER_NAMES["ct"]
+        ct_name  = self.viewer_3d.LAYER_NAMES["ct"]
         pet_name = self.viewer_3d.LAYER_NAMES["pet"]
         for layer in self.viewer_3d.viewer.layers:
             if layer.name == ct_name:
@@ -850,57 +662,41 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             v.commit_shape_to_mask()
         self.sig_shape_committed.emit(layer_type)
 
-    # ── Mask Update ──────────────────────────────────────────────────────
+    # ── Mask update ───────────────────────────────────────────────────────────
 
     def update_mask(self, mask_data, mask_type, data_zyx=None):
         if mask_data is None:
             return
-        self._cached_data[mask_type] = mask_data
-        
-        if data_zyx is None:
-            from ....utils.nifti_utils import to_napari
-            data_zyx = to_napari(mask_data.astype(np.uint8))
 
-        # IN-PLACE MEMORY REUSE:
-        # If we already have an active ZYX buffer for this mask type, we can copy the new values directly into it.
-        # This guarantees all viewers currently pointing to `self._cached_data_zyx` retain their memory reference,
-        # skipping the heavily blocking 6x deep-copy cascading on load_mask_zyx.
+        is_same_object = (mask_data is self._cached_data.get(mask_type))
+        self._cached_data[mask_type] = mask_data
         existing_zyx = self._cached_data_zyx.get(mask_type)
+
+        if data_zyx is None:
+            if is_same_object and existing_zyx is not None:
+                # Array is the same object, its ZYX counterpart is already in sync or we don't need to rebuild it
+                data_zyx = existing_zyx
+            else:
+                from ....utils.nifti_utils import to_napari
+                data_zyx = to_napari(mask_data.astype(np.uint8, copy=False))
+
         if existing_zyx is not None and getattr(existing_zyx, 'shape', None) == data_zyx.shape:
-            np.copyto(existing_zyx, data_zyx, casting='unsafe')
+            if data_zyx is not existing_zyx:
+                np.copyto(existing_zyx, data_zyx, casting='unsafe')
             data_zyx = existing_zyx
             
         self._cached_data_zyx[mask_type] = data_zyx
+
         self._disconnect_mask_events()
-        # Push to visible layout only. Non-visible layouts are invalidated below
-        # and will lazy-load the updated data when shown.
         for v in self._get_visible_viewers():
             v.load_mask_zyx(data_zyx, mask_type)
-        if self.stack.currentWidget() == self.view_3d_widget and self._is_3d_loaded:
+        if self._is_3d_loaded:
             self.viewer_3d.load_mask_zyx(data_zyx, mask_type)
-        self._invalidate_non_visible_layouts()
         self._connect_mask_events()
 
-    def _invalidate_non_visible_layouts(self):
-        current = self.stack.currentWidget()
-        for name in ("grid", "overlay", "mono", "mono_single"):
-            self._loaded_layouts.discard(name)
-        if current == self.grid_widget:
-            self._loaded_layouts.add("grid")
-        elif current == self.overlay_widget:
-            self._loaded_layouts.add("overlay")
-        elif current == self.mono_widget:
-            self._loaded_layouts.add("mono")
-        elif current == self.mono_single_widget:
-            self._loaded_layouts.add("mono_single")
-            
-        # Invalidate 3D viewer if not currently on screen
-        if current != self.view_3d_widget:
-            self._is_3d_loaded = False
-
     def get_active_mask_data(self, layer_type: str):
-        for viewer in self._get_visible_viewers():
-            data = viewer.get_layer_data(layer_type)
+        for vw in self._get_visible_viewers():
+            data = vw.get_layer_data(layer_type)
             if data is not None:
                 return data
         return self._cached_data.get(layer_type)
@@ -920,60 +716,44 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 return
             from ....utils.nifti_utils import to_napari
             self._cached_data_zyx[mask_type] = to_napari(mask_data.astype(np.uint8))
-        
-        # Propagate the synced mask ONLY to visible viewers.
-        # Hidden viewers are invalidated and will reload on-demand.
+
         if self._cached_data_zyx[mask_type] is not None:
             for v in self._get_visible_viewers():
                 v.load_mask_zyx(self._cached_data_zyx[mask_type], mask_type)
-            self._invalidate_non_visible_layouts()
 
-    # ── Viewer Clear ─────────────────────────────────────────────────────
+    # ── Clear ─────────────────────────────────────────────────────────────────
 
     def clear_all_viewers(self):
-        all_viewers = (
-            list(self.grid_viewers.values())
-            + [self.overlay_viewer]
-            + list(self.mono_viewers.values())
-            + list(self.mono_single_viewers.values())
-            + [self.viewer_3d]
-        )
-        for v in all_viewers:
-            v.viewer.layers.clear()
-        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None}
+        for vw in self._viewer_pool:
+            vw.viewer.layers.clear()
+        self.viewer_3d.viewer.layers.clear()
+        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None, "ct_filename": "", "pet_filename": ""}
         self._cached_data_zyx = {"tumor": None, "roi": None}
         self._is_3d_loaded = False
-        self._loaded_layouts.clear()
-        self._click_markers = None
+        # Do not clear active views so layout persists between sessions
+        # self._active_views = []
         self._cached_lesion_data = None
         self._info_label.hide()
+        # self._clear_dynamic_grid()
 
-    # ── Helpers ──────────────────────────────────────────────────────────
+    # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _get_all_loaded_viewers(self):
-        viewers = []
-        if "grid" in self._loaded_layouts:
-            viewers.extend(self.grid_viewers.values())
-        if "overlay" in self._loaded_layouts:
-            viewers.append(self.overlay_viewer)
-        if "mono" in self._loaded_layouts:
-            viewers.extend(self.mono_viewers.values())
-        if "mono_single" in self._loaded_layouts:
-            viewers.extend(self.mono_single_viewers.values())
+    def _get_visible_viewers(self) -> list:
+        """Alias for backwards compatibility with legacy handler calls."""
+        return self._get_all_loaded_viewers()
+
+    def _get_all_loaded_viewers(self) -> list:
+        """All pool viewers currently assigned to an active view (+ 3D if loaded)."""
+        viewers = [self._fixed_view_map[v_id] for v_id in self._active_views]
         if self._is_3d_loaded:
             viewers.append(self.viewer_3d)
         return viewers
 
-    def _get_all_2d_viewers(self):
-        """All 2D viewer widgets (across all layouts, loaded or not)."""
-        return (
-            list(self.grid_viewers.values())
-            + [self.overlay_viewer]
-            + list(self.mono_viewers.values())
-            + list(self.mono_single_viewers.values())
-        )
+    def _get_all_2d_viewers(self) -> list:
+        """All pool viewers (regardless of assignment)."""
+        return list(self._viewer_pool)
 
-    # ── Lesion IDs ───────────────────────────────────────────────────────
+    # ── Lesion IDs ────────────────────────────────────────────────────────────
 
     def show_lesion_ids(self, bboxes: list, lesion_ids: list):
         if not bboxes:
@@ -983,21 +763,17 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             return
 
         nib_shape = None
-        if self._cached_data.get("ct") is not None:
-            nib_shape = self._cached_data["ct"].shape
-        elif self._cached_data.get("pet") is not None:
-            nib_shape = self._cached_data["pet"].shape
+        for key in ("ct", "pet"):
+            if self._cached_data.get(key) is not None:
+                nib_shape = self._cached_data[key].shape
+                break
 
-        points = []
-        id_strings = []
+        points, id_strings = [], []
         if nib_shape is not None:
             for bbox, lid in zip(bboxes, lesion_ids):
-                d0_c = (bbox[0] + bbox[3]) / 2.0
-                d1_c = (bbox[1] + bbox[4]) / 2.0
-                d2_c = (bbox[2] + bbox[5]) / 2.0
-                z_nap = (nib_shape[2] - 1) - d2_c
-                y_nap = (nib_shape[1] - 1) - d1_c
-                x_nap = d0_c
+                z_nap = (nib_shape[2] - 1) - (bbox[2] + bbox[5]) / 2.0
+                y_nap = (nib_shape[1] - 1) - (bbox[1] + bbox[4]) / 2.0
+                x_nap = (bbox[0] + bbox[3]) / 2.0
                 points.append([z_nap, y_nap, x_nap])
                 id_strings.append(str(lid))
 
@@ -1010,38 +786,39 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         for v in self._get_all_loaded_viewers():
             v.hide_lesion_ids()
 
-    # ── Colormap ─────────────────────────────────────────────────────────
+    # ── Colormap ──────────────────────────────────────────────────────────────
 
     def set_ct_colormap(self, colormap: str):
         self._ct_colormap = colormap
-        for widget in self._get_all_loaded_viewers():
-            name = widget.LAYER_NAMES.get("ct", "CT Image")
-            if name in widget.viewer.layers:
-                widget.viewer.layers[name].colormap = colormap
+        for vw in self._get_all_loaded_viewers():
+            name = vw.LAYER_NAMES.get("ct", "CT Image")
+            if name in vw.viewer.layers:
+                vw.viewer.layers[name].colormap = colormap
 
     def set_pet_colormap(self, colormap: str):
         self._pet_colormap = colormap
-        for widget in self._get_all_loaded_viewers():
-            name = widget.LAYER_NAMES.get("pet", "PET Image")
-            if name in widget.viewer.layers:
-                widget.viewer.layers[name].colormap = colormap
+        for vw in self._get_all_loaded_viewers():
+            name = vw.LAYER_NAMES.get("pet", "PET Image")
+            if name in vw.viewer.layers:
+                vw.viewer.layers[name].colormap = colormap
 
-    # ── Crosshair mode ───────────────────────────────────────────────────
+    # ── Crosshair mode ────────────────────────────────────────────────────────
 
     def enable_crosshair_mode(self):
-        """Enable crosshair overlay on visible viewers."""
         self._crosshair_enabled = True
         self._pan_mode = False
 
-        # Sync _xhair_pos from actual grid viewer dims so position is current
-        if "grid" in self._loaded_layouts:
-            row_to_slice_dim = {0: 0, 1: 2, 2: 1}
-            for row, slice_dim in row_to_slice_dim.items():
-                vw = self.grid_viewers[(row, 0)]
-                step = vw.viewer.dims.current_step
-                if len(step) > slice_dim:
-                    self._xhair_pos[slice_dim] = float(step[slice_dim])
-        # Disconnect cursor signals from all first (avoid duplicates)
+        # Sync _xhair_pos from actual viewer dims
+        for view_id in self._active_views:
+            vw = self._fixed_view_map[view_id]
+            if vw.viewer.dims.ndim == 0:
+                continue
+            step = vw.viewer.dims.current_step
+            dims_d = list(vw.viewer.dims.displayed)
+            for d in range(len(step)):
+                if d not in dims_d:
+                    self._xhair_pos[d] = float(step[d])
+
         for v in self._get_all_2d_viewers():
             v.disable_crosshair_mode()
             try:
@@ -1063,7 +840,6 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._emit_crosshair_coords()
 
     def disable_crosshair_mode(self):
-        """Disable crosshair overlay, show small cross cursor."""
         self._crosshair_enabled = False
         self._info_label.hide()
         for v in self._get_all_2d_viewers():
@@ -1074,7 +850,6 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 pass
 
     def set_pan_mode(self, pan_on: bool):
-        """Pan mode: no overlay, arrow cursor."""
         self._pan_mode = pan_on
         if pan_on:
             self._crosshair_enabled = False
@@ -1091,39 +866,14 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
     def _on_viewer_cursor_intensity(self, text: str):
         self.sig_cursor_intensity.emit(text)
 
-    # ── Interpolation ────────────────────────────────────────────────────
+    # ── Interpolation ─────────────────────────────────────────────────────────
 
     def set_interpolation(self, enabled: bool):
         mode = "linear" if enabled else "nearest"
-        for widget in self._get_all_loaded_viewers():
-            for layer in widget.viewer.layers:
+        for vw in self._get_all_loaded_viewers():
+            for layer in vw.viewer.layers:
                 if hasattr(layer, "interpolation2d"):
                     try:
                         layer.interpolation2d = mode
                     except Exception:
                         pass
-
-    # ── Pre-load secondary layouts ────────────────────────────────────────
-
-    def _schedule_preload(self):
-        current = self.stack.currentWidget()
-        self._preload_queue = []
-        if current != self.grid_widget:
-            self._preload_queue.append(self._load_grid)
-        if current != self.overlay_widget:
-            self._preload_queue.append(self._load_overlay)
-        if current != self.mono_widget:
-            self._preload_queue.append(self._load_mono)
-        if self._preload_queue:
-            QTimer.singleShot(800, self._preload_next)
-
-    def _preload_next(self):
-        if not self._preload_queue:
-            return
-        if self._cached_data.get("ct") is None and self._cached_data.get("pet") is None:
-            self._preload_queue.clear()
-            return
-        fn = self._preload_queue.pop(0)
-        fn()
-        if self._preload_queue:
-            QTimer.singleShot(200, self._preload_next)

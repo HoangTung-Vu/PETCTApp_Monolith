@@ -1,4 +1,4 @@
-"""View & Display tab: view mode switching and display settings."""
+"""View & Display tab: 9-view toggles and display settings."""
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFormLayout, QGroupBox,
@@ -44,6 +44,19 @@ PET_PRESET_TIPS = {
 CT_COLORMAPS  = ["gray", "gray_r", "green", "cyan", "blue", "twilight"]
 PET_COLORMAPS = ["jet", "gray", "gray_r", "hot", "inferno", "magma", "plasma", "viridis"]
 
+# View definitions: (view_id, display_label, checked_by_default)
+VIEW_DEFS = [
+    ("axial_ct",        "Axial — CT",         True),
+    ("axial_pet",       "Axial — PET",        True),
+    ("axial_overlay",   "Axial — Overlay",    False),
+    ("coronal_ct",      "Coronal — CT",       False),
+    ("coronal_pet",     "Coronal — PET",      False),
+    ("coronal_overlay", "Coronal — Overlay",  False),
+    ("sagittal_ct",     "Sagittal — CT",      False),
+    ("sagittal_pet",    "Sagittal — PET",     False),
+    ("sagittal_overlay","Sagittal — Overlay", False),
+]
+
 
 def _make_collapsible(title: str, content_widget: QWidget) -> QWidget:
     container = QWidget()
@@ -72,11 +85,16 @@ def _make_collapsible(title: str, content_widget: QWidget) -> QWidget:
 
 
 class ViewDisplayTab(QWidget):
-    """View mode buttons + display settings (W/L, opacity, zoom, mask visibility)."""
+    """9-view toggles + display settings (W/L, opacity, zoom, mask visibility)."""
 
     # ── Signals ────────────────────────────────────────────────────────────
+    # Emits list of currently active view_ids whenever toggles change
+    sig_active_views_changed     = pyqtSignal(list)
+
+    # Kept only for 3D view button
     sig_layout_changed           = pyqtSignal(str)
     sig_toggle_3d_pet            = pyqtSignal(bool)
+
     sig_pet_opacity_changed      = pyqtSignal(float)
     sig_tumor_opacity_changed    = pyqtSignal(float)
     sig_roi_opacity_changed      = pyqtSignal(float)
@@ -91,11 +109,12 @@ class ViewDisplayTab(QWidget):
 
     sig_interpolation_toggled  = pyqtSignal(bool)
 
-    # True = crosshair overlay ON; False = crosshair overlay OFF (small cross cursor)
+    # True = crosshair overlay ON; False = crosshair overlay OFF
     sig_crosshair_toggled      = pyqtSignal(bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._view_checkboxes: dict[str, QCheckBox] = {}
         self._init_ui()
 
     def _init_ui(self):
@@ -107,35 +126,20 @@ class ViewDisplayTab(QWidget):
         layout = QVBoxLayout(inner)
         layout.setSpacing(4)
 
-        # ── View Mode ──────────────────────────────────────────────────────
+        # ── View Toggles ───────────────────────────────────────────────────
         view_content = QWidget()
         vc_lay = QVBoxLayout(view_content)
         vc_lay.setContentsMargins(4, 4, 4, 4)
         vc_lay.setSpacing(3)
 
-        vc_lay.addWidget(QLabel("Orthogonal (CT + PET):"))
-        for label, mode in [("Axial", "mono_axial"), ("Sagittal", "mono_sagittal"), ("Coronal", "mono_coronal")]:
-            btn = QPushButton(label)
-            btn.clicked.connect(lambda _, m=mode: self.sig_layout_changed.emit(m))
-            vc_lay.addWidget(btn)
+        for view_id, label, default in VIEW_DEFS:
+            chk = QCheckBox(label)
+            chk.toggled.connect(self._on_view_toggle_changed)
+            chk.setChecked(default)      # fires toggled → initial emit
+            vc_lay.addWidget(chk)
+            self._view_checkboxes[view_id] = chk
 
-        self.btn_grid = QPushButton("Grid (6-Cell)")
-        self.btn_grid.clicked.connect(lambda: self.sig_layout_changed.emit("grid"))
-        vc_lay.addWidget(self.btn_grid)
-
-        vc_lay.addWidget(QLabel("Mono-modality (3 views):"))
-        btn_mono_ct = QPushButton("CT Only")
-        btn_mono_ct.clicked.connect(lambda: self.sig_layout_changed.emit("mono_single_ct"))
-        vc_lay.addWidget(btn_mono_ct)
-        btn_mono_pet = QPushButton("PET Only")
-        btn_mono_pet.clicked.connect(lambda: self.sig_layout_changed.emit("mono_single_pet"))
-        vc_lay.addWidget(btn_mono_pet)
-
-        vc_lay.addWidget(QLabel("Overlay (fused):"))
-        for label, mode in [("Axial", "overlay_axial"), ("Sagittal", "overlay_sagittal"), ("Coronal", "overlay_coronal")]:
-            btn = QPushButton(label)
-            btn.clicked.connect(lambda _, m=mode: self.sig_layout_changed.emit(m))
-            vc_lay.addWidget(btn)
+        vc_lay.addWidget(QLabel(""))    # spacer
 
         self.btn_3d = QPushButton("3D View")
         self.btn_3d.clicked.connect(lambda: self.sig_layout_changed.emit("3d"))
@@ -154,13 +158,12 @@ class ViewDisplayTab(QWidget):
 
         layout.addWidget(_make_collapsible("View Mode", view_content))
 
-        # ── Cursor & Interaction ──────────────────────────────────────────
+        # ── Cursor & Interaction ───────────────────────────────────────────
         cursor_content = QWidget()
         cc_lay = QVBoxLayout(cursor_content)
         cc_lay.setContentsMargins(4, 4, 4, 4)
         cc_lay.setSpacing(4)
 
-        # Crosshair toggle (main toggle: overlay ON/OFF)
         self.btn_crosshair = QPushButton("Crosshair: ON")
         self.btn_crosshair.setCheckable(True)
         self.btn_crosshair.setChecked(True)
@@ -180,7 +183,7 @@ class ViewDisplayTab(QWidget):
 
         layout.addWidget(_make_collapsible("Cursor & Interaction", cursor_content))
 
-        # ── CT Display ──────────────────────────────────────────────────────
+        # ── CT Display ─────────────────────────────────────────────────────
         ct_content = QWidget()
         ct_lay = QFormLayout(ct_content)
         ct_lay.setContentsMargins(4, 4, 4, 4)
@@ -221,7 +224,7 @@ class ViewDisplayTab(QWidget):
 
         layout.addWidget(_make_collapsible("CT Display", ct_content))
 
-        # ── PET Display ──────────────────────────────────────────────────────
+        # ── PET Display ────────────────────────────────────────────────────
         pet_content = QWidget()
         pet_lay = QFormLayout(pet_content)
         pet_lay.setContentsMargins(4, 4, 4, 4)
@@ -270,7 +273,7 @@ class ViewDisplayTab(QWidget):
 
         layout.addWidget(_make_collapsible("PET Display", pet_content))
 
-        # ── Zoom & Mask ──────────────────────────────────────────────────────
+        # ── Zoom & Mask ────────────────────────────────────────────────────
         zm_content = QWidget()
         zm_lay = QFormLayout(zm_content)
         zm_lay.setContentsMargins(4, 4, 4, 4)
@@ -323,7 +326,11 @@ class ViewDisplayTab(QWidget):
         outer.setContentsMargins(0, 0, 0, 0)
         outer.addWidget(scroll)
 
-    # ── Slots ─────────────────────────────────────────────────────────────
+    # ── Slots ──────────────────────────────────────────────────────────────
+
+    def _on_view_toggle_changed(self):
+        active = [vid for vid, chk in self._view_checkboxes.items() if chk.isChecked()]
+        self.sig_active_views_changed.emit(active)
 
     def _emit_ct_wl(self):
         self.combo_ct_preset.blockSignals(True)
@@ -378,4 +385,3 @@ class ViewDisplayTab(QWidget):
             "Smooth Interpolation: ON" if checked else "Smooth Interpolation: OFF"
         )
         self.sig_interpolation_toggled.emit(checked)
-

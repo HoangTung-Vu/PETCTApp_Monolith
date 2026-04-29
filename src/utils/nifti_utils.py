@@ -103,11 +103,11 @@ def to_napari(data: np.ndarray) -> np.ndarray:
     Returns a contiguous copy (transpose+flip produce negative-stride views
     that can break texture upload on some platforms).
     """
-    # 1. Transpose to (Z, Y, X)
-    data_zyx = np.transpose(data, (2, 1, 0))
-    # 2. Flip Z (axis 0) and Y (axis 1)
-    data_zyx = np.flip(data_zyx, axis=(0, 1))
-    return np.ascontiguousarray(data_zyx)
+    X, Y, Z = data.shape
+    res = np.zeros((Z, Y, X), dtype=data.dtype)
+    for z in range(Z):
+        res[Z - 1 - z, ::-1, :] = data[:, :, z].T
+    return res
 
 
 def from_napari(data_zyx: np.ndarray) -> np.ndarray:

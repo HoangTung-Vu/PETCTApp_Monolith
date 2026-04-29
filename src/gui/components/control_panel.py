@@ -30,7 +30,8 @@ class ControlPanel(QWidget):
     sig_tab_changed = pyqtSignal(int) # index
 
     # View & Display
-    sig_layout_changed = pyqtSignal(str)
+    sig_active_views_changed = pyqtSignal(list)   # list of active view_ids
+    sig_layout_changed = pyqtSignal(str)           # "3d" only
     sig_toggle_3d_pet = pyqtSignal(bool)
     sig_pet_opacity_changed = pyqtSignal(float)
     sig_tumor_opacity_changed = pyqtSignal(float)
@@ -107,6 +108,7 @@ class ControlPanel(QWidget):
 
         # View & Display
         vd = self.view_display_tab
+        vd.sig_active_views_changed.connect(self.sig_active_views_changed)
         vd.sig_layout_changed.connect(self.sig_layout_changed)
         vd.sig_toggle_3d_pet.connect(self.sig_toggle_3d_pet)
         vd.sig_pet_opacity_changed.connect(self.sig_pet_opacity_changed)
