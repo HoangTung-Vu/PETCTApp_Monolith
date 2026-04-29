@@ -95,7 +95,7 @@ class ViewDisplayTab(QWidget):
     sig_layout_changed           = pyqtSignal(str)
     sig_toggle_3d_pet            = pyqtSignal(bool)
 
-    sig_pet_opacity_changed      = pyqtSignal(float)
+    sig_overlay_pet_opacity_changed = pyqtSignal(float)
     sig_tumor_opacity_changed    = pyqtSignal(float)
     sig_roi_opacity_changed      = pyqtSignal(float)
     sig_ct_window_level_changed  = pyqtSignal(float, float)
@@ -106,6 +106,7 @@ class ViewDisplayTab(QWidget):
 
     sig_ct_colormap_changed    = pyqtSignal(str)
     sig_pet_colormap_changed   = pyqtSignal(str)
+    sig_overlay_pet_colormap_changed = pyqtSignal(str)
 
     sig_interpolation_toggled  = pyqtSignal(bool)
 
@@ -263,15 +264,45 @@ class ViewDisplayTab(QWidget):
         self.spin_pet_level.valueChanged.connect(self._emit_pet_wl)
         pet_lay.addRow("Level:", self.spin_pet_level)
 
-        self.slider_opacity = QSlider(Qt.Orientation.Horizontal)
-        self.slider_opacity.setRange(0, 100)
-        self.slider_opacity.setValue(50)
-        self.slider_opacity.valueChanged.connect(
-            lambda v: self.sig_pet_opacity_changed.emit(v / 100.0)
-        )
-        pet_lay.addRow("Opacity:", self.slider_opacity)
-
         layout.addWidget(_make_collapsible("PET Display", pet_content))
+
+        # ── Overlay Display ────────────────────────────────────────────────────
+        overlay_content = QWidget()
+        overlay_lay = QFormLayout(overlay_content)
+        overlay_lay.setContentsMargins(4, 4, 4, 4)
+        overlay_lay.setSpacing(3)
+
+        self.combo_overlay_colormap = QComboBox()
+        self.combo_overlay_colormap.addItems(PET_COLORMAPS)
+        self.combo_overlay_colormap.setCurrentText("jet")
+        self.combo_overlay_colormap.setMaxVisibleItems(15)
+        self.combo_overlay_colormap.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.combo_overlay_colormap.currentTextChanged.connect(self.sig_overlay_pet_colormap_changed.emit)
+        overlay_lay.addRow("PET Colormap:", self.combo_overlay_colormap)
+
+        self.combo_overlay_preset = QComboBox()
+        self.combo_overlay_preset.addItems([
+            "Custom",
+            "35% - Jet",
+            "50% - Jet",
+            "65% - Jet",
+            "35% - Hot Iron",
+            "50% - Hot Iron",
+            "65% - Hot Iron"
+        ])
+        self.combo_overlay_preset.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
+        self.combo_overlay_preset.currentTextChanged.connect(self._on_overlay_preset_changed)
+        overlay_lay.addRow("Preset:", self.combo_overlay_preset)
+
+        self.slider_overlay_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_overlay_opacity.setRange(0, 100)
+        self.slider_overlay_opacity.setValue(50)
+        self.slider_overlay_opacity.valueChanged.connect(
+            lambda v: self.sig_overlay_pet_opacity_changed.emit(v / 100.0)
+        )
+        overlay_lay.addRow("PET Opacity:", self.slider_overlay_opacity)
+
+        layout.addWidget(_make_collapsible("Overlay (Fusion) Display", overlay_content))
 
         # ── Zoom & Mask ────────────────────────────────────────────────────
         zm_content = QWidget()
@@ -385,3 +416,36 @@ class ViewDisplayTab(QWidget):
             "Smooth Interpolation: ON" if checked else "Smooth Interpolation: OFF"
         )
         self.sig_interpolation_toggled.emit(checked)
+
+    def _on_overlay_preset_changed(self, text: str):
+        if text == "Custom":
+            return
+        
+        self.slider_overlay_opacity.blockSignals(True)
+        self.combo_overlay_colormap.blockSignals(True)
+
+        if "35%" in text:
+            opacity = 35
+        elif "50%" in text:
+            opacity = 50
+        elif "65%" in text:
+            opacity = 65
+        else:
+            opacity = 50
+
+        if "Jet" in text:
+            cmap = "jet"
+        elif "Hot Iron" in text:
+            cmap = "hot"
+        else:
+            cmap = "jet"
+
+        self.slider_overlay_opacity.setValue(opacity)
+        self.combo_overlay_colormap.setCurrentText(cmap)
+
+        self.slider_overlay_opacity.blockSignals(False)
+        self.combo_overlay_colormap.blockSignals(False)
+
+        self.sig_overlay_pet_opacity_changed.emit(opacity / 100.0)
+        self.sig_overlay_pet_colormap_changed.emit(cmap)
+

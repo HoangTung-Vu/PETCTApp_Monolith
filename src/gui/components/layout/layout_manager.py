@@ -136,6 +136,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._pet_wl = (10.0, 5.0)
         self._ct_colormap = "gray"
         self._pet_colormap = "jet"
+        self._overlay_pet_colormap = "jet"
+        self._overlay_pet_opacity = 0.5
         self._tumor_opacity = 0.7
 
         # Crosshair state
@@ -313,13 +315,15 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
                 # Load image layers
                 if wants_ct and ct_zyx is not None and ct_affine is not None:
-                    vw.load_image_zyx(ct_zyx, ct_affine, "ct", self._ct_colormap)
+                    cmap = "gray" if modality == "overlay" else self._ct_colormap
+                    vw.load_image_zyx(ct_zyx, ct_affine, "ct", cmap)
                     ct_name = vw.LAYER_NAMES["ct"]
                     if ct_name in vw.viewer.layers:
                         vw.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
                 if wants_pet and pet_zyx is not None and pet_affine is not None:
-                    pet_opacity = 0.5 if modality == "overlay" else 1.0
-                    vw.load_image_zyx(pet_zyx, pet_affine, "pet", self._pet_colormap, opacity=pet_opacity)
+                    pet_opacity = self._overlay_pet_opacity if modality == "overlay" else 1.0
+                    cmap = self._overlay_pet_colormap if modality == "overlay" else self._pet_colormap
+                    vw.load_image_zyx(pet_zyx, pet_affine, "pet", cmap, opacity=pet_opacity)
                     pet_name = vw.LAYER_NAMES["pet"]
                     if pet_name in vw.viewer.layers:
                         vw.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
@@ -621,11 +625,14 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         for v in self._get_visible_viewers():
             v.viewer.reset_view()
 
-    def set_pet_opacity(self, value: float):
-        for vw in self._get_all_loaded_viewers():
-            name = vw.LAYER_NAMES["pet"]
-            if name in vw.viewer.layers:
-                vw.viewer.layers[name].opacity = value
+    def set_overlay_pet_opacity(self, value: float):
+        self._overlay_pet_opacity = value
+        for view_id in self._active_views:
+            if view_id.endswith("_overlay"):
+                vw = self._fixed_view_map[view_id]
+                name = vw.LAYER_NAMES.get("pet", "PET Image")
+                if name in vw.viewer.layers:
+                    vw.viewer.layers[name].opacity = value
 
     def set_tumor_opacity(self, value: float):
         self._tumor_opacity = value
@@ -844,17 +851,40 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
     def set_ct_colormap(self, colormap: str):
         self._ct_colormap = colormap
-        for vw in self._get_all_loaded_viewers():
+        for view_id in self._active_views:
+            if view_id.endswith("_overlay"):
+                continue
+            vw = self._fixed_view_map[view_id]
             name = vw.LAYER_NAMES.get("ct", "CT Image")
             if name in vw.viewer.layers:
                 vw.viewer.layers[name].colormap = colormap
+        if self._is_3d_loaded:
+            name = self.viewer_3d.LAYER_NAMES.get("ct", "CT Image")
+            if name in self.viewer_3d.viewer.layers:
+                self.viewer_3d.viewer.layers[name].colormap = colormap
 
     def set_pet_colormap(self, colormap: str):
         self._pet_colormap = colormap
-        for vw in self._get_all_loaded_viewers():
+        for view_id in self._active_views:
+            if view_id.endswith("_overlay"):
+                continue
+            vw = self._fixed_view_map[view_id]
             name = vw.LAYER_NAMES.get("pet", "PET Image")
             if name in vw.viewer.layers:
                 vw.viewer.layers[name].colormap = colormap
+        if self._is_3d_loaded:
+            name = self.viewer_3d.LAYER_NAMES.get("pet", "PET Image")
+            if name in self.viewer_3d.viewer.layers:
+                self.viewer_3d.viewer.layers[name].colormap = colormap
+
+    def set_overlay_pet_colormap(self, colormap: str):
+        self._overlay_pet_colormap = colormap
+        for view_id in self._active_views:
+            if view_id.endswith("_overlay"):
+                vw = self._fixed_view_map[view_id]
+                name = vw.LAYER_NAMES.get("pet", "PET Image")
+                if name in vw.viewer.layers:
+                    vw.viewer.layers[name].colormap = colormap
 
     # ── Crosshair mode ────────────────────────────────────────────────────────
 

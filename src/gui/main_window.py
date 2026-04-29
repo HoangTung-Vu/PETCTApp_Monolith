@@ -3,7 +3,7 @@ All handler logic lives in ``handlers/`` as mixins.
 """
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QSplitter
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QSplitter, QPushButton
 )
 from PyQt6.QtGui import QShortcut, QKeySequence
 from pathlib import Path
@@ -65,10 +65,33 @@ class MainWindow(
         main_layout.setContentsMargins(0, 0, 0, 0)
         main_layout.setSpacing(0)
 
+        # Sidebar Restore Button (appears when sidebar is collapsed)
+        self.btn_restore_sidebar = QPushButton(">>>")
+        self.btn_restore_sidebar.setFixedWidth(20)
+        self.btn_restore_sidebar.setToolTip("Show Sidebar")
+        self.btn_restore_sidebar.setVisible(False)
+        self.btn_restore_sidebar.setStyleSheet("""
+            QPushButton {
+                background-color: #2c2c2c;
+                color: #888;
+                border: none;
+                border-right: 1px solid #444;
+                font-weight: bold;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                background-color: #3d3d3d;
+                color: #00aaff;
+            }
+        """)
+        self.btn_restore_sidebar.clicked.connect(self._restore_sidebar)
+        main_layout.addWidget(self.btn_restore_sidebar)
+
         # Draggable splitter between sidebar and viewer area
         from PyQt6.QtCore import Qt
         self._splitter = QSplitter(Qt.Orientation.Horizontal)
         self._splitter.setHandleWidth(5)
+        self._splitter.setOpaqueResize(False)  # Reduces lag during drag by showing a preview line
         self._splitter.setStyleSheet("""
             QSplitter::handle:horizontal {
                 background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
@@ -82,9 +105,34 @@ class MainWindow(
 
         sidebar_container = QWidget()
         sidebar_layout = QVBoxLayout(sidebar_container)
-        sidebar_layout.setContentsMargins(4, 4, 0, 4)
+        sidebar_layout.setContentsMargins(4, 0, 0, 4)
+        sidebar_layout.setSpacing(0)
+
+        # Collapse button at the top of sidebar
+        collapse_header = QWidget()
+        collapse_header_layout = QHBoxLayout(collapse_header)
+        collapse_header_layout.setContentsMargins(0, 2, 4, 2)
+        collapse_header_layout.addStretch()
+        self.btn_collapse_sidebar = QPushButton("<<<")
+        self.btn_collapse_sidebar.setFixedSize(24, 24)
+        self.btn_collapse_sidebar.setToolTip("Collapse Sidebar")
+        self.btn_collapse_sidebar.setStyleSheet("""
+            QPushButton {
+                background-color: transparent;
+                color: #666;
+                border: none;
+                font-weight: bold;
+                font-size: 16px;
+            }
+            QPushButton:hover {
+                color: #00aaff;
+            }
+        """)
+        self.btn_collapse_sidebar.clicked.connect(self._collapse_sidebar)
+        collapse_header_layout.addWidget(self.btn_collapse_sidebar)
+        sidebar_layout.addWidget(collapse_header)
+
         sidebar_layout.addWidget(self.control_panel)
-        # 80% of the old 350px = 280px default width (now resizable via splitter)
         sidebar_container.setMinimumWidth(200)
         sidebar_container.setMaximumWidth(500)
 
@@ -115,7 +163,7 @@ class MainWindow(
         cp.sig_toggle_3d_pet.connect(lm.toggle_3d_pet)
 
         # Display
-        cp.sig_pet_opacity_changed.connect(lm.set_pet_opacity)
+        cp.sig_overlay_pet_opacity_changed.connect(lm.set_overlay_pet_opacity)
         cp.sig_tumor_opacity_changed.connect(lm.set_tumor_opacity)
         cp.sig_roi_opacity_changed.connect(lm.set_roi_opacity)
         cp.sig_ct_window_level_changed.connect(lm.set_ct_window_level)
@@ -125,6 +173,7 @@ class MainWindow(
         cp.sig_toggle_mask.connect(lm.toggle_mask)
         cp.sig_ct_colormap_changed.connect(lm.set_ct_colormap)
         cp.sig_pet_colormap_changed.connect(lm.set_pet_colormap)
+        cp.sig_overlay_pet_colormap_changed.connect(lm.set_overlay_pet_colormap)
         cp.sig_interpolation_toggled.connect(lm.set_interpolation)
         cp.sig_crosshair_toggled.connect(self._on_crosshair_toggled)
 
@@ -178,6 +227,24 @@ class MainWindow(
         xhair_on = self.control_panel.view_display_tab.btn_crosshair.isChecked()
         if not getattr(self, '_crosshair_suppressed_by_tab', False):
             self._on_crosshair_toggled(xhair_on)
+
+        # Show restore button if sidebar is collapsed
+        sidebar_width = self._splitter.sizes()[0]
+        self.btn_restore_sidebar.setVisible(sidebar_width == 0)
+
+    def _restore_sidebar(self):
+        """Restore sidebar to default width."""
+        self._splitter.setSizes([280, self._splitter.width() - 280])
+        self.btn_restore_sidebar.setVisible(False)
+        # Re-enforce state after resize
+        self._on_splitter_moved(280, 1)
+
+    def _collapse_sidebar(self):
+        """Collapse the sidebar completely."""
+        self._splitter.setSizes([0, self._splitter.width()])
+        self.btn_restore_sidebar.setVisible(True)
+        # Re-enforce state after resize
+        self._on_splitter_moved(0, 1)
 
     def _on_shortcut_toggle_tumor_mask(self):
         """Toggle tumor mask visibility via 's' hotkey."""

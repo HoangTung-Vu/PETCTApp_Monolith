@@ -34,7 +34,7 @@ class ControlPanel(QWidget):
     sig_active_views_changed = pyqtSignal(list)   # list of active view_ids
     sig_layout_changed = pyqtSignal(str)           # "3d" only
     sig_toggle_3d_pet = pyqtSignal(bool)
-    sig_pet_opacity_changed = pyqtSignal(float)
+    sig_overlay_pet_opacity_changed = pyqtSignal(float)
     sig_tumor_opacity_changed = pyqtSignal(float)
     sig_roi_opacity_changed = pyqtSignal(float)
     sig_ct_window_level_changed = pyqtSignal(float, float)
@@ -44,6 +44,7 @@ class ControlPanel(QWidget):
     sig_toggle_mask = pyqtSignal(str, bool)
     sig_ct_colormap_changed = pyqtSignal(str)
     sig_pet_colormap_changed = pyqtSignal(str)
+    sig_overlay_pet_colormap_changed = pyqtSignal(str)
     sig_interpolation_toggled = pyqtSignal(bool)
     sig_crosshair_toggled = pyqtSignal(bool)
 
@@ -113,7 +114,7 @@ class ControlPanel(QWidget):
         vd.sig_active_views_changed.connect(self.sig_active_views_changed)
         vd.sig_layout_changed.connect(self.sig_layout_changed)
         vd.sig_toggle_3d_pet.connect(self.sig_toggle_3d_pet)
-        vd.sig_pet_opacity_changed.connect(self.sig_pet_opacity_changed)
+        vd.sig_overlay_pet_opacity_changed.connect(self.sig_overlay_pet_opacity_changed)
         vd.sig_tumor_opacity_changed.connect(self.sig_tumor_opacity_changed)
         vd.sig_roi_opacity_changed.connect(self.sig_roi_opacity_changed)
         vd.sig_ct_window_level_changed.connect(self.sig_ct_window_level_changed)
@@ -123,6 +124,7 @@ class ControlPanel(QWidget):
         vd.sig_toggle_mask.connect(self.sig_toggle_mask)
         vd.sig_ct_colormap_changed.connect(self.sig_ct_colormap_changed)
         vd.sig_pet_colormap_changed.connect(self.sig_pet_colormap_changed)
+        vd.sig_overlay_pet_colormap_changed.connect(self.sig_overlay_pet_colormap_changed)
         vd.sig_interpolation_toggled.connect(self.sig_interpolation_toggled)
         vd.sig_crosshair_toggled.connect(self.sig_crosshair_toggled)
 
