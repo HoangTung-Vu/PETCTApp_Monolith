@@ -78,7 +78,7 @@ class EraserMixin:
             from ...workers import EraserFloodWorker
             
             # Prevent multiple simultaneous eraser tasks
-            if hasattr(self, '_eraser_worker') and self._eraser_worker.isRunning():
+            if getattr(self, '_eraser_worker', None) is not None and self._eraser_worker.isRunning():
                 print("[Eraser] Please wait, another eraser operation is running.")
                 return
 
@@ -114,8 +114,8 @@ class EraserMixin:
             self._eraser_worker.component_found.connect(_on_component_found)
             self._eraser_worker.error.connect(_on_error)
             
-            # Safely release reference after it finishes
-            self._eraser_worker.finished.connect(self._eraser_worker.deleteLater)
+            # Clear Python reference after worker finishes so next click creates a fresh one
+            self._eraser_worker.finished.connect(lambda: setattr(self, '_eraser_worker', None))
             
             self._eraser_worker.start()
 

@@ -5,6 +5,7 @@ from .report_worker import ReportWorker
 from .save_worker import SaveWorker
 from .dicom_conversion_worker import DicomConversionWorker
 from .eraser_worker import EraserFloodWorker
+from .merge_save_worker import MergeSaveWorker
 
 __all__ = [
     "SegmentationWorker",
@@ -15,4 +16,5 @@ __all__ = [
     "SaveWorker",
     "DicomConversionWorker",
     "EraserFloodWorker",
+    "MergeSaveWorker",
 ]

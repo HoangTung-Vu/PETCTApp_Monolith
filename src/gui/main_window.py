@@ -505,6 +505,7 @@ class MainWindow(
             getattr(self, 'report_worker', None),
             getattr(self, 'worker', None),       # segmentation worker
             getattr(self, 'dicom_worker', None),
+            getattr(self, '_merge_save_worker', None),
         ]
         
         for worker in workers:

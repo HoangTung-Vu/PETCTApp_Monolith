@@ -633,22 +633,17 @@ class RefinementHandlerMixin:
         print(f"[AutoSync] Synced {layer_type} mask after painting.")
 
     def _on_confirm_and_save(self):
-        """Merge ROI into tumor (if ROI exists), then persist tumor mask to disk."""
+        """Merge ROI into tumor (if ROI exists), then persist tumor mask to disk.
+
+        Heavy numpy work (merge, to_napari) is offloaded to MergeSaveWorker
+        to prevent 'Not Responding' freezes on the UI thread.
+        """
         roi_data_check = self.session_manager.get_roi_mask_data()
         has_roi = roi_data_check is not None and roi_data_check.any()
 
+        # Sync ROI from viewer before offloading (reads layer.data — must be main thread)
         if has_roi:
             self._sync_roi_from_viewer()
-            merged = self.session_manager.merge_roi_into_tumor()
-            if merged is not None:
-                self._push_mask_to_all("tumor", merged)
-
-            # Push cleared roi to viewers
-            roi_data = self.session_manager.get_roi_mask_data()
-            if roi_data is not None:
-                self._push_mask_to_all("roi", roi_data)
-
-            self._update_refine_button_states()
 
         # Clear stale report data
         self.session_manager.clear_lesion_data()
@@ -656,7 +651,36 @@ class RefinementHandlerMixin:
         self.layout_manager.hide_lesion_ids()
         self.control_panel.chk_show_lesion_ids.setChecked(False)
 
-        # Persist to disk
-        self.save_session()
+        # Offload merge + to_napari + save to background thread
+        from ..workers.merge_save_worker import MergeSaveWorker
+        self._set_ui_busy(True)
+        self.control_panel.show_progress()
+
+        roi_xyz = self.session_manager.get_roi_mask_data() if has_roi else None
+        self._merge_save_worker = MergeSaveWorker(self.session_manager, roi_data_xyz=roi_xyz)
+        self._merge_save_worker.merge_ready.connect(self._on_merge_ready)
+        self._merge_save_worker.finished.connect(self._on_merge_save_finished)
+        self._merge_save_worker.error.connect(self._on_merge_save_error)
+        self._merge_save_worker.start()
+
         print("[RefineHandler] Tumor mask saved to disk." +
               (" (ROI merged)" if has_roi else " (manual edit)"))
+
+    def _on_merge_ready(self, tumor_xyz, tumor_zyx, roi_xyz, roi_zyx):
+        """Lightweight main-thread update: push pre-computed ZYX to viewers."""
+        if tumor_xyz is not None:
+            self._push_mask_to_all("tumor", tumor_xyz, data_zyx=tumor_zyx)
+        if roi_xyz is not None:
+            self._push_mask_to_all("roi", roi_xyz, data_zyx=roi_zyx)
+        self._update_refine_button_states()
+
+    def _on_merge_save_finished(self):
+        self._set_ui_busy(False)
+        self.control_panel.hide_progress()
+        print("[MainWindow] Session saved asynchronously.")
+
+    def _on_merge_save_error(self, error_msg):
+        self._set_ui_busy(False)
+        self.control_panel.hide_progress()
+        print(f"Merge/Save Error: {error_msg}")
+        QMessageBox.critical(self, "Save Failed", error_msg)
