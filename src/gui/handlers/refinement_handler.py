@@ -529,11 +529,9 @@ class RefinementHandlerMixin:
         if roi_data is not None:
             print("[RefineHandler] Pushing ROI mask to all viewers...")
             self._push_mask_to_all("roi", roi_data, data_zyx=roi_zyx)
-        if tumor_data is not None and np.any(tumor_data):
+        if tumor_data is not None:
             print("[RefineHandler] Pushing Tumor mask to all viewers...")
             self._push_mask_to_all("tumor", tumor_data, data_zyx=tumor_zyx)
-        else:
-            print("[RefineHandler] Tumor mask is empty, skipping push to save memory.")
         print("[RefineHandler] _on_roi_ready finished")
 
         self._set_ui_busy(False)

@@ -36,14 +36,14 @@ _PLANE_ORDER = {"axial": 0, "coronal": 1, "sagittal": 2}
 _MOD_ORDER   = {"ct": 0, "pet": 1, "overlay": 2}
 
 VIEW_LABELS = {
-    "axial_ct":         "Axial — CT",
-    "axial_pet":        "Axial — PET",
+    "axial_ct":         "Axial",
+    "axial_pet":        "Axial",
     "axial_overlay":    "Axial — Overlay",
-    "coronal_ct":       "Coronal — CT",
-    "coronal_pet":      "Coronal — PET",
+    "coronal_ct":       "Coronal",
+    "coronal_pet":      "Coronal",
     "coronal_overlay":  "Coronal — Overlay",
-    "sagittal_ct":      "Sagittal — CT",
-    "sagittal_pet":     "Sagittal — PET",
+    "sagittal_ct":      "Sagittal",
+    "sagittal_pet":     "Sagittal",
     "sagittal_overlay": "Sagittal — Overlay",
 }
 
