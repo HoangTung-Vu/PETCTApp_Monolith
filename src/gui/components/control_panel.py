@@ -81,7 +81,7 @@ class ControlPanel(QWidget):
 
         self.tabs.addTab(self.workflow_tab, "Workflow")
         self.tabs.addTab(self.view_display_tab, "View & Display")
-        self.tabs.addTab(self.refine_tab, "Refine")
+        self.tabs.addTab(self.refine_tab, "Segmentation")
         self.tabs.addTab(self.eraser_tab, "Eraser")
 
         # Tab indices for the tab-change handler
