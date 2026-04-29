@@ -279,9 +279,17 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._connect_mask_events()
 
     def _load_active_views(self):
-        """Push cached data into all currently assigned pool viewers."""
+        """Push cached data into all currently assigned pool viewers.
+
+        Preserves ``_xhair_pos`` so that switching views does not jump the
+        crosshair / axial slice back to the beginning.
+        """
         if not self._active_views:
             return
+
+        # ── Save crosshair position before any viewer manipulation ──
+        saved_pos = list(self._xhair_pos)
+
         ct_zyx = self._cached_data_zyx.get("ct")
         pet_zyx = self._cached_data_zyx.get("pet")
         ct_affine = self._cached_data.get("ct_affine")
@@ -292,65 +300,75 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         p_min = max(0.0, self._pet_wl[1] - self._pet_wl[0] / 2)
         p_max = self._pet_wl[1] + self._pet_wl[0] / 2
 
-        for view_id in self._active_views:
-            vw = self._fixed_view_map[view_id]
-            axis = _view_axis(view_id)
-            modality = _view_modality(view_id)
-            wants_ct  = modality in ("ct",  "overlay")
-            wants_pet = modality in ("pet", "overlay")
+        # Suppress slice-changed events during loading so that reset_view()
+        # triggered dim changes don't overwrite _xhair_pos.
+        self._is_syncing_slices = True
+        try:
+            for view_id in self._active_views:
+                vw = self._fixed_view_map[view_id]
+                axis = _view_axis(view_id)
+                modality = _view_modality(view_id)
+                wants_ct  = modality in ("ct",  "overlay")
+                wants_pet = modality in ("pet", "overlay")
 
-            # Load image layers
-            if wants_ct and ct_zyx is not None and ct_affine is not None:
-                vw.load_image_zyx(ct_zyx, ct_affine, "ct", self._ct_colormap)
-                ct_name = vw.LAYER_NAMES["ct"]
-                if ct_name in vw.viewer.layers:
-                    vw.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
-            if wants_pet and pet_zyx is not None and pet_affine is not None:
-                pet_opacity = 0.5 if modality == "overlay" else 1.0
-                vw.load_image_zyx(pet_zyx, pet_affine, "pet", self._pet_colormap, opacity=pet_opacity)
+                # Load image layers
+                if wants_ct and ct_zyx is not None and ct_affine is not None:
+                    vw.load_image_zyx(ct_zyx, ct_affine, "ct", self._ct_colormap)
+                    ct_name = vw.LAYER_NAMES["ct"]
+                    if ct_name in vw.viewer.layers:
+                        vw.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
+                if wants_pet and pet_zyx is not None and pet_affine is not None:
+                    pet_opacity = 0.5 if modality == "overlay" else 1.0
+                    vw.load_image_zyx(pet_zyx, pet_affine, "pet", self._pet_colormap, opacity=pet_opacity)
+                    pet_name = vw.LAYER_NAMES["pet"]
+                    if pet_name in vw.viewer.layers:
+                        vw.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
+
+                # Set layer visibility
+                ct_name  = vw.LAYER_NAMES["ct"]
                 pet_name = vw.LAYER_NAMES["pet"]
+                if ct_name in vw.viewer.layers:
+                    vw.viewer.layers[ct_name].visible = wants_ct
                 if pet_name in vw.viewer.layers:
-                    vw.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
+                    vw.viewer.layers[pet_name].visible = wants_pet
 
-            # Set layer visibility
-            ct_name  = vw.LAYER_NAMES["ct"]
-            pet_name = vw.LAYER_NAMES["pet"]
-            if ct_name in vw.viewer.layers:
-                vw.viewer.layers[ct_name].visible = wants_ct
-            if pet_name in vw.viewer.layers:
-                vw.viewer.layers[pet_name].visible = wants_pet
+                # Load masks
+                if self._cached_data_zyx.get("tumor") is not None:
+                    vw.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
+                if self._cached_data_zyx.get("roi") is not None:
+                    vw.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
 
-            # Load masks
-            if self._cached_data_zyx.get("tumor") is not None:
-                vw.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-            if self._cached_data_zyx.get("roi") is not None:
-                vw.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
+                # Set camera orientation (axis order) without resetting slice
+                vw.set_camera_view(axis)
+                # Reset zoom only (slice will be restored below via _sync)
+                if len(vw.viewer.layers) > 0:
+                    vw.viewer.reset_view()
 
-            # Camera and reset
-            vw.set_camera_view(axis)
-            if len(vw.viewer.layers) > 0:
-                vw.viewer.reset_view()
-
-            # View name badge
-            label_text = VIEW_LABELS.get(view_id, view_id)
-            ct_name = self._cached_data.get("ct_filename", "")
-            pet_name = self._cached_data.get("pet_filename", "")
-            
-            if wants_ct and not wants_pet and ct_name:
-                label_text += f" ({ct_name})"
-            elif wants_pet and not wants_ct and pet_name:
-                label_text += f" ({pet_name})"
-            elif wants_ct and wants_pet:
-                label_text += " (Overlay)"
+                # View name badge
+                label_text = VIEW_LABELS.get(view_id, view_id)
+                ct_name = self._cached_data.get("ct_filename", "")
+                pet_name = self._cached_data.get("pet_filename", "")
                 
-            vw.set_view_label(label_text)
+                if wants_ct and not wants_pet and ct_name:
+                    label_text += f" ({ct_name})"
+                elif wants_pet and not wants_ct and pet_name:
+                    label_text += f" ({pet_name})"
+                elif wants_ct and wants_pet:
+                    label_text += " (Overlay)"
+                    
+                vw.set_view_label(label_text)
 
-            if self._cached_lesion_data:
-                vw.show_lesion_ids(*self._cached_lesion_data)
+                if self._cached_lesion_data:
+                    vw.show_lesion_ids(*self._cached_lesion_data)
 
-            from PyQt6.QtWidgets import QApplication
-            QApplication.processEvents()
+                from PyQt6.QtWidgets import QApplication
+                QApplication.processEvents()
+        finally:
+            # ── Restore crosshair position that may have been clobbered ──
+            self._xhair_pos = saved_pos
+            self._is_syncing_slices = False
 
+        # Now sync all viewer slices to the (preserved) crosshair position
         self._sync_viewer_slices()
 
     # ── 3D data loading ───────────────────────────────────────────────────────
@@ -446,6 +464,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
     def _on_viewer_slice_changed(self, current_step: tuple, viewer_widget_ref):
         """Update _xhair_pos when a viewer is scrolled."""
+        if getattr(self, '_is_syncing_slices', False):
+            return
         dims_d = list(viewer_widget_ref.viewer.dims.displayed)
         changed = False
         for d in range(viewer_widget_ref.viewer.dims.ndim):
@@ -833,17 +853,6 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._crosshair_enabled = True
         self._pan_mode = False
 
-        # Sync _xhair_pos from actual viewer dims
-        for view_id in self._active_views:
-            vw = self._fixed_view_map[view_id]
-            if vw.viewer.dims.ndim == 0:
-                continue
-            step = vw.viewer.dims.current_step
-            dims_d = list(vw.viewer.dims.displayed)
-            for d in range(len(step)):
-                if d not in dims_d:
-                    self._xhair_pos[d] = float(step[d])
-
         for v in self._get_all_2d_viewers():
             v.disable_crosshair_mode()
             try:
@@ -859,6 +868,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 v.enable_crosshair_mode()
                 v.update_crosshair(pos)
                 v.sig_cursor_intensity.connect(self._on_viewer_cursor_intensity)
+
+        # Ensure all viewers show the correct slice from _xhair_pos
+        self._sync_viewer_slices()
 
         self._info_label.show()
         self._info_label.raise_()

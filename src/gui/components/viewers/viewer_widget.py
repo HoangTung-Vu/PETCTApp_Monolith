@@ -272,7 +272,12 @@ class ViewerWidget(QWidget):
     # ── Camera view ─────────────────────────────────────────────────────
 
     def set_camera_view(self, axis: int):
-        """axis: 0=Axial, 1=Coronal, 2=Sagittal."""
+        """axis: 0=Axial, 1=Coronal, 2=Sagittal.
+        
+        Only sets dims order (which axis is the slice axis).
+        Does NOT call reset_view() — that would reset slice position.
+        Caller is responsible for resetting zoom if needed.
+        """
         self.viewer.dims.ndisplay = 2
         if axis == 0:
             self.viewer.dims.order = (0, 1, 2)
@@ -280,7 +285,6 @@ class ViewerWidget(QWidget):
             self.viewer.dims.order = (1, 0, 2)
         elif axis == 2:
             self.viewer.dims.order = (2, 0, 1)
-        self.viewer.reset_view()
 
     def set_3d_view(self):
         self.viewer.dims.ndisplay = 3
@@ -355,33 +359,17 @@ class ViewerWidget(QWidget):
             self.qt_viewer.canvas.native.setCursor(QCursor(shape))
 
     def enable_crosshair_mode(self):
-        """Show crosshair overlay. Arrow cursor always."""
+        """Show crosshair overlay. Arrow cursor always.
+
+        Does NOT emit ``sig_crosshair_clicked`` — the LayoutManager owns
+        ``_xhair_pos`` and pushes it via ``update_crosshair()`` after calling
+        this method.  Emitting here would overwrite the correct position with
+        the camera-center of the current view, which is wrong for cross-plane
+        views (e.g. coronal overwriting the axial Z coordinate).
+        """
         self._crosshair_enabled = True
         self._crosshair_overlay.set_enabled(True)
         self.viewer.camera.mouse_pan = False
-
-        # Initialize crosshair to the center of the current view
-        try:
-            c_world = self.viewer.camera.center
-            layer = None
-            for name in list(self.LAYER_NAMES.values()):
-                if name in self.viewer.layers:
-                    layer = self.viewer.layers[name]
-                    break
-            if layer is not None:
-                data_zyx = layer.world_to_data(c_world)
-                pos = [float(data_zyx[0]), float(data_zyx[1]), float(data_zyx[2])]
-                
-                # Replace the non-displayed dimension with the current scroll step
-                dims_d = list(self.viewer.dims.displayed)
-                for d in range(layer.ndim):
-                    if d not in dims_d:
-                        pos[d] = float(self.viewer.dims.current_step[d])
-                        
-                # Emit clicked so LayoutManager syncs it up
-                self.sig_crosshair_clicked.emit(pos)
-        except Exception:
-            pass
 
     def disable_crosshair_mode(self):
         """Hide crosshair overlay. Arrow cursor always."""
