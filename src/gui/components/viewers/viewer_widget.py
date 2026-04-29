@@ -408,6 +408,17 @@ class ViewerWidget(QWidget):
 
         return super().eventFilter(source, event)
 
+    def resizeEvent(self, event):
+        """Re-enforce camera mouse settings after any resize.
+
+        Napari internally re-enables ``mouse_pan`` and ``mouse_zoom``
+        during widget resize, which hijacks LMB/RMB from our custom
+        crosshair / pan callbacks.  Always disable them here.
+        """
+        super().resizeEvent(event)
+        self.viewer.camera.mouse_pan = False
+        self.viewer.camera.mouse_zoom = False
+
     # ── Crosshair cursor ────────────────────────────────────────────────
 
     def _set_cursor_cross(self, enabled: bool):
