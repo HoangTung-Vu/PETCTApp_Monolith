@@ -3,7 +3,8 @@ All handler logic lives in ``handlers/`` as mixins.
 """
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QSplitter, QPushButton
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QSplitter, QPushButton,
+    QMessageBox
 )
 from PyQt6.QtGui import QShortcut, QKeySequence
 from pathlib import Path
@@ -269,6 +270,35 @@ class MainWindow(
         else:
             self.layout_manager.disable_crosshair_mode()
 
+    # ──── Shared helpers ────
+
+    def _clear_all_report_ui(self):
+        """Clear report data and all related UI elements."""
+        self.session_manager.clear_lesion_data()
+        self.control_panel.clear_report_results()
+        self.layout_manager.hide_lesion_ids()
+        self.control_panel.chk_show_lesion_ids.setChecked(False)
+
+    def _show_worker_error(self, msg: str, title: str = "Operation Failed"):
+        """Unified worker error handler: reset busy state and show dialog."""
+        self._set_ui_busy(False)
+        self.control_panel.hide_progress()
+        QMessageBox.critical(self, title, msg)
+
+    def _spawn_worker(self, worker, on_finished, on_error=None, progress_type="general"):
+        """Connect signals, show progress, mark UI busy, and start worker."""
+        worker.finished.connect(on_finished)
+        if on_error is not None:
+            worker.error.connect(on_error)
+        if progress_type == "refine":
+            self.control_panel.show_refine_progress()
+        elif progress_type == "report":
+            self.control_panel.show_report_progress()
+        else:
+            self.control_panel.show_progress()
+        self._set_ui_busy(True)
+        worker.start()
+
     # ──── Session Management ────
 
     def _reset_all_state(self):
@@ -294,30 +324,20 @@ class MainWindow(
 
     def create_new_session(self, doctor: str, patient: str):
         self._reset_all_state()
-
         from .workers import DataLoaderWorker
         self.loader_worker = DataLoaderWorker(
             self.session_manager, action="create",
             new_doctor=doctor, new_patient=patient
         )
-        self.loader_worker.finished.connect(self._on_data_loaded)
-        self.loader_worker.error.connect(self._on_data_error)
-        self.control_panel.show_progress()
-        self._set_ui_busy(True)
-        self.loader_worker.start()
+        self._spawn_worker(self.loader_worker, self._on_data_loaded, self._on_data_error)
 
     def load_existing_session(self, session_id: int):
         self._reset_all_state()
-
         from .workers import DataLoaderWorker
         self.loader_worker = DataLoaderWorker(
             self.session_manager, current_session_id=session_id, action="load"
         )
-        self.loader_worker.finished.connect(self._on_data_loaded)
-        self.loader_worker.error.connect(self._on_data_error)
-        self.control_panel.show_progress()
-        self._set_ui_busy(True)
-        self.loader_worker.start()
+        self._spawn_worker(self.loader_worker, self._on_data_loaded, self._on_data_error)
 
     def load_ct_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(
@@ -346,11 +366,7 @@ class MainWindow(
         self.loader_worker = DataLoaderWorker(
             self.session_manager, ct_path=ct_path, pet_path=pet_path, tumor_seg_path=tumor_seg_path, action="update"
         )
-        self.loader_worker.finished.connect(self._on_data_loaded)
-        self.loader_worker.error.connect(self._on_data_error)
-        self.control_panel.show_progress()
-        self._set_ui_busy(True)
-        self.loader_worker.start()
+        self._spawn_worker(self.loader_worker, self._on_data_loaded, self._on_data_error)
 
     def _on_data_loaded(self, success):
         self._set_ui_busy(False)
@@ -380,11 +396,8 @@ class MainWindow(
         print(f"Async data loading completed for session {self.session_manager.current_session_id}.")
 
     def _on_data_error(self, error_msg):
-        self._set_ui_busy(False)
-        self.control_panel.hide_progress()
         print(f"Data Loading Error: {error_msg}")
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(self, "Loading Failed", error_msg)
+        self._show_worker_error(error_msg, "Loading Failed")
 
     def _refresh_session_list(self):
         sessions = self.session_manager.get_all_sessions()
@@ -428,11 +441,7 @@ class MainWindow(
     def save_session(self):
         from .workers import SaveWorker
         self.save_worker = SaveWorker(self.session_manager)
-        self.save_worker.finished.connect(self._on_save_finished)
-        self.save_worker.error.connect(self._on_save_error)
-        self.control_panel.show_progress()
-        self._set_ui_busy(True)
-        self.save_worker.start()
+        self._spawn_worker(self.save_worker, self._on_save_finished, self._on_save_error)
 
     def _on_save_finished(self):
         self._set_ui_busy(False)
@@ -440,11 +449,8 @@ class MainWindow(
         print("[MainWindow] Session saved asynchronously.")
 
     def _on_save_error(self, error_msg):
-        self._set_ui_busy(False)
-        self.control_panel.hide_progress()
         print(f"Save Error: {error_msg}")
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.critical(self, "Save Failed", error_msg)
+        self._show_worker_error(error_msg, "Save Failed")
 
     # Tab indices
     _TAB_WORKFLOW = 0

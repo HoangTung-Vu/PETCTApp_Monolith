@@ -12,10 +12,7 @@ class EraserHandlerMixin:
             self.layout_manager.enable_eraser_click_mode()
 
             # Clear report UI and hide lesion IDs when eraser is enabled
-            self.session_manager.clear_lesion_data()
-            self.control_panel.clear_report_results()
-            self.control_panel.chk_show_lesion_ids.setChecked(False)
-            self.layout_manager.hide_lesion_ids()
+            self._clear_all_report_ui()
 
             print("[Eraser] Mode enabled.")
         else:
@@ -55,9 +52,7 @@ class EraserHandlerMixin:
              self.layout_manager.sync_mask_cache(current_mask, "tumor")
 
         # Clear report UI and hide lesion IDs
-        self.control_panel.clear_report_results()
-        self.control_panel.chk_show_lesion_ids.setChecked(False)
-        self.layout_manager.hide_lesion_ids()
+        self._clear_all_report_ui()
         print(f"[Eraser] Preview updated. Undo stack depth: {len(self._eraser_undo_stack)}")
 
     def _on_eraser_undo(self):

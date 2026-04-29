@@ -1,5 +1,6 @@
 """Segmentation handler mixin for MainWindow."""
 
+import numpy as np
 from PyQt6.QtWidgets import QInputDialog, QMessageBox
 
 
@@ -58,8 +59,7 @@ class SegmentationHandlerMixin:
             self._push_mask_to_all("tumor", data)
 
         # Clear stale report UI and lesion
-        self.session_manager.clear_lesion_data()
-        self.control_panel.clear_report_results()
+        self._clear_all_report_ui()
 
         # 6. Save immediately
         self.save_session()

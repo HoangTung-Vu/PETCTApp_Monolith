@@ -82,21 +82,25 @@ class ViewerWidget(QWidget):
         self._view_label.move(0, 0)
         self._view_label.hide()
 
-        # Re-apply cursor and update overlay when camera or slice changes
+        # Re-apply cursor and update overlay when camera or slice changes.
+        # current_step connects only to _on_slice_changed — slice scroll should
+        # not trigger camera sync across viewers (that causes double sync per scroll).
         self.viewer.camera.events.zoom.connect(self._on_view_changed)
         self.viewer.camera.events.center.connect(self._on_view_changed)
-        self.viewer.dims.events.current_step.connect(self._on_view_changed)
         self.viewer.dims.events.current_step.connect(self._on_slice_changed)
 
-        # Mouse callbacks
+        # Mouse callbacks — guard against duplicate append on pool reuse
         self._xhair_move_cb = self._make_xhair_move_cb()
-        self.viewer.mouse_move_callbacks.append(self._xhair_move_cb)
+        if self._xhair_move_cb not in self.viewer.mouse_move_callbacks:
+            self.viewer.mouse_move_callbacks.append(self._xhair_move_cb)
 
         self._xhair_press_cb = self._make_xhair_press_cb()
-        self.viewer.mouse_drag_callbacks.append(self._xhair_press_cb)
+        if self._xhair_press_cb not in self.viewer.mouse_drag_callbacks:
+            self.viewer.mouse_drag_callbacks.append(self._xhair_press_cb)
 
         self._pan_drag_cb = self._make_pan_drag_cb()
-        self.viewer.mouse_drag_callbacks.append(self._pan_drag_cb)
+        if self._pan_drag_cb not in self.viewer.mouse_drag_callbacks:
+            self.viewer.mouse_drag_callbacks.append(self._pan_drag_cb)
 
         # Default: no pan-on-drag (panning handled manually via RMB), arrow cursor always
         self.viewer.camera.mouse_pan = False
@@ -258,15 +262,15 @@ class ViewerWidget(QWidget):
             self.SHAPE_PREVIEW_LAYER,
             self.LESION_LABEL_LAYER_NAME
         ]
+        order_map = {name: i for i, name in enumerate(desired_order)}
         changed = True
         while changed:
             changed = False
             for i in range(len(self.viewer.layers) - 1):
                 name1 = self.viewer.layers[i].name
                 name2 = self.viewer.layers[i+1].name
-                idx1 = desired_order.index(name1) if name1 in desired_order else -1
-                idx2 = desired_order.index(name2) if name2 in desired_order else -1
-                
+                idx1 = order_map.get(name1, -1)
+                idx2 = order_map.get(name2, -1)
                 if idx1 > -1 and idx2 > -1 and idx1 > idx2:
                     self.viewer.layers.move(i, i+1)
                     changed = True

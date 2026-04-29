@@ -67,9 +67,7 @@ class DicomImportHandlerMixin:
         )
 
     def _on_dicom_error(self, error_msg: str):
-        self._set_ui_busy(False)
-        self.control_panel.hide_progress()
-        QMessageBox.critical(self, "DICOM Conversion Failed", error_msg)
+        self._show_worker_error(error_msg, "DICOM Conversion Failed")
 
     # ------------------------------------------------------------------
     # Load converted NIfTI into a new session
@@ -98,11 +96,7 @@ class DicomImportHandlerMixin:
             new_doctor=doctor  or "Doctor",
             new_patient=patient or "Patient",
         )
-        self.loader_worker.finished.connect(self._on_data_loaded)
-        self.loader_worker.error.connect(self._on_data_error)
-        self.control_panel.show_progress()
-        self._set_ui_busy(True)
-        self.loader_worker.start()
+        self._spawn_worker(self.loader_worker, self._on_data_loaded, self._on_data_error)
 
         # Switch to Workflow tab so user sees the progress bar
         self.control_panel.tabs.setCurrentIndex(

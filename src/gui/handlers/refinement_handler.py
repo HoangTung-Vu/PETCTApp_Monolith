@@ -3,6 +3,7 @@
 from PyQt6.QtWidgets import QMessageBox
 from PyQt6.QtCore import Qt
 import numpy as np
+from ..workers.merge_save_worker import MergeSaveWorker
 
 
 class RefinementHandlerMixin:
@@ -516,10 +517,7 @@ class RefinementHandlerMixin:
             self._update_refine_button_states()
 
             # Clear report UI when entering interactive mode
-            self.session_manager.clear_lesion_data()
-            self.control_panel.clear_report_results()
-            self.control_panel.chk_show_lesion_ids.setChecked(False)
-            self.layout_manager.hide_lesion_ids()
+            self._clear_all_report_ui()
 
         self._last_tab_index = index
 
@@ -646,14 +644,8 @@ class RefinementHandlerMixin:
             self._sync_roi_from_viewer()
 
         # Clear stale report data
-        self.session_manager.clear_lesion_data()
-        self.control_panel.clear_report_results()
-        self.layout_manager.hide_lesion_ids()
-        self.control_panel.chk_show_lesion_ids.setChecked(False)
+        self._clear_all_report_ui()
 
-        # Offload merge + to_napari + save to background thread
-        from ..workers.merge_save_worker import MergeSaveWorker
-        self._set_ui_busy(True)
         self.control_panel.show_progress()
 
         roi_xyz = self.session_manager.get_roi_mask_data() if has_roi else None

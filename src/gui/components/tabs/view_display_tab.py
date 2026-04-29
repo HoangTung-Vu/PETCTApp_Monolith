@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QDoubleSpinBox, QSlider, QHBoxLayout, QLabel, QScrollArea, QCheckBox,
     QComboBox, QSizePolicy
 )
-from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 
 
 # ── Preset W/L tables ──────────────────────────────────────────────────────
@@ -214,14 +214,19 @@ class ViewDisplayTab(QWidget):
         self.spin_ct_window = QDoubleSpinBox()
         self.spin_ct_window.setRange(1, 4000)
         self.spin_ct_window.setValue(350)
-        self.spin_ct_window.valueChanged.connect(self._emit_ct_wl)
         ct_lay.addRow("Window:", self.spin_ct_window)
 
         self.spin_ct_level = QDoubleSpinBox()
         self.spin_ct_level.setRange(-2000, 2000)
         self.spin_ct_level.setValue(35)
-        self.spin_ct_level.valueChanged.connect(self._emit_ct_wl)
         ct_lay.addRow("Level:", self.spin_ct_level)
+
+        self._ct_wl_timer = QTimer(self)
+        self._ct_wl_timer.setSingleShot(True)
+        self._ct_wl_timer.setInterval(150)
+        self._ct_wl_timer.timeout.connect(self._emit_ct_wl)
+        self.spin_ct_window.valueChanged.connect(lambda _: self._ct_wl_timer.start())
+        self.spin_ct_level.valueChanged.connect(lambda _: self._ct_wl_timer.start())
 
         layout.addWidget(_make_collapsible("CT Display", ct_content))
 
@@ -255,14 +260,19 @@ class ViewDisplayTab(QWidget):
         self.spin_pet_window = QDoubleSpinBox()
         self.spin_pet_window.setRange(0.1, 10000)
         self.spin_pet_window.setValue(10)
-        self.spin_pet_window.valueChanged.connect(self._emit_pet_wl)
         pet_lay.addRow("Window:", self.spin_pet_window)
 
         self.spin_pet_level = QDoubleSpinBox()
         self.spin_pet_level.setRange(0, 10000)
         self.spin_pet_level.setValue(5)
-        self.spin_pet_level.valueChanged.connect(self._emit_pet_wl)
         pet_lay.addRow("Level:", self.spin_pet_level)
+
+        self._pet_wl_timer = QTimer(self)
+        self._pet_wl_timer.setSingleShot(True)
+        self._pet_wl_timer.setInterval(150)
+        self._pet_wl_timer.timeout.connect(self._emit_pet_wl)
+        self.spin_pet_window.valueChanged.connect(lambda _: self._pet_wl_timer.start())
+        self.spin_pet_level.valueChanged.connect(lambda _: self._pet_wl_timer.start())
 
         layout.addWidget(_make_collapsible("PET Display", pet_content))
 
@@ -360,6 +370,12 @@ class ViewDisplayTab(QWidget):
     # ── Slots ──────────────────────────────────────────────────────────────
 
     def _on_view_toggle_changed(self):
+        if not getattr(self, '_pending_view_update', False):
+            self._pending_view_update = True
+            QTimer.singleShot(0, self._flush_view_toggle)
+
+    def _flush_view_toggle(self):
+        self._pending_view_update = False
         active = [vid for vid, chk in self._view_checkboxes.items() if chk.isChecked()]
         self.sig_active_views_changed.emit(active)
 

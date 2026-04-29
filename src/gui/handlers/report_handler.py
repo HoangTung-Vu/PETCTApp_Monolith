@@ -29,12 +29,7 @@ class ReportHandlerMixin:
         # Auto-save session first: wait until save finishes before starting report
         from ..workers import SaveWorker
         self.report_save_worker = SaveWorker(self.session_manager)
-        self.report_save_worker.finished.connect(self._start_report_worker)
-        self.report_save_worker.error.connect(self._on_report_error)
-
-        self.control_panel.show_report_progress()
-        self._set_ui_busy(True)
-        self.report_save_worker.start()
+        self._spawn_worker(self.report_save_worker, self._start_report_worker, self._on_report_error, "report")
 
     def _start_report_worker(self):
         from pathlib import Path

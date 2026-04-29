@@ -535,7 +535,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 if vw.is_3d:
                     continue
                 step = list(vw.viewer.dims.current_step)
-                dims_d = list(vw.viewer.dims.displayed)
+                dims_d = set(vw.viewer.dims.displayed)
                 changed = False
                 for d in range(vw.viewer.dims.ndim):
                     if d not in dims_d:
