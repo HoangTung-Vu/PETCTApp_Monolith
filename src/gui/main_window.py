@@ -3,7 +3,7 @@ All handler logic lives in ``handlers/`` as mixins.
 """
 
 from PyQt6.QtWidgets import (
-    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog
+    QMainWindow, QWidget, QVBoxLayout, QHBoxLayout, QFileDialog, QSplitter
 )
 from PyQt6.QtGui import QShortcut, QKeySequence
 from pathlib import Path
@@ -62,14 +62,44 @@ class MainWindow(
         central_widget = QWidget()
         self.setCentralWidget(central_widget)
         main_layout = QHBoxLayout(central_widget)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+        main_layout.setSpacing(0)
+
+        # Draggable splitter between sidebar and viewer area
+        from PyQt6.QtCore import Qt
+        self._splitter = QSplitter(Qt.Orientation.Horizontal)
+        self._splitter.setHandleWidth(5)
+        self._splitter.setStyleSheet("""
+            QSplitter::handle:horizontal {
+                background: qlineargradient(x1:0, y1:0, x2:1, y2:0,
+                    stop:0 #444, stop:0.5 #666, stop:1 #444);
+                width: 5px;
+            }
+            QSplitter::handle:horizontal:hover {
+                background: #888;
+            }
+        """)
 
         sidebar_container = QWidget()
         sidebar_layout = QVBoxLayout(sidebar_container)
+        sidebar_layout.setContentsMargins(4, 4, 0, 4)
         sidebar_layout.addWidget(self.control_panel)
-        sidebar_container.setFixedWidth(350)
+        # 80% of the old 350px = 280px default width (now resizable via splitter)
+        sidebar_container.setMinimumWidth(200)
+        sidebar_container.setMaximumWidth(500)
 
-        main_layout.addWidget(sidebar_container)
-        main_layout.addWidget(self.layout_manager)
+        self._splitter.addWidget(sidebar_container)
+        self._splitter.addWidget(self.layout_manager)
+        # Set initial sizes: sidebar 280, viewer gets the rest
+        self._splitter.setSizes([280, 1320])
+        self._splitter.setStretchFactor(0, 0)  # sidebar doesn't auto-stretch
+        self._splitter.setStretchFactor(1, 1)  # viewer area stretches
+
+        main_layout.addWidget(self._splitter)
+
+        # Re-enforce camera settings after splitter drag (napari resets them
+        # on resize, which breaks crosshair / pan mouse behaviour)
+        self._splitter.splitterMoved.connect(self._on_splitter_moved)
 
     def _connect_signals(self):
         cp = self.control_panel
@@ -138,6 +168,16 @@ class MainWindow(
         # Global Shortcuts
         self.shortcut_toggle_mask = QShortcut(QKeySequence("s"), self)
         self.shortcut_toggle_mask.activated.connect(self._on_shortcut_toggle_tumor_mask)
+
+    def _on_splitter_moved(self, pos, index):
+        """Re-enforce napari camera settings after sidebar splitter drag.
+
+        Napari resets ``camera.mouse_pan`` and ``camera.mouse_zoom`` during
+        widget resize — reuse the existing crosshair toggle to restore state.
+        """
+        xhair_on = self.control_panel.view_display_tab.btn_crosshair.isChecked()
+        if not getattr(self, '_crosshair_suppressed_by_tab', False):
+            self._on_crosshair_toggled(xhair_on)
 
     def _on_shortcut_toggle_tumor_mask(self):
         """Toggle tumor mask visibility via 's' hotkey."""
@@ -364,6 +404,9 @@ class MainWindow(
             if getattr(self, '_crosshair_suppressed_by_tab', False) and crosshair_was_on:
                 self.layout_manager.enable_crosshair_mode()
             self._crosshair_suppressed_by_tab = False
+            # Deselect Labels layers so their built-in drag doesn't conflict
+            # with crosshair / pan mouse callbacks
+            self.layout_manager.deactivate_labels()
 
     def _set_ui_busy(self, busy: bool):
         """Enable/Disable interactive controls during background tasks."""

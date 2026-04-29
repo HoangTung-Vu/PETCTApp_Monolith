@@ -110,7 +110,7 @@ class ColorBarOverlay(QWidget):
             painter.drawRect(rect)
             
             # Draw Text and Ticks
-            font = QFont("Arial", 14, QFont.Weight.Bold)
+            font = QFont("Arial", 10, QFont.Weight.Normal)
             painter.setFont(font)
             
             text_x = margin + bar_width + 8

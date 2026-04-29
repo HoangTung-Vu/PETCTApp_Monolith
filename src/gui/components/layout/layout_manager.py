@@ -697,6 +697,15 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             v.commit_shape_to_mask()
         self.sig_shape_committed.emit(layer_type)
 
+    def deactivate_labels(self):
+        """Deactivate Labels layers in all viewers (select Image layer instead).
+
+        Called when leaving paint/edit tabs so napari's built-in Labels drag
+        behaviour doesn't hijack crosshair or pan mouse events.
+        """
+        for v in self._get_visible_viewers():
+            v.deactivate_labels()
+
     # ── Mask update ───────────────────────────────────────────────────────────
 
     def update_mask(self, mask_data, mask_type, data_zyx=None):
@@ -868,6 +877,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 v.enable_crosshair_mode()
                 v.update_crosshair(pos)
                 v.sig_cursor_intensity.connect(self._on_viewer_cursor_intensity)
+
+        # Deactivate Labels layers so their drag doesn't fight with crosshair
+        self.deactivate_labels()
 
         # Ensure all viewers show the correct slice from _xhair_pos
         self._sync_viewer_slices()

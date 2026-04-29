@@ -39,6 +39,9 @@ class ViewerWidget(QWidget):
         self.qt_viewer = self.viewer.window.qt_viewer
         self.layout.addWidget(self.qt_viewer)
 
+        # Reduce napari dims slider area height by ~1/3 for a sleeker look
+        self._slim_dims_slider()
+
         self.viewer.camera.mouse_zoom = False
 
         # Install event filter on canvas for wheel interception
@@ -72,7 +75,7 @@ class ViewerWidget(QWidget):
         self._view_label = QLabel("", self.qt_viewer.canvas.native)
         self._view_label.setStyleSheet(
             "QLabel { color: #cccccc; background: rgba(0,0,0,160);"
-            " font-size: 14px; padding: 4px 10px;"
+            " font-size: 18px; padding: 2px 8px;"
             " border-bottom-right-radius: 4px; }"
         )
         self._view_label.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents)
@@ -98,6 +101,46 @@ class ViewerWidget(QWidget):
         # Default: no pan-on-drag (panning handled manually via RMB), arrow cursor always
         self.viewer.camera.mouse_pan = False
         self._set_cursor_cross(False)
+
+    # ── Dims slider slimming ──────────────────────────────────────────────
+
+    def _slim_dims_slider(self):
+        """Reduce the height of the napari dims slider bar by ~1/3.
+
+        Accesses ``qt_viewer.dims`` (the Qt widget that holds the slice
+        slider(s)) and applies compact sizing + stylesheet to the QSlider
+        and QSpinBox children inside it.
+        """
+        from PyQt6.QtWidgets import QSlider, QSpinBox, QAbstractSpinBox
+        dims_widget = getattr(self.qt_viewer, 'dims', None)
+        if dims_widget is None:
+            return
+        # Shrink the whole dims container
+        dims_widget.setMaximumHeight(20)
+        # Style every QSlider found in dims
+        for slider in dims_widget.findChildren(QSlider):
+            slider.setMaximumHeight(14)
+            slider.setStyleSheet("""
+                QSlider::groove:horizontal {
+                    height: 1px;
+                    background: #555;
+                    border-radius: 1px;
+                }
+                QSlider::handle:horizontal {
+                    height: 5px;
+                    width: 3px;
+                    margin: -4px 0;
+                    background: #aaa;
+                    border-radius: 2px;
+                }
+                QSlider::handle:horizontal:hover {
+                    background: #ccc;
+                }
+            """)
+        # Shrink spinboxes inside dims
+        for spin in dims_widget.findChildren(QAbstractSpinBox):
+            spin.setMaximumHeight(16)
+            spin.setStyleSheet("QAbstractSpinBox { font-size: 10px; padding: 0px; }")
 
     # ── Static helpers ──────────────────────────────────────────────────
 
@@ -268,6 +311,23 @@ class ViewerWidget(QWidget):
                 layer.n_edit_dimensions = 3
             elif mode == "fill":
                 layer.mode = "fill"
+
+    def deactivate_labels(self):
+        """Reset all Labels layers to pan_zoom and select an Image layer as active.
+
+        Call when leaving paint/edit tabs so that napari's built-in Labels
+        drag behaviour does not intercept mouse events meant for the
+        crosshair overlay or custom pan callbacks.
+        """
+        image_layer = None
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Labels):
+                layer.mode = "pan_zoom"
+            elif isinstance(layer, napari.layers.Image) and image_layer is None:
+                image_layer = layer
+        # Select an Image layer so mouse events bypass Labels handling
+        if image_layer is not None:
+            self.viewer.layers.selection.active = image_layer
 
     # ── Camera view ─────────────────────────────────────────────────────
 
