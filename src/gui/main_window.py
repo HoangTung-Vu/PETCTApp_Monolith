@@ -67,26 +67,35 @@ class MainWindow(
         main_layout.setSpacing(0)
 
         # Sidebar Restore Button (appears when sidebar is collapsed)
+        self.sidebar_stub = QWidget()
+        self.sidebar_stub.setFixedWidth(20)
+        self.sidebar_stub.setVisible(False)
+        self.sidebar_stub.setStyleSheet("background-color: #2c2c2c; border-right: 1px solid #444;")
+        
+        stub_layout = QVBoxLayout(self.sidebar_stub)
+        stub_layout.setContentsMargins(0, 2, 0, 0)
+        stub_layout.setSpacing(0)
+
         self.btn_restore_sidebar = QPushButton(">>>")
-        self.btn_restore_sidebar.setFixedWidth(20)
+        self.btn_restore_sidebar.setFixedSize(20, 24)
         self.btn_restore_sidebar.setToolTip("Show Sidebar")
-        self.btn_restore_sidebar.setVisible(False)
         self.btn_restore_sidebar.setStyleSheet("""
             QPushButton {
-                background-color: #2c2c2c;
+                background-color: transparent;
                 color: #888;
                 border: none;
-                border-right: 1px solid #444;
                 font-weight: bold;
-                font-size: 16px;
+                font-size: 14px;
             }
             QPushButton:hover {
-                background-color: #3d3d3d;
                 color: #00aaff;
             }
         """)
         self.btn_restore_sidebar.clicked.connect(self._restore_sidebar)
-        main_layout.addWidget(self.btn_restore_sidebar)
+        stub_layout.addWidget(self.btn_restore_sidebar)
+        stub_layout.addStretch()
+        
+        main_layout.addWidget(self.sidebar_stub)
 
         # Draggable splitter between sidebar and viewer area
         from PyQt6.QtCore import Qt
@@ -231,19 +240,19 @@ class MainWindow(
 
         # Show restore button if sidebar is collapsed
         sidebar_width = self._splitter.sizes()[0]
-        self.btn_restore_sidebar.setVisible(sidebar_width == 0)
+        self.sidebar_stub.setVisible(sidebar_width == 0)
 
     def _restore_sidebar(self):
         """Restore sidebar to default width."""
         self._splitter.setSizes([280, self._splitter.width() - 280])
-        self.btn_restore_sidebar.setVisible(False)
+        self.sidebar_stub.setVisible(False)
         # Re-enforce state after resize
         self._on_splitter_moved(280, 1)
 
     def _collapse_sidebar(self):
         """Collapse the sidebar completely."""
         self._splitter.setSizes([0, self._splitter.width()])
-        self.btn_restore_sidebar.setVisible(True)
+        self.sidebar_stub.setVisible(True)
         # Re-enforce state after resize
         self._on_splitter_moved(0, 1)
 
