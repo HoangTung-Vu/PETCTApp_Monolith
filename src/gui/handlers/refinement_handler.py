@@ -523,7 +523,7 @@ class RefinementHandlerMixin:
 
         self._last_tab_index = index
 
-    def _on_roi_ready(self, roi_data, tumor_data, roi_zyx, tumor_zyx):
+    def _on_roi_ready(self, roi_data, tumor_data, roi_zyx, tumor_zyx, created_new_tumor: bool):
         """Callback when ROI worker finishes."""
         print("[RefineHandler] _on_roi_ready called")
         if roi_data is not None:
@@ -540,7 +540,11 @@ class RefinementHandlerMixin:
         self.control_panel.hide_refine_progress()
         self._update_refine_button_states()
 
-    # ── Manual Edit (tumor mask) slots ──
+        # Auto-save zeros mask to disk if it was just created
+        if created_new_tumor:
+            print("[RefineHandler] New zeros tumor mask created — auto-saving to disk...")
+            self.save_session()
+
 
     def _on_manual_edit_tool(self, tool: str):
         """Switch manual edit tool: 'pan_zoom', 'paint', 'erase' on tumor layer."""

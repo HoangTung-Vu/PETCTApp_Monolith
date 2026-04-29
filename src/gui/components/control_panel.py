@@ -22,6 +22,7 @@ class ControlPanel(QWidget):
     # Workflow
     sig_load_ct_clicked = pyqtSignal()
     sig_load_pet_clicked = pyqtSignal()
+    sig_load_seg_clicked = pyqtSignal()
     sig_segment_clicked = pyqtSignal()
     sig_new_session_clicked = pyqtSignal(str, str)
     sig_load_session_clicked = pyqtSignal(int)
@@ -99,6 +100,7 @@ class ControlPanel(QWidget):
         w = self.workflow_tab
         w.sig_load_ct_clicked.connect(self.sig_load_ct_clicked)
         w.sig_load_pet_clicked.connect(self.sig_load_pet_clicked)
+        w.sig_load_seg_clicked.connect(self.sig_load_seg_clicked)
         w.sig_segment_clicked.connect(self.sig_segment_clicked)
         w.sig_new_session_clicked.connect(self.sig_new_session_clicked)
         w.sig_load_session_clicked.connect(self.sig_load_session_clicked)

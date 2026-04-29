@@ -261,11 +261,11 @@ class ViewerWidget(QWidget):
             elif mode == "paint":
                 layer.mode = "paint"
                 layer.brush_size = brush_size
-                layer.n_edit_dimensions = 2
+                layer.n_edit_dimensions = 3
             elif mode == "erase":
                 layer.mode = "erase"
                 layer.brush_size = brush_size
-                layer.n_edit_dimensions = 2
+                layer.n_edit_dimensions = 3
             elif mode == "fill":
                 layer.mode = "fill"
 

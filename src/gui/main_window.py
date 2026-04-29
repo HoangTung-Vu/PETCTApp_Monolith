@@ -78,6 +78,7 @@ class MainWindow(
         # Workflow
         cp.sig_load_ct_clicked.connect(self.load_ct_dialog)
         cp.sig_load_pet_clicked.connect(self.load_pet_dialog)
+        cp.sig_load_seg_clicked.connect(self.load_seg_dialog)
         cp.sig_segment_clicked.connect(self.run_segmentation_dialog)
         cp.sig_active_views_changed.connect(lm.set_active_views)
         cp.sig_layout_changed.connect(lm.set_view_mode)      # "3d" only
@@ -225,11 +226,18 @@ class MainWindow(
         if file_path:
             self._update_session_files(pet_path=Path(file_path))
 
-    def _update_session_files(self, ct_path=None, pet_path=None):
-        """Spawns worker to load CT/PET to prevent UI block."""
+    def load_seg_dialog(self):
+        file_path, _ = QFileDialog.getOpenFileName(
+            self, "Load Segmentation Image", "", "NIfTI files (*.nii.gz *.nii)"
+        )
+        if file_path:
+            self._update_session_files(tumor_seg_path=Path(file_path))
+
+    def _update_session_files(self, ct_path=None, pet_path=None, tumor_seg_path=None):
+        """Spawns worker to load CT/PET/Seg to prevent UI block."""
         from .workers import DataLoaderWorker
         self.loader_worker = DataLoaderWorker(
-            self.session_manager, ct_path=ct_path, pet_path=pet_path, action="update"
+            self.session_manager, ct_path=ct_path, pet_path=pet_path, tumor_seg_path=tumor_seg_path, action="update"
         )
         self.loader_worker.finished.connect(self._on_data_loaded)
         self.loader_worker.error.connect(self._on_data_error)

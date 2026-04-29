@@ -29,7 +29,8 @@ class SessionRepository:
         patient_name: Optional[str] = None,
         doctor_name: Optional[str] = None,
         ct_path: Optional[str] = None,
-        pet_path: Optional[str] = None
+        pet_path: Optional[str] = None,
+        tumor_seg_path: Optional[str] = None
     ) -> Session:
         """Create a new session."""
         session = Session(
@@ -37,6 +38,7 @@ class SessionRepository:
             doctor_name=doctor_name,
             ct_path=ct_path,
             pet_path=pet_path,
+            tumor_seg_path=tumor_seg_path,
             status="active"
         )
         self.db.add(session)

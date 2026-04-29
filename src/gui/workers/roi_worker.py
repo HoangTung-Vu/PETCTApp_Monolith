@@ -3,15 +3,21 @@ import numpy as np
 from ...utils.nifti_utils import to_napari
 
 class EnsureROIWorker(QThread):
-    finished = pyqtSignal(object, object, object, object)  # roi_data, tumor_data, roi_zyx, tumor_zyx
+    # roi_data, tumor_data, roi_zyx, tumor_zyx, created_new_tumor
+    finished = pyqtSignal(object, object, object, object, bool)
     
     def __init__(self, session_manager):
         super().__init__()
         self.session_manager = session_manager
         
     def run(self):
+        # Track whether tumor mask existed before ensure
+        had_tumor = self.session_manager.tumor_mask is not None
+        
         # Create zeroed numpy arrays if missing
         self.session_manager.ensure_roi_mask()
+        
+        created_new_tumor = not had_tumor and self.session_manager.tumor_mask is not None
         
         tumor_data = self.session_manager.get_tumor_mask_data()
         roi_data = self.session_manager.get_roi_mask_data()
@@ -27,5 +33,6 @@ class EnsureROIWorker(QThread):
         if tumor_data is not None:
             tumor_zyx = to_napari(tumor_data.astype(np.uint8, copy=False))
             
-        print("[EnsureROIWorker] Emitting finished signal...")
-        self.finished.emit(roi_data, tumor_data, roi_zyx, tumor_zyx)
+        print(f"[EnsureROIWorker] Emitting finished signal... (created_new_tumor={created_new_tumor})")
+        self.finished.emit(roi_data, tumor_data, roi_zyx, tumor_zyx, created_new_tumor)
+

@@ -8,7 +8,7 @@ class DataLoaderWorker(QThread):
     finished = pyqtSignal(bool)  # Emits True when done
     error = pyqtSignal(str)
 
-    def __init__(self, session_manager, current_session_id=None, ct_path=None, pet_path=None, action="update", new_doctor=None, new_patient=None):
+    def __init__(self, session_manager, current_session_id=None, ct_path=None, pet_path=None, tumor_seg_path=None, action="update", new_doctor=None, new_patient=None):
         """
         action: "update" (existing session), "create" (new session), "load" (load existing by ID)
         """
@@ -17,6 +17,7 @@ class DataLoaderWorker(QThread):
         self.current_session_id = current_session_id
         self.ct_path = ct_path
         self.pet_path = pet_path
+        self.tumor_seg_path = tumor_seg_path
         self.action = action
         self.new_doctor = new_doctor
         self.new_patient = new_patient
@@ -30,7 +31,8 @@ class DataLoaderWorker(QThread):
                     self.new_doctor, 
                     self.new_patient, 
                     ct_path=self.ct_path, 
-                    pet_path=self.pet_path
+                    pet_path=self.pet_path,
+                    tumor_seg_path=self.tumor_seg_path
                 )
             elif self.action == "update":
                 # For update, we might need a temporary session if none exists
@@ -39,12 +41,14 @@ class DataLoaderWorker(QThread):
                         "System", 
                         "Anonymous", 
                         ct_path=self.ct_path, 
-                        pet_path=self.pet_path
+                        pet_path=self.pet_path,
+                        tumor_seg_path=self.tumor_seg_path
                     )
                 else:
                     self.session_manager.update_current_session(
                         ct_path=self.ct_path, 
-                        pet_path=self.pet_path
+                        pet_path=self.pet_path,
+                        tumor_seg_path=self.tumor_seg_path
                     )
             elif self.action == "load":
                 if self.current_session_id is not None:

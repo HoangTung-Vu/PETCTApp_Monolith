@@ -45,6 +45,7 @@ class SessionManager:
         patient_name: str,
         ct_path: Optional[Path] = None,
         pet_path: Optional[Path] = None,
+        tumor_seg_path: Optional[Path] = None,
     ) -> int:
         """Create a new session, storing absolute paths (no file copy)."""
         # Auto-populate names from CT filename when both are blank
@@ -55,12 +56,14 @@ class SessionManager:
 
         abs_ct = str(Path(ct_path).absolute()) if ct_path else None
         abs_pet = str(Path(pet_path).absolute()) if pet_path else None
+        abs_tumor_seg = str(Path(tumor_seg_path).absolute()) if tumor_seg_path else None
 
         session = self.repository.create(
             patient_name=patient_name,
             doctor_name=doctor_name,
             ct_path=abs_ct,
             pet_path=abs_pet,
+            tumor_seg_path=abs_tumor_seg,
         )
         self.current_session_id = session.id
         self.patient_name = patient_name or ""
@@ -70,7 +73,7 @@ class SessionManager:
         self.ct_image = nib.load(abs_ct) if abs_ct else None
         self.pet_image = nib.load(abs_pet) if abs_pet else None
 
-        self.tumor_mask = None
+        self.tumor_mask = nib.load(abs_tumor_seg) if abs_tumor_seg else None
         self.roi_mask = None
         self.clear_lesion_data()
 
@@ -81,6 +84,7 @@ class SessionManager:
         self,
         ct_path: Optional[Path] = None,
         pet_path: Optional[Path] = None,
+        tumor_seg_path: Optional[Path] = None,
     ):
         """Load new files into the current session without copying."""
         if self.current_session_id is None:
@@ -105,6 +109,11 @@ class SessionManager:
             abs_pet = str(Path(pet_path).absolute())
             self.pet_image = nib.load(abs_pet)
             update_kwargs["pet_path"] = abs_pet
+
+        if tumor_seg_path:
+            abs_tumor_seg = str(Path(tumor_seg_path).absolute())
+            self.tumor_mask = nib.load(abs_tumor_seg)
+            update_kwargs["tumor_seg_path"] = abs_tumor_seg
 
         if update_kwargs:
             self.repository.update(self.current_session_id, **update_kwargs)
@@ -173,13 +182,18 @@ class SessionManager:
             return
 
         session = self.repository.get_by_id(self.current_session_id)
-        ct_path = Path(session.ct_path) if session.ct_path else None
-
-        if ct_path and ct_path.exists():
-            seg_path = FileManager.get_segmentation_path(ct_path)
+        
+        # Use existing path only if the file actually exists on disk.
+        # If DB has a stale path (file was deleted/moved), regenerate next to CT.
+        if session.tumor_seg_path and Path(session.tumor_seg_path).parent.exists():
+            seg_path = Path(session.tumor_seg_path)
         else:
-            # Fallback: write to the old session storage dir
-            seg_path = FileManager.get_file_path(self.current_session_id, "tumor_seg")
+            ct_path = Path(session.ct_path) if session.ct_path else None
+            if ct_path and ct_path.exists():
+                seg_path = FileManager.get_segmentation_path(ct_path)
+            else:
+                # Fallback: write to the old session storage dir
+                seg_path = FileManager.get_file_path(self.current_session_id, "tumor_seg")
 
         nib.save(self.tumor_mask, seg_path)
         self.repository.update(self.current_session_id, tumor_seg_path=str(seg_path))

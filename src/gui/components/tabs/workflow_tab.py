@@ -14,6 +14,7 @@ class WorkflowTab(QWidget):
     # Signals
     sig_load_ct_clicked = pyqtSignal()
     sig_load_pet_clicked = pyqtSignal()
+    sig_load_seg_clicked = pyqtSignal()
     sig_segment_clicked = pyqtSignal()
     sig_new_session_clicked = pyqtSignal(str, str)   # doctor, patient
     sig_load_session_clicked = pyqtSignal(int)        # session_id
@@ -75,11 +76,15 @@ class WorkflowTab(QWidget):
         self.btn_load_pet = QPushButton("Load PET")
         self.btn_load_pet.clicked.connect(self.sig_load_pet_clicked.emit)
 
+        self.btn_load_seg = QPushButton("Load Segmentation")
+        self.btn_load_seg.clicked.connect(self.sig_load_seg_clicked.emit)
+
         self.btn_segment = QPushButton("Run Segmentation")
         self.btn_segment.clicked.connect(self.sig_segment_clicked.emit)
 
         action_layout.addWidget(self.btn_load_ct)
         action_layout.addWidget(self.btn_load_pet)
+        action_layout.addWidget(self.btn_load_seg)
         action_layout.addWidget(self.btn_segment)
 
         # Progress Bar
