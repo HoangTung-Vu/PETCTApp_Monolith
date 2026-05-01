@@ -275,6 +275,13 @@ class ViewerWidget(QWidget):
                     self.viewer.layers.move(i, i+1)
                     changed = True
 
+        # add_labels/add_image makes the new layer the active layer. In 2D viewers
+        # this triggers napari's _on_active_layer_mode_change callback which may
+        # re-enable camera.mouse_pan. Always re-assert our state here.
+        if not self.is_3d:
+            self.viewer.camera.mouse_pan = False
+            self._select_image_layer()
+
     # Shared across all ViewerWidget instances — created once
     _roi_colormap = None
 
@@ -302,19 +309,32 @@ class ViewerWidget(QWidget):
         name = self.LAYER_NAMES.get(layer_type, layer_type)
         if name in self.viewer.layers:
             layer = self.viewer.layers[name]
-            self.viewer.layers.selection.active = layer
             if mode == "pan_zoom":
                 layer.mode = "pan_zoom"
-            elif mode == "paint":
-                layer.mode = "paint"
-                layer.brush_size = brush_size
-                layer.n_edit_dimensions = 3
-            elif mode == "erase":
-                layer.mode = "erase"
-                layer.brush_size = brush_size
-                layer.n_edit_dimensions = 3
-            elif mode == "fill":
-                layer.mode = "fill"
+                # Do NOT make the Labels layer active in pan_zoom — napari's
+                # _on_active_layer_mode_change callback would re-enable camera.mouse_pan.
+                self._select_image_layer()
+            else:
+                self.viewer.layers.selection.active = layer
+                if mode == "paint":
+                    layer.mode = "paint"
+                    layer.brush_size = brush_size
+                    layer.n_edit_dimensions = 3
+                elif mode == "erase":
+                    layer.mode = "erase"
+                    layer.brush_size = brush_size
+                    layer.n_edit_dimensions = 3
+                elif mode == "fill":
+                    layer.mode = "fill"
+        # Always re-assert: napari resets mouse_pan via mode-change callbacks
+        self.viewer.camera.mouse_pan = False
+
+    def _select_image_layer(self):
+        """Select the first available Image layer as active."""
+        for layer in self.viewer.layers:
+            if isinstance(layer, napari.layers.Image):
+                self.viewer.layers.selection.active = layer
+                return
 
     def deactivate_labels(self):
         """Reset all Labels layers to pan_zoom and select an Image layer as active.
@@ -332,6 +352,8 @@ class ViewerWidget(QWidget):
         # Select an Image layer so mouse events bypass Labels handling
         if image_layer is not None:
             self.viewer.layers.selection.active = image_layer
+        # Re-assert after all mode changes (napari may reset mouse_pan in callbacks)
+        self.viewer.camera.mouse_pan = False
 
     # ── Camera view ─────────────────────────────────────────────────────
 

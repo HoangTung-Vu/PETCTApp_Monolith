@@ -928,6 +928,24 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             except (TypeError, RuntimeError):
                 pass
 
+    def suspend_crosshair_click(self):
+        """Disable crosshair LMB interaction but keep overlay + info label visible.
+
+        Used in Refine tab when a paint/erase tool is active to prevent the
+        crosshair callback from moving the position while the user is drawing.
+        """
+        for v in self._get_all_2d_viewers():
+            v._crosshair_enabled = False
+
+    def resume_crosshair_click(self):
+        """Re-enable crosshair LMB interaction after paint/erase tool is deactivated."""
+        if not self._crosshair_enabled:
+            return
+        for v in self._get_visible_viewers():
+            if not v.is_3d:
+                v._crosshair_enabled = True
+        self.deactivate_labels()
+
     def set_pan_mode(self, pan_on: bool):
         self._pan_mode = pan_on
         if pan_on:

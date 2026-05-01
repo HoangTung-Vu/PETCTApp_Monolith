@@ -228,6 +228,9 @@ class MainWindow(
         self.shortcut_toggle_mask = QShortcut(QKeySequence("s"), self)
         self.shortcut_toggle_mask.activated.connect(self._on_shortcut_toggle_tumor_mask)
 
+        self.shortcut_crosshair = QShortcut(QKeySequence("x"), self)
+        self.shortcut_crosshair.activated.connect(self._on_shortcut_toggle_crosshair)
+
     def _on_splitter_moved(self, pos, index):
         """Re-enforce napari camera settings after sidebar splitter drag.
 
@@ -261,6 +264,10 @@ class MainWindow(
         chk = self.control_panel.view_display_tab.chk_tumor
         chk.setChecked(not chk.isChecked())
         print(f"[MainWindow] Shortcut 's' toggled tumor mask visibility to {chk.isChecked()}")
+
+    def _on_shortcut_toggle_crosshair(self):
+        """Toggle crosshair overlay via 'x' hotkey."""
+        self.control_panel.view_display_tab.btn_crosshair.click()
 
     def _on_eraser_background_click(self):
         """Notify the user they clicked on background (no tumor voxel there)."""
@@ -471,16 +478,20 @@ class MainWindow(
         """Delegate tab change events to specialized handlers."""
         self._on_refinement_tab_changed(index)
 
-        # Disable crosshair overlay in paint/click tabs (crosshair interferes)
-        _PAINT_TABS = (self._TAB_REFINE, self._TAB_ERASER)
         xhair_btn = self.control_panel.view_display_tab.btn_crosshair
         crosshair_was_on = xhair_btn.isChecked()
 
-        if index in _PAINT_TABS:
-            # Temporarily hide crosshair overlay (don't change button state)
+        if index == self._TAB_ERASER:
+            # Eraser tab: suppress crosshair (click-to-erase conflicts with crosshair LMB)
             if self.layout_manager._crosshair_enabled:
                 self.layout_manager.disable_crosshair_mode()
                 self._crosshair_suppressed_by_tab = True
+        elif index == self._TAB_REFINE:
+            # Refine tab: crosshair + info box as navigation default
+            # Paint/erase tools suspend crosshair click (handled in refinement_handler)
+            self._crosshair_suppressed_by_tab = False
+            if crosshair_was_on:
+                self.layout_manager.enable_crosshair_mode()
         else:
             # Restore crosshair if it was suppressed and the toggle is ON
             if getattr(self, '_crosshair_suppressed_by_tab', False) and crosshair_was_on:

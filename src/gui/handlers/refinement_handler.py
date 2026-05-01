@@ -544,12 +544,22 @@ class RefinementHandlerMixin:
             self.save_session()
 
 
+    def _update_crosshair_suspend_state(self):
+        """Suspend crosshair click if any non-pan tool is active; resume if both are pan_zoom."""
+        roi_active = getattr(self, 'current_tool', 'pan_zoom') != "pan_zoom"
+        manual_active = self._manual_edit_tool != "pan_zoom"
+        if roi_active or manual_active:
+            self.layout_manager.suspend_crosshair_click()
+        else:
+            self.layout_manager.resume_crosshair_click()
+
     def _on_manual_edit_tool(self, tool: str):
         """Switch manual edit tool: 'pan_zoom', 'paint', 'erase' on tumor layer."""
         self._manual_edit_tool = tool
         # When activating manual edit, reset ROI tools to pan_zoom
         if tool != "pan_zoom":
             self.control_panel.refine_tab.reset_tools()
+        self._update_crosshair_suspend_state()
         self._apply_manual_edit_tool()
 
     def _on_manual_edit_brush_changed(self, size: int):
@@ -570,6 +580,7 @@ class RefinementHandlerMixin:
         # When activating ROI tool, reset manual edit to pan_zoom
         if tool != "pan_zoom":
             self.control_panel.refine_tab.reset_manual_edit()
+        self._update_crosshair_suspend_state()
         self._update_all_tools()
 
     def _on_brush_size_changed(self, size):
