@@ -43,6 +43,10 @@ class ReportHandlerMixin:
         pet_colormap = lm._pet_colormap
         mask_opacity = lm._tumor_opacity
 
+        # Pass pre-converted ZYX arrays from cache to skip full-volume to_napari in the worker
+        ct_zyx = lm._cached_data_zyx.get("ct")
+        pet_zyx = lm._cached_data_zyx.get("pet")
+
         session_id = self.session_manager.current_session_id
         report_dir = Path(self._report_export_dir) / str(session_id)
 
@@ -54,6 +58,8 @@ class ReportHandlerMixin:
             ct_colormap=ct_colormap,
             pet_colormap=pet_colormap,
             mask_opacity=mask_opacity,
+            ct_zyx=ct_zyx,
+            pet_zyx=pet_zyx,
         )
         self.report_worker.finished.connect(self._on_report_finished)
         self.report_worker.error.connect(self._on_report_error)

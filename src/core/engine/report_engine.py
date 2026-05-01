@@ -209,6 +209,8 @@ class ReportEngine:
         ct_colormap: str = "gray",
         pet_colormap: str = "jet",
         mask_opacity: float = 0.5,
+        ct_zyx: np.ndarray = None,
+        pet_zyx: np.ndarray = None,
     ):
         """Export report CSV and per-tumor slice images.
 
@@ -226,6 +228,8 @@ class ReportEngine:
             ct_colormap: Napari colormap name for CT.
             pet_colormap: Napari colormap name for PET.
             mask_opacity: Mask overlay opacity (0.0-1.0).
+            ct_zyx: Pre-converted CT in Napari (Z, Y, X) order — skips to_napari when provided.
+            pet_zyx: Pre-converted PET in Napari (Z, Y, X) order — skips to_napari when provided.
         """
         # Overwrite old report directory
         if report_dir.exists():
@@ -234,9 +238,9 @@ class ReportEngine:
 
         from ...utils.nifti_utils import to_napari
         from ...utils.dimension_utils import get_spacing_from_affine
-        
-        ct_napari = to_napari(ct_data)
-        pet_napari = to_napari(pet_data)
+
+        ct_napari = ct_zyx if ct_zyx is not None else to_napari(ct_data)
+        pet_napari = pet_zyx if pet_zyx is not None else to_napari(pet_data)
         mask_napari = to_napari(mask_data)
 
         sx, sy, sz = get_spacing_from_affine(affine)

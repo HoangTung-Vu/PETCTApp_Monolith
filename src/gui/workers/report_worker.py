@@ -7,7 +7,7 @@ class ReportWorker(QThread):
     finished = pyqtSignal(dict)   # metrics dict
     error = pyqtSignal(str)
 
-    def __init__(self, session_manager, report_dir=None, ct_wl=None, pet_wl=None, ct_colormap="gray", pet_colormap="jet", mask_opacity=0.7):
+    def __init__(self, session_manager, report_dir=None, ct_wl=None, pet_wl=None, ct_colormap="gray", pet_colormap="jet", mask_opacity=0.7, ct_zyx=None, pet_zyx=None):
         super().__init__()
         self.session_manager = session_manager
         self.report_dir = report_dir
@@ -16,6 +16,8 @@ class ReportWorker(QThread):
         self.ct_colormap = ct_colormap
         self.pet_colormap = pet_colormap
         self.mask_opacity = mask_opacity
+        self.ct_zyx = ct_zyx
+        self.pet_zyx = pet_zyx
 
     def run(self):
         try:
@@ -70,5 +72,7 @@ class ReportWorker(QThread):
             ct_colormap=self.ct_colormap,
             pet_colormap=self.pet_colormap,
             mask_opacity=self.mask_opacity,
+            ct_zyx=self.ct_zyx,
+            pet_zyx=self.pet_zyx,
         )
         print(f"[Report] Exported to {report_dir}")

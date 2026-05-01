@@ -527,8 +527,10 @@ class RefinementHandlerMixin:
         if roi_data is not None:
             print("[RefineHandler] Pushing ROI mask to all viewers...")
             self._push_mask_to_all("roi", roi_data, data_zyx=roi_zyx)
-        if tumor_data is not None:
-            print("[RefineHandler] Pushing Tumor mask to all viewers...")
+        # Only push tumor when it was just created — if it already existed,
+        # viewers and _cached_data_zyx["tumor"] are already up to date.
+        if created_new_tumor and tumor_data is not None:
+            print("[RefineHandler] Pushing new Tumor mask to all viewers...")
             self._push_mask_to_all("tumor", tumor_data, data_zyx=tumor_zyx)
         print("[RefineHandler] _on_roi_ready finished")
 
