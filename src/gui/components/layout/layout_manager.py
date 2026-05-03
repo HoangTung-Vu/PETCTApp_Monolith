@@ -16,7 +16,7 @@ import math
 from PyQt6.QtWidgets import (
     QWidget, QGridLayout, QStackedWidget, QVBoxLayout, QApplication, QLabel,
 )
-from PyQt6.QtCore import pyqtSignal, Qt
+from PyQt6.QtCore import pyqtSignal, Qt, QTimer
 import numpy as np
 import napari
 
@@ -421,8 +421,11 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             self.stack.setCurrentWidget(self.view_3d_widget)
             self._load_3d_data()
             self.viewer_3d.viewer.dims.ndisplay = 3
-            self.viewer_3d.viewer.camera.mouse_pan = True
-            self.viewer_3d.viewer.camera.mouse_zoom = True
+            # Napari handles LMB-drag rotation in 3D; wheel zoom stays under
+            # our eventFilter (Ctrl+wheel only). Force-toggle mouse_pan so
+            # the napari→vispy event fires reliably (True→True is a no-op).
+            self.viewer_3d._force_3d_mouse_settings()
+            QTimer.singleShot(0, self.viewer_3d._force_3d_mouse_settings)
             for layer in self.viewer_3d.viewer.layers:
                 if isinstance(layer, napari.layers.Labels):
                     layer.editable = False

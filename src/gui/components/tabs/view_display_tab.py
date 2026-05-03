@@ -143,7 +143,8 @@ class ViewDisplayTab(QWidget):
         vc_lay.addWidget(QLabel(""))    # spacer
 
         self.btn_3d = QPushButton("3D View")
-        self.btn_3d.clicked.connect(lambda: self.sig_layout_changed.emit("3d"))
+        self.btn_3d.setCheckable(True)
+        self.btn_3d.toggled.connect(self._on_btn_3d_toggled)
         vc_lay.addWidget(self.btn_3d)
 
         self.chk_3d_pet = QPushButton("3D: CT View")
@@ -370,6 +371,12 @@ class ViewDisplayTab(QWidget):
     # ── Slots ──────────────────────────────────────────────────────────────
 
     def _on_view_toggle_changed(self):
+        # Toggling any 2D view exits 3D mode visually — uncheck the 3D button
+        # without re-emitting (the active views emit below already returns to 2D).
+        if hasattr(self, "btn_3d") and self.btn_3d.isChecked():
+            self.btn_3d.blockSignals(True)
+            self.btn_3d.setChecked(False)
+            self.btn_3d.blockSignals(False)
         if not getattr(self, '_pending_view_update', False):
             self._pending_view_update = True
             QTimer.singleShot(0, self._flush_view_toggle)
@@ -378,6 +385,14 @@ class ViewDisplayTab(QWidget):
         self._pending_view_update = False
         active = [vid for vid, chk in self._view_checkboxes.items() if chk.isChecked()]
         self.sig_active_views_changed.emit(active)
+
+    def _on_btn_3d_toggled(self, checked: bool):
+        if checked:
+            self.sig_layout_changed.emit("3d")
+        else:
+            # Returning to 2D: re-emit current active views
+            active = [vid for vid, chk in self._view_checkboxes.items() if chk.isChecked()]
+            self.sig_active_views_changed.emit(active)
 
     def _emit_ct_wl(self):
         self.combo_ct_preset.blockSignals(True)

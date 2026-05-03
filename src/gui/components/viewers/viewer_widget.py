@@ -378,6 +378,11 @@ class ViewerWidget(QWidget):
         for layer in self.viewer.layers:
             if isinstance(layer, napari.layers.Labels):
                 layer.editable = False
+        # 3D mode: napari handles LMB-drag rotation natively. Keep wheel
+        # control with our eventFilter (Ctrl+wheel = zoom).
+        self.viewer.camera.mouse_pan = True
+        self.viewer.camera.mouse_zoom = False
+        self._set_cursor_cross(False)
 
     # ── Event filter (wheel + canvas resize) ────────────────────────────
 
@@ -439,11 +444,34 @@ class ViewerWidget(QWidget):
 
         Napari internally re-enables ``mouse_pan`` and ``mouse_zoom``
         during widget resize, which hijacks LMB/RMB from our custom
-        crosshair / pan callbacks.  Always disable them here.
+        crosshair / pan callbacks.  Always disable them here for 2D.
+        In 3D we keep ``mouse_pan = True`` so napari handles LMB rotation.
         """
         super().resizeEvent(event)
-        self.viewer.camera.mouse_pan = False
-        self.viewer.camera.mouse_zoom = False
+        if self.is_3d:
+            self._force_3d_mouse_settings()
+        else:
+            self.viewer.camera.mouse_pan = False
+            self.viewer.camera.mouse_zoom = False
+
+    def showEvent(self, event):
+        """When 3D widget becomes visible, force-sync mouse_pan to vispy.
+
+        Napari's evented Camera only fires `mouse_pan` events on actual change,
+        so setting True→True is a no-op and vispy's 3D camera may stay out of
+        sync until a later resize. Force a False→True toggle to ensure the
+        event fires and vispy's `_on_mouse_toggles_change` runs.
+        """
+        super().showEvent(event)
+        if self.is_3d:
+            self._force_3d_mouse_settings()
+
+    def _force_3d_mouse_settings(self):
+        """Toggle mouse_pan False→True to guarantee napari fires the event."""
+        cam = self.viewer.camera
+        cam.mouse_pan = False
+        cam.mouse_pan = True
+        cam.mouse_zoom = False
 
     # ── Crosshair cursor ────────────────────────────────────────────────
 
@@ -615,6 +643,8 @@ class ViewerWidget(QWidget):
     def _make_pan_drag_cb(self):
         """Return a drag callback that pans the camera on right-click drag."""
         def on_drag(viewer, event):
+            if self.is_3d:           # napari handles 3D drag natively
+                return
             if event.button != 2:   # right mouse button only
                 return
             last_canvas = np.array(event.pos[:2], dtype=float)
