@@ -26,3 +26,24 @@ autoPET-interactive/
 **weights
 
 .env
+
+*.aux
+*.log
+*.out
+*.toc
+*.synctex.gz
+*.fdb_latexmk
+*.fls
+*.blg
+*.bbl
+*.brf
+*.nav
+*.lof
+*.lot
+*.pdf
+*.synctex.gz
+*.xdv
+*.dvi
+*.ps
+*.run.xml
+thesis/
