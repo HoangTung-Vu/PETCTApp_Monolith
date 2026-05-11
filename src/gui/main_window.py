@@ -508,7 +508,63 @@ class MainWindow(
         # but disabling the whole tab widget is safer.
         print(f"[MainWindow] UI Busy: {busy}")
 
+    def _has_unsaved_segmentation(self) -> bool:
+        """Compare in-memory tumor mask with the on-disk .nii file.
+
+        Returns True if they differ (unsaved changes exist).
+        """
+        import numpy as np
+        import nibabel as nib
+
+        sm = self.session_manager
+        if sm.current_session_id is None or sm.tumor_mask is None:
+            return False
+
+        # Pull the latest painted data from the viewer into session_manager
+        # (auto-sync skips this for performance during painting)
+        self._sync_tumor_from_viewer()
+
+        session = sm.repository.get_by_id(sm.current_session_id)
+        if session is None or not session.tumor_seg_path:
+            # No file on disk yet — in-memory mask counts as unsaved
+            return True
+
+        disk_path = Path(session.tumor_seg_path)
+        if not disk_path.exists():
+            return True
+
+        try:
+            disk_data = np.asarray(nib.load(disk_path).dataobj, dtype=np.uint8)
+            mem_data = np.asarray(sm.tumor_mask.dataobj, dtype=np.uint8)
+            return not np.array_equal(disk_data, mem_data)
+        except Exception as e:
+            print(f"[MainWindow] Could not compare masks: {e}")
+            return False
+
     def closeEvent(self, event):
+        # Check for unsaved segmentation changes
+        if self._has_unsaved_segmentation():
+            reply = QMessageBox.warning(
+                self,
+                "Unsaved Segmentation",
+                "The current segmentation has unsaved changes.\n\n"
+                "Do you want to save before closing?",
+                QMessageBox.StandardButton.Save
+                | QMessageBox.StandardButton.Discard
+                | QMessageBox.StandardButton.Cancel,
+                QMessageBox.StandardButton.Save,
+            )
+            if reply == QMessageBox.StandardButton.Cancel:
+                event.ignore()
+                return
+            if reply == QMessageBox.StandardButton.Save:
+                try:
+                    self._sync_tumor_from_viewer()
+                    self.session_manager.save_session()
+                    print("[MainWindow] Segmentation saved before exit.")
+                except Exception as e:
+                    print(f"[MainWindow] Save-on-exit failed: {e}")
+
         # Hide immediately to give feedback to user
         self.hide()
         
