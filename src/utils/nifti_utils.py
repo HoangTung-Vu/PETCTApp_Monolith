@@ -4,6 +4,8 @@ from pathlib import Path
 from typing import Optional
 import nibabel as nib
 import numpy as np
+import os
+from concurrent.futures import ThreadPoolExecutor
 
 
 def numpy_to_nifti(
@@ -97,25 +99,59 @@ def get_shape_for_plane(shape: tuple, plane: str) -> int:
         raise ValueError(f"Unknown plane: {plane}")
 
 
-def to_napari(data: np.ndarray) -> np.ndarray:
+def to_napari(data: np.ndarray, num_threads: Optional[int] = None) -> np.ndarray:
     """
-    Converts Nibabel (X, Y, Z) to Napari (Z, Y, X). OPTIMIZED 
+    Converts Nibabel (X, Y, Z) to Napari (Z, Y, X). OPTIMIZED with multithreading.
     """
     X, Y, Z = data.shape
     res = np.zeros((Z, Y, X), dtype=data.dtype)
-    for z in range(Z):
-        res[Z - 1 - z, ::-1, :] = data[:, :, z].T
+    
+    if num_threads is None:
+        num_threads = os.cpu_count() or 4
+
+    def process_chunk(start_z, end_z):
+        for z in range(start_z, end_z):
+            res[Z - 1 - z, ::-1, :] = data[:, :, z].T
+            
+    chunk_size = max(1, Z // num_threads)
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = []
+        for i in range(num_threads):
+            start = i * chunk_size
+            end = Z if i == num_threads - 1 else (i + 1) * chunk_size
+            if start < Z:
+                futures.append(executor.submit(process_chunk, start, end))
+        for f in futures:
+            f.result()
+            
     return res
 
 
-def from_napari(data_zyx: np.ndarray) -> np.ndarray:
+def from_napari(data_zyx: np.ndarray, num_threads: Optional[int] = None) -> np.ndarray:
     """
-    Converts Napari (Z, Y, X) back to Nibabel (X, Y, Z). OPTIMIZED
+    Converts Napari (Z, Y, X) back to Nibabel (X, Y, Z). OPTIMIZED with multithreading.
     """
     Z, Y, X = data_zyx.shape
     res = np.zeros((X, Y, Z), dtype=data_zyx.dtype)
-    for z in range(Z):
-        res[:, :, Z - 1 - z] = data_zyx[z, ::-1, :].T
+
+    if num_threads is None:
+        num_threads = os.cpu_count() or 4
+
+    def process_chunk(start_z, end_z):
+        for z in range(start_z, end_z):
+            res[:, :, Z - 1 - z] = data_zyx[z, ::-1, :].T
+
+    chunk_size = max(1, Z // num_threads)
+    with ThreadPoolExecutor(max_workers=num_threads) as executor:
+        futures = []
+        for i in range(num_threads):
+            start = i * chunk_size
+            end = Z if i == num_threads - 1 else (i + 1) * chunk_size
+            if start < Z:
+                futures.append(executor.submit(process_chunk, start, end))
+        for f in futures:
+            f.result()
+            
     return res
 
 

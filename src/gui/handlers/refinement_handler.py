@@ -40,6 +40,10 @@ class RefinementHandlerMixin:
 
     def _is_roi_dirty(self) -> bool:
         """Dynamically check if ROI mask has painted content."""
+        zyx = self.layout_manager.get_active_mask_data_zyx("roi")
+        if zyx is not None:
+            return bool(zyx.any())
+            
         roi_data = self.session_manager.get_roi_mask_data()
         return bool(roi_data is not None and roi_data.any())
 
@@ -478,8 +482,9 @@ class RefinementHandlerMixin:
 
         # LEAVING Refine Mode — sync ROI to session, then reset tools
         if was_refine_mode and not is_refine_mode:
-            print("[RefineHandler] Leaving Refine. Syncing & keeping ROI mask.")
+            print("[RefineHandler] Leaving Refine. Syncing & keeping masks.")
             self._sync_roi_from_viewer()
+            self._sync_tumor_from_viewer()
             self.control_panel.refine_tab.reset_tools()
             self.layout_manager.disable_shape_drag()
 
@@ -606,11 +611,25 @@ class RefinementHandlerMixin:
             # Don't sync the temporary preview mask back to the session natively
             return
 
+        # Ensure that ROI is confirmed before syncing
+        self.layout_manager.commit_shape("roi")
+
         mask_data = self.layout_manager.get_active_mask_data("roi")
         if mask_data is None:
             return
         self.session_manager.set_roi_mask(mask_data)
         self.layout_manager.sync_mask_cache(mask_data, "roi")
+
+    def _sync_tumor_from_viewer(self):
+        """Pull Tumor mask from active viewer and sync to session manager."""
+        # Auto-commit manual shapes trên tumor mask (if any)
+        self.layout_manager.commit_shape("tumor")
+        
+        mask_data = self.layout_manager.get_active_mask_data("tumor")
+        if mask_data is None:
+            return
+        self.session_manager.set_tumor_mask(mask_data)
+        self.layout_manager.sync_mask_cache(mask_data, "tumor")
 
     def _on_sync_masks(self):
         """Pull mask from active viewer and sync to all others + session."""
@@ -618,31 +637,19 @@ class RefinementHandlerMixin:
         print("Synced ROI mask from active viewer.")
 
     def _on_auto_sync(self, layer_type: str):
-        """Auto-sync after debounced paint/erase (300ms after last stroke)."""
-        # Suppress auto-sync for ROI while preview dialog is active
-        if layer_type == "roi" and self._preview_active:
-            return
-
-        mask_data = self.layout_manager.get_active_mask_data(layer_type)
-        if mask_data is None:
-            return
-
-        if layer_type == "roi":
-            self.session_manager.set_roi_mask(mask_data)
+        """Auto-sync after debounced paint/erase (300ms after last stroke).
+        OPTIMIZED: Skips deep-copy `from_napari`. Viewers are visually synced via `mask_sync.py`
+        `layer.refresh()`. The `session_manager` is updated on demand (e.g. Confirm ROI or Save).
+        """
+        if layer_type == "roi" and not getattr(self, '_preview_active', False):
             self._update_refine_button_states()
+            
         elif layer_type == "tumor":
-            self.session_manager.set_tumor_mask(mask_data)
-
-        # BUG-10 FIX: Use lightweight cache sync instead of full update_mask.
-        self.layout_manager.sync_mask_cache(mask_data, layer_type)
-
-        # Dismiss stale lesion data if painting on tumor mask
-        if layer_type == "tumor":
             self.session_manager.clear_lesion_data()
             self.layout_manager.hide_lesion_ids()
             self.control_panel.chk_show_lesion_ids.setChecked(False)
 
-        print(f"[AutoSync] Synced {layer_type} mask after painting.")
+        print(f"[AutoSync] Handled {layer_type} paint event (delayed full sync until action).")
 
     def _on_confirm_and_save(self):
         """Merge ROI into tumor (if ROI exists), then persist tumor mask to disk.
@@ -656,6 +663,8 @@ class RefinementHandlerMixin:
         # Sync ROI from viewer before offloading (reads layer.data — must be main thread)
         if has_roi:
             self._sync_roi_from_viewer()
+            
+        self._sync_tumor_from_viewer()
 
         # Clear stale report data
         self._clear_all_report_ui()

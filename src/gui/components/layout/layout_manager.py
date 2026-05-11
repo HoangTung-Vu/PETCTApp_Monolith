@@ -765,6 +765,16 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 return data
         return self._cached_data.get(layer_type)
 
+    def get_active_mask_data_zyx(self, layer_type: str):
+        """
+        Return ZYX Napari array directly
+        """
+        for vw in self._get_visible_viewers():
+            name = vw.LAYER_NAMES.get(layer_type, layer_type)
+            if name in vw.viewer.layers:
+                return vw.viewer.layers[name].data
+        return self._cached_data_zyx.get(layer_type)
+
     def sync_mask_cache(self, mask_data, mask_type):
         self._cached_data[mask_type] = mask_data
         synced = False
