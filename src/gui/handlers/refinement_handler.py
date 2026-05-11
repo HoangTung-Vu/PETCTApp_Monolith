@@ -524,14 +524,15 @@ class RefinementHandlerMixin:
     def _on_roi_ready(self, roi_data, tumor_data, roi_zyx, tumor_zyx, created_new_tumor: bool):
         """Callback when ROI worker finishes."""
         print("[RefineHandler] _on_roi_ready called")
-        if roi_data is not None:
-            print("[RefineHandler] Pushing ROI mask to all viewers...")
-            self._push_mask_to_all("roi", roi_data, data_zyx=roi_zyx)
-        # Only push tumor when it was just created — if it already existed,
-        # viewers and _cached_data_zyx["tumor"] are already up to date.
+        # Push tumor before ROI so layer order (CT < PET < Tumor < ROI) is
+        # already correct when ROI is added — avoids viewer.layers.move calls
+        # inside _enforce_layer_order which can stall the GL render loop.
         if created_new_tumor and tumor_data is not None:
             print("[RefineHandler] Pushing new Tumor mask to all viewers...")
             self._push_mask_to_all("tumor", tumor_data, data_zyx=tumor_zyx)
+        if roi_data is not None:
+            print("[RefineHandler] Pushing ROI mask to all viewers...")
+            self._push_mask_to_all("roi", roi_data, data_zyx=roi_zyx)
         print("[RefineHandler] _on_roi_ready finished")
 
         self._set_ui_busy(False)
