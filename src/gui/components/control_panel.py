@@ -12,6 +12,7 @@ from .tabs.workflow_tab import WorkflowTab
 from .tabs.view_display_tab import ViewDisplayTab
 from .tabs.refine_tab import RefineTab
 from .tabs.eraser_tab import EraserTab
+from .tabs.logs_tab import LogsTab
 
 
 class ControlPanel(QWidget):
@@ -78,11 +79,13 @@ class ControlPanel(QWidget):
         self.view_display_tab = ViewDisplayTab()
         self.refine_tab = RefineTab()
         self.eraser_tab = EraserTab()
+        self.logs_tab = LogsTab()
 
         self.tabs.addTab(self.workflow_tab, "Workflow")
         self.tabs.addTab(self.view_display_tab, "View & Display")
         self.tabs.addTab(self.refine_tab, "Segmentation")
         self.tabs.addTab(self.eraser_tab, "Eraser")
+        self.tabs.addTab(self.logs_tab, "Logs")
 
         # Tab indices for the tab-change handler
         self._view_display_tab_index = 1

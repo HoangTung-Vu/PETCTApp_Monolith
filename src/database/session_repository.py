@@ -50,14 +50,12 @@ class SessionRepository:
         """Get session by ID."""
         return self.db.query(Session).filter(Session.id == session_id).first()
     
-    def get_all(self, limit: int = 20) -> List[Session]:
+    def get_all(self, limit: Optional[int] = None) -> List[Session]:
         """Get all sessions, most recent first."""
-        return (
-            self.db.query(Session)
-            .order_by(Session.created_at.desc())
-            .limit(limit)
-            .all()
-        )
+        query = self.db.query(Session).order_by(Session.created_at.desc())
+        if limit is not None:
+            query = query.limit(limit)
+        return query.all()
     
     def get_active(self) -> List[Session]:
         """Get active sessions."""
