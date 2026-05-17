@@ -339,6 +339,8 @@ class MainWindow(
         print("[MainWindow] All state reset.")
 
     def create_new_session(self, doctor: str, patient: str):
+        if not self._prompt_unsaved_segmentation("switch"):
+            return
         self._reset_all_state()
         from .workers import DataLoaderWorker
         self.loader_worker = DataLoaderWorker(
@@ -348,6 +350,10 @@ class MainWindow(
         self._spawn_worker(self.loader_worker, self._on_data_loaded, self._on_data_error)
 
     def load_existing_session(self, session_id: int):
+        if session_id == self.session_manager.current_session_id:
+            return
+        if not self._prompt_unsaved_segmentation("switch"):
+            return
         self._reset_all_state()
         from .workers import DataLoaderWorker
         self.loader_worker = DataLoaderWorker(
@@ -541,29 +547,42 @@ class MainWindow(
             print(f"[MainWindow] Could not compare masks: {e}")
             return False
 
+    def _prompt_unsaved_segmentation(self, context: str) -> bool:
+        """Prompt user if current segmentation is dirty.
+
+        ``context`` is one of "close" or "switch" — controls dialog wording.
+        Returns True if the caller may proceed, False if the user cancelled.
+        """
+        if not self._has_unsaved_segmentation():
+            return True
+
+        action_word = "closing" if context == "close" else "switching"
+        reply = QMessageBox.warning(
+            self,
+            "Unsaved Segmentation",
+            f"The current segmentation has unsaved changes.\n\n"
+            f"Do you want to save before {action_word}?",
+            QMessageBox.StandardButton.Save
+            | QMessageBox.StandardButton.Discard
+            | QMessageBox.StandardButton.Cancel,
+            QMessageBox.StandardButton.Save,
+        )
+        if reply == QMessageBox.StandardButton.Cancel:
+            return False
+        if reply == QMessageBox.StandardButton.Save:
+            try:
+                self._sync_tumor_from_viewer()
+                self.session_manager.save_session()
+                print(f"[MainWindow] Segmentation saved before {action_word}.")
+            except Exception as e:
+                print(f"[MainWindow] Save-before-{action_word} failed: {e}")
+        return True
+
     def closeEvent(self, event):
         # Check for unsaved segmentation changes
-        if self._has_unsaved_segmentation():
-            reply = QMessageBox.warning(
-                self,
-                "Unsaved Segmentation",
-                "The current segmentation has unsaved changes.\n\n"
-                "Do you want to save before closing?",
-                QMessageBox.StandardButton.Save
-                | QMessageBox.StandardButton.Discard
-                | QMessageBox.StandardButton.Cancel,
-                QMessageBox.StandardButton.Save,
-            )
-            if reply == QMessageBox.StandardButton.Cancel:
-                event.ignore()
-                return
-            if reply == QMessageBox.StandardButton.Save:
-                try:
-                    self._sync_tumor_from_viewer()
-                    self.session_manager.save_session()
-                    print("[MainWindow] Segmentation saved before exit.")
-                except Exception as e:
-                    print(f"[MainWindow] Save-on-exit failed: {e}")
+        if not self._prompt_unsaved_segmentation("close"):
+            event.ignore()
+            return
 
         # Hide immediately to give feedback to user
         self.hide()

@@ -28,11 +28,25 @@ if "%ENGINE_NNUNET_OLD_CONTAINER%"=="" set "ENGINE_NNUNET_OLD_CONTAINER=engine-n
 if "%ENGINE_AUTOPET_CONTAINER%"=="" set "ENGINE_AUTOPET_CONTAINER=engine-autopet-container"
 if "%ENGINE_TOTALSEG_CONTAINER%"=="" set "ENGINE_TOTALSEG_CONTAINER=engine-totalseg-container"
 
+:: Detect logical CPU core count for numpy thread tuning
+for /f "tokens=2 delims==" %%a in ('wmic cpu get NumberOfLogicalProcessors /value 2^>nul') do (
+    if not "%%a"=="" set "CPU_CORES=%%a"
+)
+if "%CPU_CORES%"=="" set "CPU_CORES=4"
+
+:: Give numpy/OpenBLAS/MKL full access to all cores (helps threshold, merge, copyto ops)
+set "OMP_NUM_THREADS=%CPU_CORES%"
+set "OPENBLAS_NUM_THREADS=%CPU_CORES%"
+set "MKL_NUM_THREADS=%CPU_CORES%"
+set "NUMEXPR_NUM_THREADS=%CPU_CORES%"
+
 set "GPU_FLAG="
+set "QT_OPENGL=desktop"
 nvidia-smi >nul 2>&1
 if !errorlevel! equ 0 (
-    echo NVIDIA GPU detected. Enabling GPU passthrough.
+    echo NVIDIA GPU detected. Enabling GPU passthrough and discrete GPU rendering.
     set "GPU_FLAG=--gpus all"
+    set "CUDA_VISIBLE_DEVICES=0"
 ) else (
     echo No NVIDIA GPU detected. Running CPU mode ^(see README_SETUP.md for GPU^).
 )
@@ -67,9 +81,9 @@ call :wait_for_health %ENGINE_AUTOPET_PORT% "AutoPET Engine"
 call :wait_for_health %ENGINE_TOTALSEG_PORT% "TotalSeg Engine"
 
 echo.
-echo -- Step 4: Launch PyQt GUI --
+echo -- Step 4: Launch PyQt GUI (high priority, %CPU_CORES% cores) --
 cd /d "%SCRIPT_DIR%"
-uv run python -m src.main
+start /wait /high /b "" uv run python -m src.main
 
 echo.
 echo -- Cleanup --
@@ -97,9 +111,9 @@ if !errorlevel! equ 0 (
 
 echo Starting container: !c_name! (port !p_port!)
 if "%GPU_FLAG%"=="" (
-    docker run -d --name "!c_name!" -p "!p_port!:!p_port!" "!i_name!"
+    docker run -d --name "!c_name!" --shm-size=8g -p "!p_port!:!p_port!" "!i_name!"
 ) else (
-    docker run -d --name "!c_name!" %GPU_FLAG% -p "!p_port!:!p_port!" "!i_name!"
+    docker run -d --name "!c_name!" %GPU_FLAG% --shm-size=8g -p "!p_port!:!p_port!" "!i_name!"
 )
 exit /b
 
