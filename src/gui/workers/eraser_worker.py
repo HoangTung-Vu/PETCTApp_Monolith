@@ -1,5 +1,6 @@
 from PyQt6.QtCore import QObject, pyqtSignal, QThread
 import numpy as np
+from skimage.morphology import flood
 
 
 class EraserFloodWorker(QThread):
@@ -38,15 +39,7 @@ class EraserFloodWorker(QThread):
                 self.finished.emit()
                 return
 
-            try:
-                from skimage.morphology import flood
-                component_mask = flood(self.mask_zyx, (z, y, x))
-            except ImportError:
-                from scipy.ndimage import label as nd_label
-                labeled, num_features = nd_label(self.mask_zyx)
-                component_id = labeled[z, y, x]
-                component_mask = (labeled == component_id)
-
+            component_mask = flood(self.mask_zyx, (z, y, x))
             self.component_found.emit(component_mask)
         except Exception as e:
             self.error.emit(f"Eraser Flood Failed: {str(e)}")

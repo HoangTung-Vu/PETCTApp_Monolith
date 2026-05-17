@@ -87,6 +87,8 @@ class RefinementHandlerMixin:
         self._base_preview = None
         self._active_comp_mask = None
         self._active_pet_vals = None
+        self._active_bbox = None
+        self._preview_buffer = None
         self._update_refine_button_states()
         self.control_panel.refine_tab.reset_tools()
 
@@ -312,6 +314,15 @@ class RefinementHandlerMixin:
         self._active_comp_mask = (self._roi_labels == comp["label"])
         self._active_pet_vals = pet_data[self._active_comp_mask]
 
+        # Bounding box of the active component (from find_objects on the ROI labels).
+        # Restricting per-tick work to this bbox cuts the slider-tick cost from
+        # ~O(volume) full copy to O(bbox) — keeps live preview snappy on big volumes.
+        self._active_bbox = self._roi_slices[comp["label"] - 1]
+        # Persistent buffer reused across every slider tick of THIS component.
+        # Same shape as the full mask so downstream `_push_mask_to_all` / napari
+        # `np.copyto` semantics are unchanged.
+        self._preview_buffer = self._base_preview.copy()
+
         # Jump viewer to centroid of this component
         self._jump_to_component(comp["label"])
 
@@ -411,20 +422,35 @@ class RefinementHandlerMixin:
         print(f"[RefineHandler] Jumped to component {label_id} centroid: z={z_napari:.0f}, y={y_napari:.0f}, x={x_napari:.0f}")
 
     def _update_component_preview(self, threshold):
-        """Update the ROI mask in the viewer during threshold adjustment."""
-        # 1. Start with the precomputed static preview parts
-        preview = self._base_preview.copy()
+        """Update the ROI mask in the viewer during threshold adjustment.
 
-        # 2. Fast 1D boolean masking for the active component only
+        Per-tick work is bounded by the active component's bounding box, not by
+        the full volume — so the slider stays responsive on whole-body PET/CT
+        even when the lesion is < 1% of the volume.
+        """
+        buf = self._preview_buffer
+        base = self._base_preview
+        slc = self._active_bbox  # tuple of 3 slice objects from find_objects
+
+        # 1. Restore bbox region from base so this tick is independent of the previous one.
+        buf[slc] = base[slc]
+
+        # 2. Fast 1D boolean masking for the active component only.
         valid_indices = self._active_pet_vals >= threshold
-        
-        # 3. Assign 1D validation back into the 3D footprint
-        preview[self._active_comp_mask] = valid_indices
+
+        # 3. Write current threshold result into the bbox region of the buffer.
+        #    `_active_pet_vals` was extracted from the FULL-volume comp mask in the
+        #    same iteration order numpy uses for boolean fancy-indexing, so the
+        #    same 1D vector can be assigned back via the full-volume mask. We do
+        #    this only inside the bbox to keep the write cheap.
+        buf_crop = buf[slc]
+        mask_crop = self._active_comp_mask[slc]
+        buf_crop[mask_crop] = valid_indices
 
         # Pass a pre-transposed, pre-flipped view to avoid to_napari memory bloat
-        preview_zyx = np.flip(np.transpose(preview, (2, 1, 0)), axis=(0, 1))
+        preview_zyx = np.flip(np.transpose(buf, (2, 1, 0)), axis=(0, 1))
 
-        self._push_mask_to_all("roi", preview, data_zyx=preview_zyx)
+        self._push_mask_to_all("roi", buf, data_zyx=preview_zyx)
 
     def _apply_all_component_thresholds(self):
         """Apply the final per-component thresholds, merge into tumor_mask, clear ROI."""

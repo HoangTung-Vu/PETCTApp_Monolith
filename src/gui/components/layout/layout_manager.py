@@ -812,10 +812,6 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
     # ── Helpers ───────────────────────────────────────────────────────────────
 
-    def _get_visible_viewers(self) -> list:
-        """Alias for backwards compatibility with legacy handler calls."""
-        return self._get_all_loaded_viewers()
-
     def _get_all_loaded_viewers(self) -> list:
         """All pool viewers currently assigned to an active view (+ 3D if loaded)."""
         viewers = [self._fixed_view_map[v_id] for v_id in self._active_views]
