@@ -15,6 +15,11 @@ class MaskSyncMixin:
     """Mixin providing mask data-change event synchronisation."""
 
     sig_mask_painted = pyqtSignal(str)
+    # Fires immediately (no debounce) on every user paint/erase event so
+    # MainWindow can flip a dirty flag without paying for a 300 ms wait.
+    # `update_mask` disconnects events while pushing programmatic data, so
+    # this signal only fires for genuine user mutations.
+    sig_mask_modified = pyqtSignal(str)
 
     def _init_mask_sync(self):
         self._paint_debounce_timer = QTimer()
@@ -81,8 +86,12 @@ class MaskSyncMixin:
             self._visual_throttle_timer.start()
 
         name_to_type = {"Tumor Mask": "tumor", "ROI Mask": "roi"}
-        self._last_painted_layer = name_to_type.get(layer_name, "tumor")
+        layer_type = name_to_type.get(layer_name, "tumor")
+        self._last_painted_layer = layer_type
         self._paint_debounce_timer.start()
+        # Synchronous notification for dirty-flag tracking — must fire even if
+        # the user immediately closes the app before the debounce timer pops.
+        self.sig_mask_modified.emit(layer_type)
 
     def _do_visual_refresh(self):
         for trigger_layer, layer_name in list(self._pending_refresh_layers):

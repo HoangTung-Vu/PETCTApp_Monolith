@@ -29,6 +29,13 @@ class SessionManager:
         # ROI mask for interactive refinement (raw uint8 XYZ array, never saved to disk)
         self.roi_mask: Optional[np.ndarray] = None
 
+        # True when the in-memory tumor mask differs from what's on disk.
+        # Cleared on fresh load_session/create_session/update_current_session
+        # (tumor file path), and on successful save_session.
+        # Set by set_tumor_mask, ensure_roi_mask (zeros init), and by viewer
+        # paint events via MainWindow's sig_mask_modified handler.
+        self.tumor_dirty: bool = False
+
         self.patient_name: str = ""
         self.doctor_name: str = ""
 
@@ -75,6 +82,7 @@ class SessionManager:
 
         self.tumor_mask = nib.load(abs_tumor_seg) if abs_tumor_seg else None
         self.roi_mask = None
+        self.tumor_dirty = False
         self.clear_lesion_data()
 
         print(f"[SessionManager] Created session {self.current_session_id}")
@@ -114,6 +122,8 @@ class SessionManager:
             abs_tumor_seg = str(Path(tumor_seg_path).absolute())
             self.tumor_mask = nib.load(abs_tumor_seg)
             update_kwargs["tumor_seg_path"] = abs_tumor_seg
+            # Fresh load from disk → in-memory matches disk
+            self.tumor_dirty = False
 
         if update_kwargs:
             self.repository.update(self.current_session_id, **update_kwargs)
@@ -156,6 +166,7 @@ class SessionManager:
                 self.tumor_mask = None
 
         self.roi_mask = None
+        self.tumor_dirty = False
         print(f"[SessionManager] Loaded session {session_id}")
 
     def _load_nifti_from_db_path(self, db_path: Optional[str], session_id: int, file_type: str) -> Optional[nib.Nifti1Image]:
@@ -197,6 +208,7 @@ class SessionManager:
 
         nib.save(self.tumor_mask, seg_path)
         self.repository.update(self.current_session_id, tumor_seg_path=str(seg_path))
+        self.tumor_dirty = False
         print(f"[SessionManager] Saved session {self.current_session_id} → {seg_path}")
 
     # ── Data accessors ────────────────────────────────────────────────────
@@ -229,6 +241,7 @@ class SessionManager:
         if self.ct_image is None:
             raise ValueError("CT Image must be loaded to set mask (need affine).")
         self.tumor_mask = nib.Nifti1Image(mask_array.astype(np.uint8), self.ct_image.affine)
+        self.tumor_dirty = True
         self.clear_lesion_data()
 
     def set_roi_mask(self, mask_array: np.ndarray):
@@ -251,6 +264,7 @@ class SessionManager:
                 self.ct_image.affine,
                 self.ct_image.header,
             )
+            self.tumor_dirty = True
         if self.roi_mask is None:
             self.roi_mask = np.zeros(self.ct_image.shape, dtype=np.uint8)
 

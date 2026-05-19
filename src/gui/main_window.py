@@ -224,6 +224,10 @@ class MainWindow(
         # Auto-sync: debounced paint → session manager
         lm.sig_mask_painted.connect(self._on_auto_sync)
 
+        # Immediate (undebounced) paint event → mark tumor dirty so close/switch
+        # can detect unsaved changes without re-reading the disk file.
+        lm.sig_mask_modified.connect(self._on_mask_modified_immediate)
+
         # Global Shortcuts
         self.shortcut_toggle_mask = QShortcut(QKeySequence("s"), self)
         self.shortcut_toggle_mask.activated.connect(self._on_shortcut_toggle_tumor_mask)
@@ -379,8 +383,12 @@ class MainWindow(
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load Segmentation Image", "", "NIfTI files (*.nii.gz *.nii)"
         )
-        if file_path:
-            self._update_session_files(tumor_seg_path=Path(file_path))
+        if not file_path:
+            return
+        # Loading a new seg replaces the in-memory tumor mask — prompt first.
+        if not self._prompt_unsaved_segmentation("switch"):
+            return
+        self._update_session_files(tumor_seg_path=Path(file_path))
 
     def _update_session_files(self, ct_path=None, pet_path=None, tumor_seg_path=None):
         """Spawns worker to load CT/PET/Seg to prevent UI block."""
@@ -514,38 +522,25 @@ class MainWindow(
         # but disabling the whole tab widget is safer.
         print(f"[MainWindow] UI Busy: {busy}")
 
-    def _has_unsaved_segmentation(self) -> bool:
-        """Compare in-memory tumor mask with the on-disk .nii file.
+    def _on_mask_modified_immediate(self, layer_type: str):
+        """Fire on every user paint/erase event — mark tumor dirty O(1).
 
-        Returns True if they differ (unsaved changes exist).
+        ROI mask is volatile and never persisted, so only ``tumor`` matters.
         """
-        import numpy as np
-        import nibabel as nib
+        if layer_type == "tumor" and self.session_manager.current_session_id is not None:
+            self.session_manager.tumor_dirty = True
 
+    def _has_unsaved_segmentation(self) -> bool:
+        """O(1) dirty-flag check — no disk I/O, no viewer touch.
+
+        The flag is set by ``SessionManager.set_tumor_mask`` /
+        ``ensure_roi_mask`` and by ``_on_mask_modified_immediate`` (viewer
+        paint), and cleared by ``save_session`` / fresh disk load.
+        """
         sm = self.session_manager
         if sm.current_session_id is None or sm.tumor_mask is None:
             return False
-
-        # Pull the latest painted data from the viewer into session_manager
-        # (auto-sync skips this for performance during painting)
-        self._sync_tumor_from_viewer()
-
-        session = sm.repository.get_by_id(sm.current_session_id)
-        if session is None or not session.tumor_seg_path:
-            # No file on disk yet — in-memory mask counts as unsaved
-            return True
-
-        disk_path = Path(session.tumor_seg_path)
-        if not disk_path.exists():
-            return True
-
-        try:
-            disk_data = np.asarray(nib.load(disk_path).dataobj, dtype=np.uint8)
-            mem_data = np.asarray(sm.tumor_mask.dataobj, dtype=np.uint8)
-            return not np.array_equal(disk_data, mem_data)
-        except Exception as e:
-            print(f"[MainWindow] Could not compare masks: {e}")
-            return False
+        return sm.tumor_dirty
 
     def _prompt_unsaved_segmentation(self, context: str) -> bool:
         """Prompt user if current segmentation is dirty.

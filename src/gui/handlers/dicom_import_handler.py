@@ -84,6 +84,10 @@ class DicomImportHandlerMixin:
             )
             return
 
+        # DICOM import creates a new session — prompt to save unsaved tumor first.
+        if not self._prompt_unsaved_segmentation("switch"):
+            return
+
         self._reset_all_state()
 
         from ..workers.data_loader_worker import DataLoaderWorker

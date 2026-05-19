@@ -70,6 +70,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
     sig_eraser_region_removed   = pyqtSignal(object, object, object)
     sig_eraser_background_click = pyqtSignal()
     sig_mask_painted            = pyqtSignal(str)
+    sig_mask_modified           = pyqtSignal(str)
     sig_shape_committed         = pyqtSignal(str)
     sig_cursor_intensity        = pyqtSignal(str)
 

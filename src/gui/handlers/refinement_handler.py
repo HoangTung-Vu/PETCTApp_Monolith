@@ -647,10 +647,19 @@ class RefinementHandlerMixin:
         self.layout_manager.sync_mask_cache(mask_data, "roi")
 
     def _sync_tumor_from_viewer(self):
-        """Pull Tumor mask from active viewer and sync to session manager."""
-        # Auto-commit manual shapes trên tumor mask (if any)
+        """Pull Tumor mask from active viewer and sync to session manager.
+
+        Short-circuits when ``tumor_dirty`` is False — no paint event has
+        fired since the last save/load, so the viewer data already matches
+        ``session_manager.tumor_mask``. This avoids a spurious dirty bump
+        on every tab change. Shape commits still flow through napari's
+        data event, which sets ``tumor_dirty`` before we get here.
+        """
         self.layout_manager.commit_shape("tumor")
-        
+
+        if not self.session_manager.tumor_dirty:
+            return
+
         mask_data = self.layout_manager.get_active_mask_data("tumor")
         if mask_data is None:
             return
