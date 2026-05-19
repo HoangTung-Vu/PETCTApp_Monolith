@@ -1,9 +1,8 @@
 import nibabel as nib
-import numpy as np
 import httpx
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from ...utils.nifti_utils import bytes_to_nifti, bytes_to_npz, make_nifti_upload
+from ...utils.nifti_utils import bytes_to_nifti, make_nifti_upload
 from .core import (
     ENGINE_NNUNET_URL,
     ENGINE_NNUNET_URL_PRETRAINED,
@@ -33,23 +32,18 @@ class SegmentationWorker(QThread):
                     images = self.images if isinstance(self.images, list) else [self.images]
                     files = [make_nifti_upload(img, f"image_{i}.nii.gz") for i, img in enumerate(images)]
 
+                    # /run_nib returns a uint8 mask (~5-20 MB) instead of float32 prob (200-400 MB).
+                    # Downstream only thresholds at 0.5 and discards prob, so the lighter endpoint
+                    # is strictly better: no server-side npz packing, ~20x smaller payload.
                     with httpx.Client(timeout=HTTP_TIMEOUT) as client:
                         response = client.post(
-                            f"{ENGINE_NNUNET_URL}/run_nib_prob",
+                            f"{ENGINE_NNUNET_URL}/run_nib",
                             files=files,
-                            data={"single_channel": "true"},
                         )
                         response.raise_for_status()
 
-                    npz = bytes_to_npz(response.content)
-                    prob = npz["prob"]
-                    affine = npz["affine"]
-
-                    mask_array = (prob >= 0.5).astype(np.uint8)
-                    # Use affine returned by the engine — it may have resampled the input,
-                    # so the server's affine is the authoritative spatial mapping for prob/mask.
-                    mask_nib = nib.Nifti1Image(mask_array, affine)
-                    self.finished.emit((mask_nib, prob, "tumor"))
+                    mask_nib = bytes_to_nifti(response.content)
+                    self.finished.emit((mask_nib, None, "tumor"))
 
                 elif self.engine_type == "tumor_pretrained":
                     images = self.images if isinstance(self.images, list) else [self.images]

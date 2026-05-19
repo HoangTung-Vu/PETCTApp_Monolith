@@ -12,29 +12,18 @@ if exist ".env" (
     echo Warning: .env file not found, using defaults.
 )
 
-:: [1] Configuration Variables
-if "%ENGINE_NNUNET_PORT%"=="" set "ENGINE_NNUNET_PORT=8101"
-if "%ENGINE_NNUNET_OLD_PORT%"=="" set "ENGINE_NNUNET_OLD_PORT=8104"
-if "%ENGINE_AUTOPET_PORT%"=="" set "ENGINE_AUTOPET_PORT=8102"
-if "%ENGINE_TOTALSEG_PORT%"=="" set "ENGINE_TOTALSEG_PORT=8103"
-
+:: [1] Configuration
+if "%ENGINE_NNUNET_PORT%"=="" set "ENGINE_NNUNET_PORT=8104"
 if "%ENGINE_NNUNET_IMAGE%"=="" set "ENGINE_NNUNET_IMAGE=engine-nnunet"
-if "%ENGINE_NNUNET_OLD_IMAGE%"=="" set "ENGINE_NNUNET_OLD_IMAGE=engine-nnunet-old-ver"
-if "%ENGINE_AUTOPET_IMAGE%"=="" set "ENGINE_AUTOPET_IMAGE=engine-autopet"
-if "%ENGINE_TOTALSEG_IMAGE%"=="" set "ENGINE_TOTALSEG_IMAGE=engine-totalseg"
-
 if "%ENGINE_NNUNET_CONTAINER%"=="" set "ENGINE_NNUNET_CONTAINER=engine-nnunet-container"
-if "%ENGINE_NNUNET_OLD_CONTAINER%"=="" set "ENGINE_NNUNET_OLD_CONTAINER=engine-nnunet-old-ver-container"
-if "%ENGINE_AUTOPET_CONTAINER%"=="" set "ENGINE_AUTOPET_CONTAINER=engine-autopet-container"
-if "%ENGINE_TOTALSEG_CONTAINER%"=="" set "ENGINE_TOTALSEG_CONTAINER=engine-totalseg-container"
 
-:: Detect logical CPU core count for numpy thread tuning
+:: Detect logical CPU core count for numpy/torch thread tuning
 for /f "tokens=2 delims==" %%a in ('wmic cpu get NumberOfLogicalProcessors /value 2^>nul') do (
     if not "%%a"=="" set "CPU_CORES=%%a"
 )
 if "%CPU_CORES%"=="" set "CPU_CORES=4"
 
-:: Give numpy/OpenBLAS/MKL full access to all cores (helps threshold, merge, copyto ops)
+:: Give numpy/OpenBLAS/MKL full access to all cores (host-side; container env is set separately)
 set "OMP_NUM_THREADS=%CPU_CORES%"
 set "OPENBLAS_NUM_THREADS=%CPU_CORES%"
 set "MKL_NUM_THREADS=%CPU_CORES%"
@@ -52,33 +41,25 @@ if !errorlevel! equ 0 (
 )
 
 echo =====================================
-echo   PET/CT Segmentation App Launcher (Windows)
+echo   PET/CT Segmentation App Launcher (Windows / WSL2)
 echo =====================================
 
 echo.
-echo -- Step 1: Building Docker images --
+echo -- Step 1: Building Docker image --
 echo Building Docker image: %ENGINE_NNUNET_IMAGE% ...
-docker build -t "%ENGINE_NNUNET_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_nnunet"
-echo Building Docker image: %ENGINE_NNUNET_OLD_IMAGE% ...
-docker build -t "%ENGINE_NNUNET_OLD_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_nnunet_old_ver"
-echo Building Docker image: %ENGINE_AUTOPET_IMAGE% ...
-docker build -t "%ENGINE_AUTOPET_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_autopet"
-echo Building Docker image: %ENGINE_TOTALSEG_IMAGE% ...
-docker build -t "%ENGINE_TOTALSEG_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_totalseg"
+docker build -t "%ENGINE_NNUNET_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_nnunet_old_ver"
 
 echo.
-echo -- Step 2: Starting containers --
+echo -- Step 2: Starting container --
+:: NOTE: On Windows the Docker daemon runs in WSL2. We must keep -p port mapping
+:: so the Windows-side Python GUI can reach the container via localhost; --network host
+:: would expose ports only inside the WSL2 VM and break the Windows-host connection.
+:: (If you've enabled WSL2 mirrored networking in .wslconfig you can switch to --network host.)
 call :start_container %ENGINE_NNUNET_CONTAINER% %ENGINE_NNUNET_IMAGE% %ENGINE_NNUNET_PORT%
-call :start_container %ENGINE_NNUNET_OLD_CONTAINER% %ENGINE_NNUNET_OLD_IMAGE% %ENGINE_NNUNET_OLD_PORT%
-call :start_container %ENGINE_AUTOPET_CONTAINER% %ENGINE_AUTOPET_IMAGE% %ENGINE_AUTOPET_PORT%
-call :start_container %ENGINE_TOTALSEG_CONTAINER% %ENGINE_TOTALSEG_IMAGE% %ENGINE_TOTALSEG_PORT%
 
 echo.
-echo -- Step 3: Health checks --
+echo -- Step 3: Health check (waits for model preload) --
 call :wait_for_health %ENGINE_NNUNET_PORT% "nnUNet Engine"
-call :wait_for_health %ENGINE_NNUNET_OLD_PORT% "nnUNet Old Engine"
-call :wait_for_health %ENGINE_AUTOPET_PORT% "AutoPET Engine"
-call :wait_for_health %ENGINE_TOTALSEG_PORT% "TotalSeg Engine"
 
 echo.
 echo -- Step 4: Launch PyQt GUI (high priority, %CPU_CORES% cores) --
@@ -87,9 +68,9 @@ start /wait /high /b "" uv run python -m src.main
 
 echo.
 echo -- Cleanup --
-echo Stopping engine containers...
-docker stop %ENGINE_NNUNET_CONTAINER% %ENGINE_NNUNET_OLD_CONTAINER% %ENGINE_AUTOPET_CONTAINER% %ENGINE_TOTALSEG_CONTAINER% >nul 2>&1
-docker rm %ENGINE_NNUNET_CONTAINER% %ENGINE_NNUNET_OLD_CONTAINER% %ENGINE_AUTOPET_CONTAINER% %ENGINE_TOTALSEG_CONTAINER% >nul 2>&1
+echo Stopping engine container...
+docker stop %ENGINE_NNUNET_CONTAINER% >nul 2>&1
+docker rm %ENGINE_NNUNET_CONTAINER% >nul 2>&1
 echo Done.
 
 exit /b
@@ -109,18 +90,31 @@ if !errorlevel! equ 0 (
     docker rm "%c_name%" >nul 2>&1
 )
 
-echo Starting container: !c_name! (port !p_port!)
-if "%GPU_FLAG%"=="" (
-    docker run -d --name "!c_name!" --shm-size=8g -p "!p_port!:!p_port!" "!i_name!"
-) else (
-    docker run -d --name "!c_name!" %GPU_FLAG% --shm-size=8g -p "!p_port!:!p_port!" "!i_name!"
-)
+echo Starting container: !c_name! (max resources, port !p_port!, %CPU_CORES% cores)
+:: --ipc=host           : share host /dev/shm (no cap on PyTorch shared memory).
+:: --ulimit memlock=-1  : unlimited pinned memory for CUDA DMA.
+:: --ulimit stack=64MB  : larger stack for torch ops.
+:: -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True : reduces VRAM fragmentation.
+:: -e PYTHONUNBUFFERED=1 : flush prints (useful when tailing logs).
+:: -e OMP/MKL/...      : let CPU ops in container use all host cores.
+docker run -d --name "!c_name!" %GPU_FLAG% ^
+    --ipc=host ^
+    --ulimit memlock=-1:-1 ^
+    --ulimit stack=67108864 ^
+    -e PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True ^
+    -e PYTHONUNBUFFERED=1 ^
+    -e OMP_NUM_THREADS=%CPU_CORES% ^
+    -e MKL_NUM_THREADS=%CPU_CORES% ^
+    -e OPENBLAS_NUM_THREADS=%CPU_CORES% ^
+    -e NUMEXPR_NUM_THREADS=%CPU_CORES% ^
+    -p "!p_port!:!p_port!" "!i_name!"
 exit /b
 
 :wait_for_health
 set "h_port=%~1"
 set "h_name=%~2"
-set /a max_wait=60
+:: Startup preloads model weights to VRAM; bump timeout from 60s to 180s.
+set /a max_wait=180
 set /a waited=0
 
 <nul set /p "=Waiting for !h_name! (port !h_port!) "

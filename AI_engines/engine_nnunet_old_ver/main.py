@@ -1,5 +1,6 @@
 """nnUNet Engine Backend — FastAPI server with 8 segmentation endpoints."""
 
+import gzip
 import io
 import traceback
 from typing import List
@@ -13,13 +14,18 @@ from src.engine import NNUNetEngine
 
 app = FastAPI(title="nnUNet Engine Old Ver", version="0.1.0")
 
-# Lazy-initialized engines (heavy model loading on first request)
+# Singleton engine cache — model weights live here for the process lifetime.
 _engines: dict[str, NNUNetEngine] = {}
 
 MODELS = [
     "nnUNetTrainer_150epochs__nnUNetPlans__3d_fullres",
     "nnUNetTrainerDicewBCELoss_1vs50_150ep__nnUNetPlans__3d_fullres"
 ]
+
+# Models to warm-load into VRAM at startup. Edit env to skip unused ones and save VRAM.
+import os as _os
+_preload = _os.getenv("PRELOAD_MODELS")
+PRELOAD_MODELS = [m.strip() for m in _preload.split(",")] if _preload else MODELS
 
 
 def get_engine(model_name: str) -> NNUNetEngine:
@@ -29,16 +35,27 @@ def get_engine(model_name: str) -> NNUNetEngine:
     return _engines[model_name]
 
 
-def _load_nifti_from_upload(file: UploadFile) -> nib.Nifti1Image:
-    """Read an uploaded .nii.gz file into a nibabel Nifti1Image."""
-    data = file.file.read()
-    # Decompress if it's a .nii.gz
-    if file.filename and file.filename.endswith(".gz"):
-        import gzip
+@app.on_event("startup")
+def preload_models():
+    """Warm-load model weights to VRAM so first request is not paying init cost."""
+    print(f"[startup] Pre-loading {len(PRELOAD_MODELS)} model(s) into VRAM...")
+    for model_name in PRELOAD_MODELS:
         try:
-            data = gzip.decompress(data)
-        except OSError:
-            pass # Maybe not actually gzipped
+            engine = get_engine(model_name)
+            engine._init_predictor()
+            print(f"[startup] OK loaded: {model_name}")
+        except Exception as e:
+            traceback.print_exc()
+            print(f"[startup] FAILED to load {model_name}: {e}")
+
+
+def _load_nifti_from_upload(file: UploadFile) -> nib.Nifti1Image:
+    """Read an uploaded NIfTI upload (gzipped or raw) into a nibabel Nifti1Image."""
+    data = file.file.read()
+    # Detect gzip via magic bytes (1f 8b) instead of filename — filename is unreliable
+    # and the failing try/except on every request was wasted CPU.
+    if data[:2] == b"\x1f\x8b":
+        data = gzip.decompress(data)
     fh = nib.FileHolder(fileobj=io.BytesIO(data))
     return nib.Nifti1Image.from_file_map({"header": fh, "image": fh})
 
@@ -52,11 +69,14 @@ def _nifti_to_bytes(img: nib.Nifti1Image) -> bytes:
 
 
 def _npz_response(prob: np.ndarray, affine: np.ndarray) -> Response:
-    """Pack a probability array + affine into a .npz response."""
+    """Pack a probability array + affine into a .npz response.
+
+    Uses np.savez (no compression) — on localhost transfer is ~100x faster than
+    the zlib pass np.savez_compressed would do on 200-400MB of float32.
+    """
     bio = io.BytesIO()
-    np.savez_compressed(bio, prob=prob, affine=affine)
-    bio.seek(0)
-    return Response(content=bio.read(), media_type="application/octet-stream",
+    np.savez(bio, prob=prob, affine=affine)
+    return Response(content=bio.getvalue(), media_type="application/octet-stream",
                     headers={"Content-Disposition": "attachment; filename=result.npz"})
 
 
