@@ -84,12 +84,13 @@ class NNUNetEngine:
             arr = arr.transpose([2, 1, 0])  # X,Y,Z -> Z,Y,X
             img_arrays.append(arr)
 
-        stacked = np.stack(img_arrays, axis=0)  # (C, Z, Y, X)
+        # nibabel applies scl_slope/scl_inter in float64 — force float32 to match conv weights.
+        stacked = np.stack(img_arrays, axis=0).astype(np.float32, copy=False)  # (C, Z, Y, X)
 
         spacing = ref_img.header.get_zooms()[:3]
         props = {'spacing': spacing[::-1]}
 
-        print(f"[nnUNet] Input shape: {stacked.shape}, spacing: {props['spacing']}")
+        print(f"[nnUNet] Input shape: {stacked.shape}, dtype: {stacked.dtype}, spacing: {props['spacing']}")
 
         pred_array = self.predictor.predict_single_npy_array(
             stacked, props, None, None, False
@@ -128,12 +129,12 @@ class NNUNetEngine:
             arr = arr.transpose([2, 1, 0])
             img_arrays.append(arr)
 
-        stacked = np.stack(img_arrays, axis=0)
+        stacked = np.stack(img_arrays, axis=0).astype(np.float32, copy=False)
 
         spacing = ref_img.header.get_zooms()[:3]
         props = {'spacing': spacing[::-1]}
 
-        print(f"[nnUNet] Input shape: {stacked.shape}, spacing: {props['spacing']}")
+        print(f"[nnUNet] Input shape: {stacked.shape}, dtype: {stacked.dtype}, spacing: {props['spacing']}")
 
         seg, prob = self.predictor.predict_single_npy_array(
             stacked, props, None, None, True
