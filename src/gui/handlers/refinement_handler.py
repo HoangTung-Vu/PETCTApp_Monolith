@@ -202,15 +202,6 @@ class RefinementHandlerMixin:
             QMessageBox.warning(self, "Missing Data", "PET image required for Iterative Thresholding.")
             return
 
-        tumor_data = self.session_manager.get_tumor_mask_data()
-        if tumor_data is None or not np.any(tumor_data):
-            QMessageBox.warning(
-                self, "Missing Data",
-                "No tumor mask available. Iterative thresholding needs an existing non-empty mask\n"
-                "for background estimation. Run segmentation first or use Adaptive Thresholding."
-            )
-            return
-
         self._sync_roi_from_viewer()
 
         roi_mask = self.session_manager.get_roi_mask_data()
