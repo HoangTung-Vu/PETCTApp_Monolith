@@ -518,9 +518,24 @@ class MainWindow(
     def _set_ui_busy(self, busy: bool):
         """Enable/Disable interactive controls during background tasks."""
         self.control_panel.tabs.setEnabled(not busy)
-        # Also disable important action buttons specifically if needed, 
+        # Also disable important action buttons specifically if needed,
         # but disabling the whole tab widget is safer.
         print(f"[MainWindow] UI Busy: {busy}")
+
+    def _lock_seg_eraser_tabs(self, locked: bool):
+        """Lock only the Segmentation (Refine) + Eraser tabs during inference.
+
+        Unlike ``_set_ui_busy`` (which disables the whole control panel), this
+        keeps every viewing feature usable while a segmentation job runs — only
+        the two editing tabs that would conflict with an in-flight mask are
+        disabled. If one of them is currently shown, fall back to the Workflow
+        tab so the user isn't left on a disabled page.
+        """
+        tabs = self.control_panel.tabs
+        if locked and tabs.currentIndex() in (self._TAB_REFINE, self._TAB_ERASER):
+            tabs.setCurrentIndex(self._TAB_WORKFLOW)
+        tabs.setTabEnabled(self._TAB_REFINE, not locked)
+        tabs.setTabEnabled(self._TAB_ERASER, not locked)
 
     def _on_mask_modified_immediate(self, layer_type: str):
         """Fire on every user paint/erase event — mark tumor dirty O(1).

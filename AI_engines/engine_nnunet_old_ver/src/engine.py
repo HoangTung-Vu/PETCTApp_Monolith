@@ -57,7 +57,7 @@ class NNUNetEngine:
             device=torch.device(self.device),
             verbose=False,
             verbose_preprocessing=False,
-            allow_tqdm=True
+            allow_tqdm=False  # progress flows via _progress_callback, not the terminal tqdm bar
         )
 
         model_folder = self._find_model_folder()
@@ -67,8 +67,13 @@ class NNUNetEngine:
 
     # ── run: accepts NIfTI bytes (deserialized as nib images) ──
 
-    def run(self, images: Union[nib.Nifti1Image, List[nib.Nifti1Image]]) -> nib.Nifti1Image:
-        """Run segmentation on nibabel images. Returns binary mask as Nifti1Image."""
+    def run(self, images: Union[nib.Nifti1Image, List[nib.Nifti1Image]],
+            progress_callback=None) -> nib.Nifti1Image:
+        """Run segmentation on nibabel images. Returns binary mask as Nifti1Image.
+
+        ``progress_callback(done, total)`` is invoked once per inference patch
+        (and once more at completion) so callers can surface live progress.
+        """
         self._init_predictor()
 
         if isinstance(images, nib.Nifti1Image):
@@ -92,9 +97,13 @@ class NNUNetEngine:
 
         print(f"[nnUNet] Input shape: {stacked.shape}, dtype: {stacked.dtype}, spacing: {props['spacing']}")
 
-        pred_array = self.predictor.predict_single_npy_array(
-            stacked, props, None, None, False
-        )
+        self.predictor._progress_callback = progress_callback
+        try:
+            pred_array = self.predictor.predict_single_npy_array(
+                stacked, props, None, None, False
+            )
+        finally:
+            self.predictor._progress_callback = None
 
         if pred_array.ndim == 4 and pred_array.shape[0] == 1:
             pred_array = pred_array[0]
