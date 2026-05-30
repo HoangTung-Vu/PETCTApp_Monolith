@@ -12,8 +12,8 @@ fi
 
 # [1] Configuration
 NNUNET_PORT="${ENGINE_NNUNET_PORT:-8104}"
-NNUNET_IMAGE="${ENGINE_NNUNET_IMAGE:-engine-nnunet}"
-NNUNET_CONTAINER="${ENGINE_NNUNET_CONTAINER:-engine-nnunet-container}"
+NNUNET_IMAGE="${ENGINE_NNUNET_IMAGE:-nnunet-engine}"
+NNUNET_CONTAINER="${ENGINE_NNUNET_CONTAINER:-nnunet-engine-container}"
 
 # Detect logical CPU count for numpy/torch thread tuning
 CPU_CORES="$(nproc 2>/dev/null || echo 4)"

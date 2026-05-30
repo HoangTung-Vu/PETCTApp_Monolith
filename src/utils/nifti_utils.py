@@ -1,4 +1,5 @@
 """Utility functions for NIfTI image handling."""
+import gzip
 import io
 from pathlib import Path
 from typing import Optional
@@ -164,9 +165,29 @@ def nifti_to_bytes(img: nib.Nifti1Image) -> bytes:
 
 
 def bytes_to_nifti(data: bytes) -> nib.Nifti1Image:
-    """Deserialize .nii.gz bytes to a nibabel Nifti1Image."""
-    fh = nib.FileHolder(fileobj=io.BytesIO(data))
-    return nib.Nifti1Image.from_file_map({"header": fh, "image": fh})
+    """Deserialize NIfTI bytes (gzipped or raw) to a nibabel Nifti1Image.
+
+    The engine gzip-compresses the mask body (no Content-Encoding header, so httpx
+    does not auto-decompress). Reading from a BytesIO via from_file_map skips
+    nibabel's filename-based gzip path, so we detect the gzip magic (1f 8b) and
+    decompress here — staying backward-compatible with raw NIfTI bytes.
+
+    On failure, re-raise a ValueError carrying the payload size + first bytes so a
+    truncated / empty / non-NIfTI response is diagnosable, instead of surfacing as
+    a bare gzip or nibabel struct error with no context.
+    """
+    gzipped = data[:2] == b"\x1f\x8b"
+    try:
+        if gzipped:
+            data = gzip.decompress(data)
+        fh = nib.FileHolder(fileobj=io.BytesIO(data))
+        return nib.Nifti1Image.from_file_map({"header": fh, "image": fh})
+    except Exception as e:
+        head = data[:8].hex(" ") or "(empty)"
+        raise ValueError(
+            f"Cannot parse NIfTI mask from {len(data)} bytes "
+            f"(gzip={gzipped}, head={head}): {type(e).__name__}: {e}"
+        ) from e
 
 
 def bytes_to_npz(data: bytes) -> dict:

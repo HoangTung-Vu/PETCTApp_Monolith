@@ -96,6 +96,30 @@ class WorkflowTab(QWidget):
         grp_actions.setLayout(action_layout)
         layout.addWidget(grp_actions)
 
+        # ── AI Engine ──
+        grp_engine = QGroupBox("AI Engine")
+        engine_layout = QFormLayout()
+
+        from ...workers.core import get_engine_ip, get_engine_port, set_engine_endpoint
+        self._set_engine_endpoint = set_engine_endpoint
+
+        self.input_engine_host = QLineEdit(get_engine_ip())
+        self.input_engine_host.setPlaceholderText("localhost or 202.122.49.242")
+        self.input_engine_host.returnPressed.connect(self._apply_engine_host)
+        engine_layout.addRow("IP:", self.input_engine_host)
+
+        self.input_engine_port = QLineEdit(get_engine_port())
+        self.input_engine_port.setPlaceholderText("8104")
+        self.input_engine_port.returnPressed.connect(self._apply_engine_host)
+        engine_layout.addRow("Port:", self.input_engine_port)
+
+        self.btn_apply_engine = QPushButton("Apply")
+        self.btn_apply_engine.clicked.connect(self._apply_engine_host)
+        engine_layout.addRow(self.btn_apply_engine)
+
+        grp_engine.setLayout(engine_layout)
+        layout.addWidget(grp_engine)
+
         # ── Report Section ──
         grp_report = QGroupBox("Report")
         report_layout = QVBoxLayout()
@@ -150,6 +174,15 @@ class WorkflowTab(QWidget):
         pat = self.input_patient.text().strip()
         resample_mode = self.combo_resample_mode.currentData()
         self.sig_load_from_dicom.emit(folder, doc, pat, resample_mode)
+
+    def _apply_engine_host(self):
+        # Persist + clean via the config setter, then reflect the cleaned
+        # IP/port back into the fields.
+        ip, port = self._set_engine_endpoint(
+            self.input_engine_host.text(), self.input_engine_port.text()
+        )
+        self.input_engine_host.setText(ip)
+        self.input_engine_port.setText(port)
 
     def _emit_load_session(self):
         data = self.combo_sessions.currentData()
