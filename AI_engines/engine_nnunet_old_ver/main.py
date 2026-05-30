@@ -76,11 +76,18 @@ def _load_nifti_from_upload(file: UploadFile) -> nib.Nifti1Image:
 
 
 def _nifti_to_bytes(img: nib.Nifti1Image) -> bytes:
-    """Serialize a nibabel Nifti1Image to .nii.gz bytes."""
+    """Serialize a nibabel Nifti1Image to gzipped .nii.gz bytes.
+
+    to_file_map() into a BytesIO writes *uncompressed* NIfTI (no .gz extension to
+    trigger nibabel's gzip path). The lesion mask is a sparse uint8 full-volume,
+    so gzip shrinks it ~1000x — the difference between a slow and instant download
+    once the engine runs on a remote/cloud host. The client auto-detects the gzip
+    magic bytes and decompresses on receipt.
+    """
     bio = io.BytesIO()
     file_map = img.make_file_map({"image": bio, "header": bio})
     img.to_file_map(file_map)
-    return bio.getvalue()
+    return gzip.compress(bio.getvalue(), compresslevel=6)
 
 
 def _npz_response(prob: np.ndarray, affine: np.ndarray) -> Response:
