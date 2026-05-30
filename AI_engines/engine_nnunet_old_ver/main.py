@@ -1,69 +1,69 @@
-"""nnUNet Engine Backend — FastAPI server with 8 segmentation endpoints."""
+"""nnUNet Engine Backend — FastAPI server.
+
+One model is active at a time, served by a pool of N concurrent engine workers
+(N derived from free VRAM). Requests beyond N queue. Calling an inference
+endpoint for a non-active model transparently switches the active model.
+"""
 
 import gzip
 import io
+import logging
+import os
 import threading
 import traceback
 import uuid
-from concurrent.futures import ThreadPoolExecutor
 from typing import List
 
 import nibabel as nib
 import numpy as np
 from fastapi import FastAPI, UploadFile, File, Form, HTTPException
 from fastapi.responses import Response
+from pydantic import BaseModel
 
-from src.engine import NNUNetEngine
+from src.pool import EnginePool, ModelBusyError
 
-app = FastAPI(title="nnUNet Engine Old Ver", version="0.1.0")
+# ──── Logging (all levels via ENGINE_LOG_LEVEL, default INFO) ────
+logging.basicConfig(
+    level=os.getenv("ENGINE_LOG_LEVEL", "INFO").upper(),
+    format="%(asctime)s %(levelname)-7s [%(name)s] %(message)s",
+)
+logger = logging.getLogger("engine.api")
 
-# Singleton engine cache — model weights live here for the process lifetime.
-_engines: dict[str, NNUNetEngine] = {}
+app = FastAPI(title="nnUNet Engine Old Ver", version="0.2.0")
+
+MODELS = [
+    "nnUNetTrainer_150epochs__nnUNetPlans__3d_fullres",
+    "nnUNetTrainerDicewBCELoss_1vs50_150ep__nnUNetPlans__3d_fullres",
+]
+
+# Default active model: from .env (client uses this one), else the DicewBCELoss variant.
+DEFAULT_MODEL = os.getenv("ENGINE_NNUNET_MODEL", MODELS[1])
+
+# The pool owns all engines + the inference executor for the active model.
+POOL = EnginePool(models=MODELS, default_model=DEFAULT_MODEL, device="auto")
 
 # ──── Async job registry (polling API) ────
 # Each job: {status: queued|running|done|error, stage, progress(0-100), detail, result(bytes)}
 _jobs: dict[str, dict] = {}
 _jobs_lock = threading.Lock()
-# One inference at a time — the GPU/predictor is shared, so jobs queue here. This
-# also makes setting predictor._progress_callback race-free (single active job).
-_executor = ThreadPoolExecutor(max_workers=1)
-
-MODELS = [
-    "nnUNetTrainer_150epochs__nnUNetPlans__3d_fullres",
-    "nnUNetTrainerDicewBCELoss_1vs50_150ep__nnUNetPlans__3d_fullres"
-]
-
-# Models to warm-load into VRAM at startup. Edit env to skip unused ones and save VRAM.
-import os as _os
-_preload = _os.getenv("PRELOAD_MODELS")
-PRELOAD_MODELS = [m.strip() for m in _preload.split(",")] if _preload else MODELS
-
-
-def get_engine(model_name: str) -> NNUNetEngine:
-    global _engines
-    if model_name not in _engines:
-        _engines[model_name] = NNUNetEngine(model_name=model_name, device="auto")
-    return _engines[model_name]
 
 
 @app.on_event("startup")
-def preload_models():
-    """Warm-load model weights to VRAM so first request is not paying init cost."""
-    print(f"[startup] Pre-loading {len(PRELOAD_MODELS)} model(s) into VRAM...")
-    for model_name in PRELOAD_MODELS:
-        try:
-            engine = get_engine(model_name)
-            engine._init_predictor()
-            print(f"[startup] OK loaded: {model_name}")
-        except Exception as e:
-            traceback.print_exc()
-            print(f"[startup] FAILED to load {model_name}: {e}")
+def on_startup():
+    """Load the default model into the pool (estimate VRAM + spawn N workers)."""
+    logger.info("Starting nnUNet engine | default model=%s | device=%s", DEFAULT_MODEL, POOL.device)
+    try:
+        POOL.ensure_model(DEFAULT_MODEL)
+        logger.info("Startup complete: %s", POOL.status())
+    except Exception:
+        logger.exception("Failed to initialize default model '%s' at startup", DEFAULT_MODEL)
 
+
+# ──── NIfTI (de)serialization ────
 
 def _load_nifti_from_bytes(data: bytes) -> nib.Nifti1Image:
     """Deserialize NIfTI bytes (gzipped or raw) into a nibabel Nifti1Image."""
-    # Detect gzip via magic bytes (1f 8b) instead of filename — filename is unreliable
-    # and the failing try/except on every request was wasted CPU.
+    # Detect gzip via magic bytes (1f 8b) instead of filename — filename is unreliable.
     if data[:2] == b"\x1f\x8b":
         data = gzip.decompress(data)
     fh = nib.FileHolder(fileobj=io.BytesIO(data))
@@ -71,18 +71,15 @@ def _load_nifti_from_bytes(data: bytes) -> nib.Nifti1Image:
 
 
 def _load_nifti_from_upload(file: UploadFile) -> nib.Nifti1Image:
-    """Read an uploaded NIfTI upload (gzipped or raw) into a nibabel Nifti1Image."""
+    """Read an uploaded NIfTI file (gzipped or raw) into a nibabel Nifti1Image."""
     return _load_nifti_from_bytes(file.file.read())
 
 
 def _nifti_to_bytes(img: nib.Nifti1Image) -> bytes:
     """Serialize a nibabel Nifti1Image to gzipped .nii.gz bytes.
 
-    to_file_map() into a BytesIO writes *uncompressed* NIfTI (no .gz extension to
-    trigger nibabel's gzip path). The lesion mask is a sparse uint8 full-volume,
-    so gzip shrinks it ~1000x — the difference between a slow and instant download
-    once the engine runs on a remote/cloud host. The client auto-detects the gzip
-    magic bytes and decompresses on receipt.
+    The lesion mask is a sparse uint8 full-volume, so gzip shrinks it ~1000x.
+    The client auto-detects the gzip magic bytes and decompresses on receipt.
     """
     bio = io.BytesIO()
     file_map = img.make_file_map({"image": bio, "header": bio})
@@ -91,11 +88,7 @@ def _nifti_to_bytes(img: nib.Nifti1Image) -> bytes:
 
 
 def _npz_response(prob: np.ndarray, affine: np.ndarray) -> Response:
-    """Pack a probability array + affine into a .npz response.
-
-    Uses np.savez (no compression) — on localhost transfer is ~100x faster than
-    the zlib pass np.savez_compressed would do on 200-400MB of float32.
-    """
+    """Pack a probability array + affine into a .npz response (no compression)."""
     bio = io.BytesIO()
     np.savez(bio, prob=prob, affine=affine)
     return Response(content=bio.getvalue(), media_type="application/octet-stream",
@@ -112,11 +105,11 @@ def _set_job(job_id: str, **kw):
 
 
 def _run_job(job_id: str, model_name: str, image_bytes: List[bytes]):
-    """Background worker: run inference and stream progress into the job registry."""
+    """Background worker (runs in the pool executor on a checked-out engine)."""
+    engine = POOL.checkout()
     try:
         _set_job(job_id, status="running", stage="preprocessing", progress=0)
         images = [_load_nifti_from_bytes(b) for b in image_bytes]
-        engine = get_engine(model_name)
 
         def _cb(done: int, total: int):
             pct = int(done / total * 100) if total else 0
@@ -126,93 +119,130 @@ def _run_job(job_id: str, model_name: str, image_bytes: List[bytes]):
         _set_job(job_id, stage="postprocessing", progress=99)
         mask_bytes = _nifti_to_bytes(result)
         _set_job(job_id, status="done", stage="done", progress=100, result=mask_bytes)
+        logger.info("Job %s done [model=%s]", job_id, model_name)
     except Exception as e:
-        traceback.print_exc()
+        logger.exception("Job %s failed [model=%s]", job_id, model_name)
         _set_job(job_id, status="error", detail=str(e))
+    finally:
+        POOL.checkin(engine)
 
 
-# ──── Health Check ────
+# ──── Health + model management ────
 
 @app.get("/health")
 def health():
     return {"status": "ok"}
 
 
-# ──── Endpoints Helper ────
+@app.get("/models")
+def list_models():
+    """List available models plus the currently active one and worker count."""
+    return {"available": POOL.available_models(), **POOL.status()}
+
+
+class SetModelRequest(BaseModel):
+    # Silence pydantic v2's protected 'model_' namespace warning for this field.
+    model_config = {"protected_namespaces": ()}
+    model_name: str
+
+
+@app.post("/models/active")
+def set_active_model(req: SetModelRequest):
+    """Switch the active model: tear down old engines, re-estimate VRAM, respawn N."""
+    try:
+        POOL.ensure_model(req.model_name)
+    except ValueError as e:
+        raise HTTPException(status_code=404, detail=str(e))
+    except ModelBusyError as e:
+        raise HTTPException(status_code=409, detail=str(e))
+    logger.info("Active model set to '%s' via API", req.model_name)
+    return POOL.status()
+
+
+# ──── Per-model inference endpoints ────
+
 def create_endpoints_for_model(model_name: str):
-    
+
     @app.post(f"/{model_name}/run", tags=[model_name])
-    async def run(files: List[UploadFile] = File(...)):
+    def run(files: List[UploadFile] = File(...)):
         """Run segmentation on uploaded NIfTI files. Returns mask as .nii.gz."""
         try:
             images = [_load_nifti_from_upload(f) for f in files]
-            engine = get_engine(model_name)
-            result = engine.run(images)
+
+            def _task():
+                engine = POOL.checkout()
+                try:
+                    return engine.run(images)
+                finally:
+                    POOL.checkin(engine)
+
+            result = POOL.submit(model_name, _task).result()
             return Response(content=_nifti_to_bytes(result), media_type="application/octet-stream",
                             headers={"Content-Disposition": "attachment; filename=mask.nii.gz"})
+        except ModelBusyError as e:
+            raise HTTPException(status_code=409, detail=str(e))
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post(f"/{model_name}/run_nib", tags=[model_name])
-    async def run_nib(files: List[UploadFile] = File(...)):
+    def run_nib(files: List[UploadFile] = File(...)):
         """Alias for run — both accept NIfTI uploads."""
-        try:
-            images = [_load_nifti_from_upload(f) for f in files]
-            engine = get_engine(model_name)
-            result = engine.run_nib(images)
-            return Response(content=_nifti_to_bytes(result), media_type="application/octet-stream",
-                            headers={"Content-Disposition": "attachment; filename=mask.nii.gz"})
-        except Exception as e:
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
+        return run(files)
 
     @app.post(f"/{model_name}/run_prob", tags=[model_name])
-    async def run_prob(files: List[UploadFile] = File(...), single_channel: bool = Form(True)):
+    def run_prob(files: List[UploadFile] = File(...), single_channel: bool = Form(True)):
         """Run segmentation and return probability maps as .npz."""
         try:
             images = [_load_nifti_from_upload(f) for f in files]
-            engine = get_engine(model_name)
-            prob = engine.run_prob(images, single_channel=single_channel)
-            affine = images[0].affine
-            return _npz_response(prob, affine)
+
+            def _task():
+                engine = POOL.checkout()
+                try:
+                    return engine.run_prob(images, single_channel=single_channel)
+                finally:
+                    POOL.checkin(engine)
+
+            prob = POOL.submit(model_name, _task).result()
+            return _npz_response(prob, images[0].affine)
+        except ModelBusyError as e:
+            raise HTTPException(status_code=409, detail=str(e))
         except Exception as e:
             traceback.print_exc()
             raise HTTPException(status_code=500, detail=str(e))
 
     @app.post(f"/{model_name}/run_nib_prob", tags=[model_name])
-    async def run_nib_prob(files: List[UploadFile] = File(...), single_channel: bool = Form(True)):
+    def run_nib_prob(files: List[UploadFile] = File(...), single_channel: bool = Form(True)):
         """Run segmentation on NIfTI images and return probability maps as .npz."""
-        try:
-            images = [_load_nifti_from_upload(f) for f in files]
-            engine = get_engine(model_name)
-            prob = engine.run_nib_prob(images, single_channel=single_channel)
-            affine = images[0].affine
-            return _npz_response(prob, affine)
-        except Exception as e:
-            traceback.print_exc()
-            raise HTTPException(status_code=500, detail=str(e))
+        return run_prob(files, single_channel=single_channel)
 
     # ──── Polling API: submit → progress → result ────
 
     @app.post(f"/{model_name}/jobs", tags=[model_name])
-    async def submit_job(files: List[UploadFile] = File(...)):
+    def submit_job(files: List[UploadFile] = File(...)):
         """Accept NIfTI uploads and queue an async inference job. Returns a job_id.
 
-        The upload is fully read here, so a 200 response means the client's upload
-        is complete; inference then runs in the background and is polled via the
-        progress/result endpoints below.
+        The upload is fully read here, so a 200 response means the client's
+        upload is complete; inference then runs in the background and is polled
+        via the progress/result endpoints below. Submitting for a non-active
+        model transparently switches the active model first.
         """
-        image_bytes = [await f.read() for f in files]
+        image_bytes = [f.file.read() for f in files]
         job_id = uuid.uuid4().hex
         with _jobs_lock:
             _jobs[job_id] = {"status": "queued", "stage": "queued",
                              "progress": 0, "detail": None, "result": None}
-        _executor.submit(_run_job, job_id, model_name, image_bytes)
+        try:
+            POOL.submit(model_name, _run_job, job_id, model_name, image_bytes)
+        except ModelBusyError as e:
+            with _jobs_lock:
+                _jobs.pop(job_id, None)  # don't leave an orphan "queued" job
+            raise HTTPException(status_code=409, detail=str(e))
+        logger.info("Queued job %s [model=%s]", job_id, model_name)
         return {"job_id": job_id}
 
     @app.get(f"/{model_name}/jobs/{{job_id}}/progress", tags=[model_name])
-    async def job_progress(job_id: str):
+    def job_progress(job_id: str):
         """Poll job status/progress. Returns status, stage, progress(0-100), detail."""
         with _jobs_lock:
             job = _jobs.get(job_id)
@@ -221,7 +251,7 @@ def create_endpoints_for_model(model_name: str):
             return {k: job[k] for k in ("status", "stage", "progress", "detail")}
 
     @app.get(f"/{model_name}/jobs/{{job_id}}/result", tags=[model_name])
-    async def job_result(job_id: str):
+    def job_result(job_id: str):
         """Fetch the finished mask as .nii.gz. 409 if not ready, 500 if the job errored."""
         with _jobs_lock:
             job = _jobs.get(job_id)
@@ -238,6 +268,7 @@ def create_endpoints_for_model(model_name: str):
             raise HTTPException(status_code=409, detail="Job not finished")
         return Response(content=result, media_type="application/octet-stream",
                         headers={"Content-Disposition": "attachment; filename=mask.nii.gz"})
+
 
 for m in MODELS:
     create_endpoints_for_model(m)

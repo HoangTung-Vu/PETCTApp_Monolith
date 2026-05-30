@@ -1,5 +1,7 @@
 """NNUNet Segmentation Engine — standalone version for Docker backend."""
 
+import gc
+import logging
 import os
 from pathlib import Path
 from typing import List, Union
@@ -7,6 +9,8 @@ from typing import List, Union
 import nibabel as nib
 import numpy as np
 import torch
+
+logger = logging.getLogger("engine.nnunet")
 
 # PyTorch 2.6 compatibility for nnUNetv2 2.2.1 model loading
 _orig_torch_load = torch.load
@@ -62,8 +66,25 @@ class NNUNetEngine:
 
         model_folder = self._find_model_folder()
         folds = self._detect_folds(model_folder)
-        print(f"[nnUNet] Loading model from {model_folder}, folds={folds}")
+        logger.info("Loading model '%s' from %s, folds=%s", self.model_name, model_folder, folds)
         self.predictor.initialize_from_trained_model_folder(str(model_folder), use_folds=folds, checkpoint_name='checkpoint_best.pth')
+
+    def unload(self):
+        """Free this engine's predictor + GPU weights so the pool can be rebuilt."""
+        if self.predictor is None:
+            return
+        # Drop references to the network + loaded fold parameters, then let CUDA
+        # reclaim the VRAM. Best-effort attribute clearing before dropping the predictor.
+        for attr in ("network", "list_of_parameters"):
+            try:
+                setattr(self.predictor, attr, None)
+            except Exception:
+                pass
+        self.predictor = None
+        gc.collect()
+        if self.device == "cuda":
+            torch.cuda.empty_cache()
+        logger.debug("Engine for '%s' unloaded", self.model_name)
 
     # ── run: accepts NIfTI bytes (deserialized as nib images) ──
 
@@ -80,7 +101,7 @@ class NNUNetEngine:
             images = [images]
 
         ref_img = images[0]
-        print(f"[nnUNet] Running inference on {len(images)} image(s)")
+        logger.info("Running inference on %d image(s) [model=%s]", len(images), self.model_name)
 
         # Stack all channels: transpose each from X,Y,Z -> Z,Y,X for nnUNet
         img_arrays = []
@@ -95,7 +116,7 @@ class NNUNetEngine:
         spacing = ref_img.header.get_zooms()[:3]
         props = {'spacing': spacing[::-1]}
 
-        print(f"[nnUNet] Input shape: {stacked.shape}, dtype: {stacked.dtype}, spacing: {props['spacing']}")
+        logger.debug("Input shape: %s, dtype: %s, spacing: %s", stacked.shape, stacked.dtype, props['spacing'])
 
         self.predictor._progress_callback = progress_callback
         try:
@@ -111,7 +132,7 @@ class NNUNetEngine:
         # Z,Y,X -> X,Y,Z for nibabel
         pred_array = np.transpose(pred_array, (2, 1, 0))
 
-        print(f"[nnUNet] Output shape: {pred_array.shape}")
+        logger.debug("Output shape: %s", pred_array.shape)
         return nib.Nifti1Image(pred_array.astype(np.uint8), ref_img.affine, ref_img.header)
 
     # ── run_nib: alias for run (both accept nib images over HTTP) ──
@@ -130,7 +151,7 @@ class NNUNetEngine:
             images = [images]
 
         ref_img = images[0]
-        print(f"[nnUNet] Running prob inference on {len(images)} image(s)")
+        logger.info("Running prob inference on %d image(s) [model=%s]", len(images), self.model_name)
 
         img_arrays = []
         for img in images:
@@ -143,13 +164,13 @@ class NNUNetEngine:
         spacing = ref_img.header.get_zooms()[:3]
         props = {'spacing': spacing[::-1]}
 
-        print(f"[nnUNet] Input shape: {stacked.shape}, dtype: {stacked.dtype}, spacing: {props['spacing']}")
+        logger.debug("Input shape: %s, dtype: %s, spacing: %s", stacked.shape, stacked.dtype, props['spacing'])
 
         seg, prob = self.predictor.predict_single_npy_array(
             stacked, props, None, None, True
         )
 
-        print(f"[nnUNet] Prob output shape: {prob.shape}, dtype: {prob.dtype}")
+        logger.debug("Prob output shape: %s, dtype: %s", prob.shape, prob.dtype)
 
         if single_channel:
             if prob.shape[0] > 1:
@@ -157,10 +178,10 @@ class NNUNetEngine:
             else:
                 prob = prob[0]
             prob = np.transpose(prob, (2, 1, 0))
-            print(f"[nnUNet] Single channel prob shape: {prob.shape}")
+            logger.debug("Single channel prob shape: %s", prob.shape)
         else:
             prob = np.transpose(prob, (0, 3, 2, 1))
-            print(f"[nnUNet] Multi-channel prob shape: {prob.shape}")
+            logger.debug("Multi-channel prob shape: %s", prob.shape)
 
         return prob
 
