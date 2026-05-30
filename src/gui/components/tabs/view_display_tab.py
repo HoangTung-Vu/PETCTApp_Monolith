@@ -108,7 +108,16 @@ class ViewDisplayTab(QWidget):
     sig_pet_colormap_changed   = pyqtSignal(str)
     sig_overlay_pet_colormap_changed = pyqtSignal(str)
 
-    sig_interpolation_toggled  = pyqtSignal(bool)
+    # Emits the effective napari interpolation2d mode string ("nearest" when OFF).
+    sig_interpolation_changed  = pyqtSignal(str)
+
+    # napari 0.6.6 Interpolation enum minus "custom" (needs a kernel) and
+    # "nearest" (that is the OFF state of the toggle).
+    INTERPOLATION_MODES = [
+        "linear", "bessel", "blackman", "catrom", "cubic", "gaussian",
+        "hamming", "hanning", "hermite", "kaiser", "lanczos", "mitchell",
+        "spline16", "spline36",
+    ]
 
     # True = crosshair overlay ON; False = crosshair overlay OFF
     sig_crosshair_toggled      = pyqtSignal(bool)
@@ -177,11 +186,18 @@ class ViewDisplayTab(QWidget):
         self.btn_crosshair.clicked.connect(self._on_crosshair_toggled)
         cc_lay.addWidget(self.btn_crosshair)
 
-        self.btn_interpolation = QPushButton("Smooth Interpolation: ON")
+        self.btn_interpolation = QPushButton("Interpolation: ON")
         self.btn_interpolation.setCheckable(True)
         self.btn_interpolation.setChecked(True)
         self.btn_interpolation.clicked.connect(self._on_interpolation_toggled)
         cc_lay.addWidget(self.btn_interpolation)
+
+        # Kernel chooser — applied only when interpolation is ON; OFF forces nearest.
+        self.combo_interpolation = QComboBox()
+        self.combo_interpolation.addItems(self.INTERPOLATION_MODES)
+        self.combo_interpolation.setCurrentText("linear")
+        self.combo_interpolation.currentTextChanged.connect(self._on_interpolation_toggled)
+        cc_lay.addWidget(self.combo_interpolation)
 
         layout.addWidget(_make_collapsible("Cursor & Interaction", cursor_content))
 
@@ -442,11 +458,15 @@ class ViewDisplayTab(QWidget):
         self.btn_crosshair.setText("Crosshair: ON" if checked else "Crosshair: OFF")
         self.sig_crosshair_toggled.emit(checked)
 
-    def _on_interpolation_toggled(self, checked: bool):
+    def _on_interpolation_toggled(self, *_):
+        # Shared by the on/off button and the kernel combo box; read live state.
+        enabled = self.btn_interpolation.isChecked()
         self.btn_interpolation.setText(
-            "Smooth Interpolation: ON" if checked else "Smooth Interpolation: OFF"
+            "Interpolation: ON" if enabled else "Interpolation: OFF"
         )
-        self.sig_interpolation_toggled.emit(checked)
+        self.combo_interpolation.setEnabled(enabled)
+        mode = self.combo_interpolation.currentText() if enabled else "nearest"
+        self.sig_interpolation_changed.emit(mode)
 
     def _on_overlay_preset_changed(self, text: str):
         if text == "Custom":

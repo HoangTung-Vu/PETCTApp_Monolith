@@ -184,7 +184,7 @@ class MainWindow(
         cp.sig_ct_colormap_changed.connect(lm.set_ct_colormap)
         cp.sig_pet_colormap_changed.connect(lm.set_pet_colormap)
         cp.sig_overlay_pet_colormap_changed.connect(lm.set_overlay_pet_colormap)
-        cp.sig_interpolation_toggled.connect(lm.set_interpolation)
+        cp.sig_interpolation_changed.connect(lm.set_interpolation)
         cp.sig_crosshair_toggled.connect(self._on_crosshair_toggled)
 
         # Session

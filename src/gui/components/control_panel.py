@@ -46,7 +46,7 @@ class ControlPanel(QWidget):
     sig_ct_colormap_changed = pyqtSignal(str)
     sig_pet_colormap_changed = pyqtSignal(str)
     sig_overlay_pet_colormap_changed = pyqtSignal(str)
-    sig_interpolation_toggled = pyqtSignal(bool)
+    sig_interpolation_changed = pyqtSignal(str)
     sig_crosshair_toggled = pyqtSignal(bool)
 
     # Refine — Manual Edit (tumor mask)
@@ -128,7 +128,7 @@ class ControlPanel(QWidget):
         vd.sig_ct_colormap_changed.connect(self.sig_ct_colormap_changed)
         vd.sig_pet_colormap_changed.connect(self.sig_pet_colormap_changed)
         vd.sig_overlay_pet_colormap_changed.connect(self.sig_overlay_pet_colormap_changed)
-        vd.sig_interpolation_toggled.connect(self.sig_interpolation_toggled)
+        vd.sig_interpolation_changed.connect(self.sig_interpolation_changed)
         vd.sig_crosshair_toggled.connect(self.sig_crosshair_toggled)
 
         # Refine — Manual Edit

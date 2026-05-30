@@ -975,8 +975,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
     # ── Interpolation ─────────────────────────────────────────────────────────
 
-    def set_interpolation(self, enabled: bool):
-        mode = "linear" if enabled else "nearest"
+    def set_interpolation(self, mode: str):
+        # `mode` is a napari interpolation2d kernel (see ViewerWidget.set_interpolation).
         for vw in self._get_all_loaded_viewers():
             for layer in vw.viewer.layers:
                 if hasattr(layer, "interpolation2d"):

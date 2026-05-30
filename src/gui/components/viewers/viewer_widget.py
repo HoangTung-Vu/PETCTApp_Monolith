@@ -848,8 +848,8 @@ class ViewerWidget(QWidget):
 
     # ── Interpolation ────────────────────────────────────────────────────
 
-    def set_interpolation(self, enabled: bool):
-        mode = "linear" if enabled else "nearest"
+    def set_interpolation(self, mode: str):
+        # `mode` is a napari interpolation2d kernel ("nearest" = OFF state).
         for layer in self.viewer.layers:
             if hasattr(layer, "interpolation2d"):
                 try:
