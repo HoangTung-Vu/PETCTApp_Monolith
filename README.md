@@ -4,7 +4,7 @@
   <h3>A desktop application for PET/CT image segmentation, refinement, and quantification.</h3>
 </div>
 
-## 📖 Project Overview
+## Project Overview
 
 This project is a sophisticated desktop application built with Python, PyQt6, and Napari, designed for medical professionals and researchers to process PET/CT imaging data. It provides an end-to-end workflow from loading NIfTI files to running AI-driven segmentation, manual refinement, and generating clinical quantifications (like SUVmax, SUVmean, MTV, and gTLG).
 
@@ -17,7 +17,22 @@ Key features:
 
 ---
 
-## 🏗️ Architecture Summary
+## Demonstation Video : 
+[Demo Video Link ]("https://www.youtube.com/watch?v=SIUKj6J8gxI&t=1s")
+
+## Screenshots
+
+<div align="center">
+  <img src="figures/app_display_tab_lungct_mode.jpg" alt="Application Display - Lung CT Mode" width="800"/>
+  <p><em>Multi-modal PET/CT viewer with orthogonal grid layout</em></p>
+
+  <img src="figures/3d_view_pet.png" alt="3D Volume Rendering - PET" width="800"/>
+  <p><em>3D volume rendering of PET scan</em></p>
+</div>
+
+---
+
+## Architecture Summary
 
 The application is structured as a monolith encompassing independent components:
 
@@ -31,7 +46,7 @@ The application is structured as a monolith encompassing independent components:
 
 ---
 
-## 💻 Installation & Setup
+## Installation & Setup
 
 To run the AI models efficiently, an **NVIDIA GPU is highly recommended**.
 
@@ -64,7 +79,7 @@ On native Linux, you must manually install drivers and the toolkit.
 
 ---
 
-## 🚀 Running the Application
+## Running the Application
 
 Ensure you have Python and `uv` installed to manage the virtual environment.
 
@@ -86,7 +101,7 @@ The script will automatically:
 
 ---
 
-## 📂 Project Structure
+## Project Structure
 
 ```text
 PETCTApp_Monolith/
@@ -96,4 +111,6 @@ PETCTApp_Monolith/
 ├── tests/                   # Test suite
 ├── start.sh / start.bat     # Launchers for the app and Docker backends
 └── pyproject.toml           # Python dependencies (managed by uv)
+
+
 ```
