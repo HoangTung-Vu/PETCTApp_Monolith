@@ -47,3 +47,12 @@ autoPET-interactive/
 *.ps
 *.run.xml
 thesis/
+
+.claude/
+.rtk/
+CLAUDE.md
+find_largest_lesion.py
+iterative_threshold.mmd
+lesion_overview.png
+lesion_overview.py
+pyproject.toml
