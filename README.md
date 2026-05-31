@@ -18,7 +18,7 @@ Key features:
 ---
 
 ## Demonstation Video : 
-[Demo Video Link ]("https://www.youtube.com/watch?v=SIUKj6J8gxI&t=1s")
+[Demo Video Link](https://www.youtube.com/watch?v=SIUKj6J8gxI&t=1s)
 
 ## Screenshots
 
