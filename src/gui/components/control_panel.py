@@ -182,9 +182,17 @@ class ControlPanel(QWidget):
     def btn_eraser_toggle(self):
         return self.eraser_tab.btn_eraser_toggle
 
-    def set_ruler_distance(self, mm):
-        """Update the Ruler tab distance readout (float mm, or None)."""
-        self.ruler_tab.set_distance(mm)
+    def set_ruler_distance(self, payload):
+        """Update the Ruler tab readout.
+
+        ``payload`` is ``(completed_distances, active_distance_or_None)``, or
+        ``None`` to clear.
+        """
+        if payload is None:
+            self.ruler_tab.set_measurements([], None)
+        else:
+            completed, active = payload
+            self.ruler_tab.set_measurements(completed, active)
 
     # ── Progress / report helpers (delegate to tabs) ──
 

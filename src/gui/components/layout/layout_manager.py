@@ -149,11 +149,13 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._pan_mode = False
         self._xhair_pos = [0.0, 0.0, 0.0]   # [z, y, x] Napari data space
 
-        # Ruler state ([z, y, x] data space, or None)
+        # Ruler state ([z, y, x] data space). Multiple measurements are kept;
+        # `_ruler_measurements` holds completed (start, end) pairs while
+        # `_ruler_start`/`_ruler_preview` track the segment being drawn.
         self._ruler_enabled = False
-        self._ruler_start = None
-        self._ruler_end = None
-        self._ruler_preview = None
+        self._ruler_measurements = []   # list of (start, end), each [z, y, x]
+        self._ruler_start = None        # in-progress start, or None
+        self._ruler_preview = None      # live preview point for in-progress segment
 
         # Initialise default layout so grid cells exist before first data load
         self.set_active_views(["axial_ct", "axial_pet"])
@@ -1008,15 +1010,15 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._update_ruler_readout()
 
     def disable_ruler_mode(self):
-        """Turn off the ruler and clear the current measurement."""
+        """Turn off the ruler and clear all measurements."""
         self._ruler_enabled = False
+        self._ruler_measurements = []
         self._ruler_start = None
-        self._ruler_end = None
         self._ruler_preview = None
         self._disconnect_ruler_events()
         for v in self._get_all_2d_viewers():
             v.disable_ruler_mode()
-        self.sig_ruler_distance.emit(None)
+        self.sig_ruler_distance.emit(([], None))
 
     def _connect_ruler_events(self):
         self._disconnect_ruler_events()
@@ -1043,33 +1045,30 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             return
         p = [pos_zyx[0], pos_zyx[1], pos_zyx[2]]
         if self._ruler_start is None:
-            # First point of a measurement.
+            # First point — begin a new measurement.
             self._ruler_start = p
-            self._ruler_end = None
             self._ruler_preview = p
-        elif self._ruler_end is None:
-            # Second point — finalise the measurement.
-            self._ruler_end = p
-            self._ruler_preview = None
         else:
-            # Both placed — a new click starts a fresh measurement.
-            self._ruler_start = p
-            self._ruler_end = None
-            self._ruler_preview = p
+            # Second point — finalise and keep the measurement; the next click
+            # begins a fresh one, so measurements accumulate.
+            self._ruler_measurements.append((self._ruler_start, p))
+            self._ruler_start = None
+            self._ruler_preview = None
         self._update_ruler_readout()
 
     def _on_ruler_move(self, pos_zyx: list):
         if not self._ruler_enabled:
             return
-        # Live preview only while choosing the second point.
-        if self._ruler_start is None or self._ruler_end is not None:
+        # Live preview only while choosing the second point of a segment.
+        if self._ruler_start is None:
             return
         self._ruler_preview = [pos_zyx[0], pos_zyx[1], pos_zyx[2]]
         self._update_ruler_readout()
 
     def _on_ruler_clear(self):
+        """Clear all measurements (double-click or the Clear All button)."""
+        self._ruler_measurements = []
         self._ruler_start = None
-        self._ruler_end = None
         self._ruler_preview = None
         self._update_ruler_readout()
 
@@ -1091,27 +1090,34 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         dx = (a[2] - b[2]) * sx
         return math.sqrt(dz * dz + dy * dy + dx * dx)
 
-    def _current_ruler_segment(self):
-        """Return the (a, b) point pair to measure/draw, or None."""
-        if self._ruler_start is not None and self._ruler_end is not None:
-            return (self._ruler_start, self._ruler_end)
+    def _active_ruler_segment(self):
+        """Return the in-progress (start, preview) pair being drawn, or None."""
         if self._ruler_start is not None and self._ruler_preview is not None:
             return (self._ruler_start, self._ruler_preview)
         return None
 
     def _update_ruler_readout(self):
-        seg = self._current_ruler_segment()
-        if seg is None:
-            self._refresh_all_rulers("")
-            self.sig_ruler_distance.emit(None)
-            return
-        dist = self._ruler_distance(seg[0], seg[1])
-        self._refresh_all_rulers(f"{dist:.1f} mm")
-        self.sig_ruler_distance.emit(dist)
+        # Completed measurements: (start, end, "<d> mm") for drawing + distances
+        # for the panel list.
+        segments = []
+        distances = []
+        for a, b in self._ruler_measurements:
+            d = self._ruler_distance(a, b)
+            distances.append(d)
+            segments.append((a, b, f"{d:.1f} mm"))
+        # In-progress segment (dashed live preview).
+        active = None
+        active_dist = None
+        seg = self._active_ruler_segment()
+        if seg is not None:
+            active_dist = self._ruler_distance(seg[0], seg[1])
+            active = (seg[0], seg[1], f"{active_dist:.1f} mm")
+        self._refresh_all_rulers(segments, active)
+        self.sig_ruler_distance.emit((distances, active_dist))
 
-    def _refresh_all_rulers(self, dist_text: str = ""):
+    def _refresh_all_rulers(self, segments, active):
         for vw in self._get_all_2d_viewers():
-            vw.update_ruler(self._ruler_start, self._ruler_end, self._ruler_preview, dist_text)
+            vw.update_ruler(segments, active)
 
     # ── Interpolation ─────────────────────────────────────────────────────────
 

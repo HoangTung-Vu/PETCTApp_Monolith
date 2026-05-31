@@ -30,10 +30,10 @@ class RulerOverlay(QWidget):
     def __init__(self, viewer_widget_ref, parent: QWidget):
         super().__init__(parent)
         self._vw = viewer_widget_ref
-        self._start = None       # [z, y, x] data space, or None
-        self._end = None
-        self._preview = None
-        self._dist_text = ""
+        # Completed measurements: list of (start, end, dist_text), each point
+        # [z, y, x] in Napari data space. Plus one in-progress segment.
+        self._segments = []
+        self._active = None      # (start, preview, dist_text) or None
         self._enabled = False
 
         # Completely transparent: mouse events fall through to canvas below
@@ -60,11 +60,15 @@ class RulerOverlay(QWidget):
         self._enabled = enabled
         self.update()
 
-    def set_state(self, start, end, preview, dist_text: str):
-        self._start = start
-        self._end = end
-        self._preview = preview
-        self._dist_text = dist_text or ""
+    def set_state(self, segments, active):
+        """Push all measurements to the overlay.
+
+        ``segments`` is a list of completed ``(start, end, dist_text)`` tuples;
+        ``active`` is the in-progress ``(start, preview, dist_text)`` (drawn
+        dashed) or ``None``.
+        """
+        self._segments = segments or []
+        self._active = active
         self.update()
 
     # ── painting ─────────────────────────────────────────────────────────────
@@ -169,28 +173,33 @@ class RulerOverlay(QWidget):
     # ── measurement ───────────────────────────────────────────────────────────
 
     def _draw_measurement(self, painter: QPainter):
-        if self._start is None:
-            return
-        sx, sy = self._vw._compute_canvas_pos(self._start)
+        for start, end, dist_text in self._segments:
+            self._draw_segment(painter, start, end, dist_text, dashed=False)
+        if self._active is not None:
+            start, preview, dist_text = self._active
+            self._draw_segment(painter, start, preview, dist_text, dashed=True)
 
+    def _draw_segment(self, painter: QPainter, a, b, dist_text: str, dashed: bool):
+        if a is None:
+            return
+        sx, sy = self._vw._compute_canvas_pos(a)
         if sx is not None:
             self._draw_marker(painter, sx, sy)
 
-        other = self._end if self._end is not None else self._preview
-        if other is not None:
-            ox, oy = self._vw._compute_canvas_pos(other)
+        if b is not None:
+            ox, oy = self._vw._compute_canvas_pos(b)
             if ox is not None:
                 self._draw_marker(painter, ox, oy)
                 if sx is not None:
                     pen = QPen(self._LINE_COLOR, 2)
-                    if self._end is None:        # still choosing end → preview dashed
+                    if dashed:                   # still choosing end → preview dashed
                         pen.setStyle(Qt.PenStyle.DashLine)
                     painter.setPen(pen)
                     painter.drawLine(int(sx), int(sy), int(ox), int(oy))
-                    if self._dist_text:
+                    if dist_text:
                         mx = (sx + ox) / 2.0
                         my = (sy + oy) / 2.0
-                        self._draw_text(painter, mx + 8, my - 8, self._dist_text,
+                        self._draw_text(painter, mx + 8, my - 8, dist_text,
                                         color=self._TEXT_COLOR, bold=True)
 
     def _draw_marker(self, painter: QPainter, x: float, y: float):

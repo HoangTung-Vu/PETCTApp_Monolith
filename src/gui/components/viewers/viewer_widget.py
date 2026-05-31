@@ -540,9 +540,13 @@ class ViewerWidget(QWidget):
         self._ruler_enabled = False
         self._ruler_overlay.set_enabled(False)
 
-    def update_ruler(self, start, end, preview, dist_text: str):
-        """Push the current measurement state to the ruler overlay."""
-        self._ruler_overlay.set_state(start, end, preview, dist_text)
+    def update_ruler(self, segments, active):
+        """Push all measurement state to the ruler overlay.
+
+        ``segments`` is a list of completed ``(start, end, dist_text)`` tuples;
+        ``active`` is the in-progress ``(start, preview, dist_text)`` or ``None``.
+        """
+        self._ruler_overlay.set_state(segments, active)
 
     def set_view_label(self, text: str):
         """Show a view-name badge in the top-left corner of the canvas."""
