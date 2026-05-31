@@ -8,6 +8,7 @@ from ....utils.nifti_utils import to_napari, from_napari
 from ....utils.dimension_utils import get_spacing_from_affine
 from .crosshair_overlay import CrosshairOverlay
 from .colorbar_overlay import ColorBarOverlay
+from .ruler_overlay import RulerOverlay
 
 
 class ViewerWidget(QWidget):
@@ -28,6 +29,12 @@ class ViewerWidget(QWidget):
     sig_crosshair_arrow = pyqtSignal(int, int)
 
     sig_camera_changed = pyqtSignal(object)
+
+    # Ruler mode: left-click places a point (z, y, x), mouse-move previews,
+    # double-click clears the current measurement.
+    sig_ruler_clicked = pyqtSignal(list)
+    sig_ruler_moved = pyqtSignal(list)
+    sig_ruler_double_click = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -71,6 +78,11 @@ class ViewerWidget(QWidget):
         # ── ColorBar overlay ────────────────────────────────────────────
         self._colorbar_overlay = ColorBarOverlay(self, self.qt_viewer.canvas.native)
 
+        # ── Ruler overlay ───────────────────────────────────────────────
+        self._ruler_enabled = False        # managed by LayoutManager
+        self._ruler_overlay = RulerOverlay(self, self.qt_viewer.canvas.native)
+        self._ruler_overlay.raise_()       # paint on top of crosshair/colorbar
+
         # ── View name label (top-left of canvas) ────────────────────────
         self._view_label = QLabel("", self.qt_viewer.canvas.native)
         self._view_label.setStyleSheet(
@@ -101,6 +113,19 @@ class ViewerWidget(QWidget):
         self._pan_drag_cb = self._make_pan_drag_cb()
         if self._pan_drag_cb not in self.viewer.mouse_drag_callbacks:
             self.viewer.mouse_drag_callbacks.append(self._pan_drag_cb)
+
+        # Ruler mouse callbacks (gated on self._ruler_enabled)
+        self._ruler_press_cb = self._make_ruler_press_cb()
+        if self._ruler_press_cb not in self.viewer.mouse_drag_callbacks:
+            self.viewer.mouse_drag_callbacks.append(self._ruler_press_cb)
+
+        self._ruler_move_cb = self._make_ruler_move_cb()
+        if self._ruler_move_cb not in self.viewer.mouse_move_callbacks:
+            self.viewer.mouse_move_callbacks.append(self._ruler_move_cb)
+
+        self._ruler_dblclick_cb = self._make_ruler_dblclick_cb()
+        if self._ruler_dblclick_cb not in self.viewer.mouse_double_click_callbacks:
+            self.viewer.mouse_double_click_callbacks.append(self._ruler_dblclick_cb)
 
         # Default: no pan-on-drag (panning handled manually via RMB), arrow cursor always
         self.viewer.camera.mouse_pan = False
@@ -501,6 +526,24 @@ class ViewerWidget(QWidget):
         self._crosshair_enabled = False
         self._crosshair_overlay.set_enabled(False)
 
+    # ── Ruler mode ──────────────────────────────────────────────────────
+
+    def enable_ruler_mode(self):
+        """Show the ruler overlay (edge mm-scale + measurement)."""
+        self._ruler_enabled = True
+        self._ruler_overlay.set_enabled(True)
+        self._ruler_overlay.raise_()
+        self.viewer.camera.mouse_pan = False
+
+    def disable_ruler_mode(self):
+        """Hide the ruler overlay."""
+        self._ruler_enabled = False
+        self._ruler_overlay.set_enabled(False)
+
+    def update_ruler(self, start, end, preview, dist_text: str):
+        """Push the current measurement state to the ruler overlay."""
+        self._ruler_overlay.set_state(start, end, preview, dist_text)
+
     def set_view_label(self, text: str):
         """Show a view-name badge in the top-left corner of the canvas."""
         if text:
@@ -522,6 +565,8 @@ class ViewerWidget(QWidget):
         """Camera or slice changed — refresh overlay."""
         if self._crosshair_enabled:
             self._crosshair_overlay.update()
+        if self._ruler_enabled:
+            self._ruler_overlay.update()
         self.sig_camera_changed.emit(self)
 
     def _on_slice_changed(self, event=None):
@@ -662,6 +707,62 @@ class ViewerWidget(QWidget):
                 last_canvas = new_canvas
                 yield
         return on_drag
+
+    # ── Ruler mouse callbacks ───────────────────────────────────────────
+
+    def _event_data_pos(self, viewer, event):
+        """Resolve a mouse event to clamped [z, y, x] voxel coords, or None.
+
+        Uses the CT/PET layer's ``world_to_data`` so the through-plane (slice)
+        coordinate comes from the viewer's current slice — this is what lets a
+        ruler measurement span two different slices.
+        """
+        ref_layer = None
+        for lt in ("ct", "pet"):
+            name = self.LAYER_NAMES.get(lt)
+            if name and name in viewer.layers:
+                ref_layer = viewer.layers[name]
+                break
+        if ref_layer is None:
+            return None
+        try:
+            data_pos = ref_layer.world_to_data(event.position)
+            pos = [float(data_pos[0]), float(data_pos[1]), float(data_pos[2])]
+            shape = ref_layer.data.shape
+            pos[0] = max(0, min(shape[0] - 1, pos[0]))
+            pos[1] = max(0, min(shape[1] - 1, pos[1]))
+            pos[2] = max(0, min(shape[2] - 1, pos[2]))
+            return pos
+        except Exception:
+            return None
+
+    def _make_ruler_press_cb(self):
+        """Plain drag callback: emit the clicked voxel on left-press in ruler mode."""
+        def on_press(viewer, event):
+            if not self._ruler_enabled or event.button != 1:
+                return
+            pos = self._event_data_pos(viewer, event)
+            if pos is not None:
+                self.sig_ruler_clicked.emit(pos)
+        return on_press
+
+    def _make_ruler_move_cb(self):
+        """Mouse-move callback: emit the hovered voxel for live preview."""
+        def on_move(viewer, event):
+            if not self._ruler_enabled:
+                return
+            pos = self._event_data_pos(viewer, event)
+            if pos is not None:
+                self.sig_ruler_moved.emit(pos)
+        return on_move
+
+    def _make_ruler_dblclick_cb(self):
+        """Double-click callback: clear the current measurement."""
+        def on_dblclick(viewer, event):
+            if not self._ruler_enabled or event.button != 1:
+                return
+            self.sig_ruler_double_click.emit()
+        return on_dblclick
 
     # ── Lesion ID Labels ────────────────────────────────────────────────
 

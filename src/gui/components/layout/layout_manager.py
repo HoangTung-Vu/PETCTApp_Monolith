@@ -77,6 +77,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
     # (z_vox, y_vox, x_vox, z_mm, y_mm, x_mm, hu_str, suv_str)
     sig_crosshair_pos = pyqtSignal(float, float, float, float, float, float, str, str)
 
+    # Current ruler segment length in mm (float), or None when no measurement
+    sig_ruler_distance = pyqtSignal(object)
+
     # ── Init ─────────────────────────────────────────────────────────────────
 
     def __init__(self, parent=None):
@@ -145,6 +148,12 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._crosshair_enabled = False
         self._pan_mode = False
         self._xhair_pos = [0.0, 0.0, 0.0]   # [z, y, x] Napari data space
+
+        # Ruler state ([z, y, x] data space, or None)
+        self._ruler_enabled = False
+        self._ruler_start = None
+        self._ruler_end = None
+        self._ruler_preview = None
 
         # Initialise default layout so grid cells exist before first data load
         self.set_active_views(["axial_ct", "axial_pet"])
@@ -215,6 +224,10 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             self.enable_crosshair_mode()
         else:
             self._connect_crosshair_events()
+
+        # Re-assert ruler on the rebuilt viewers (preserves current measurement)
+        if self._ruler_enabled:
+            self.enable_ruler_mode()
 
     def _clear_dynamic_grid(self):
         """Remove all widgets from the dynamic grid (does not destroy them)."""
@@ -438,6 +451,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._connect_mask_events()
         if self._crosshair_enabled:
             self.enable_crosshair_mode()
+        if self._ruler_enabled:
+            self.enable_ruler_mode()
 
     # ── Crosshair event handling ──────────────────────────────────────────────
 
@@ -972,6 +987,131 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
     def _on_viewer_cursor_intensity(self, text: str):
         self.sig_cursor_intensity.emit(text)
+
+    # ── Ruler mode ──────────────────────────────────────────────────────────────
+
+    def enable_ruler_mode(self):
+        """Turn on the distance-measurement ruler (mutually exclusive with crosshair).
+
+        Preserves the current measurement so changing the active views / layout
+        while measuring does not lose the points.
+        """
+        self._ruler_enabled = True
+        # Ruler and crosshair are mutually exclusive.
+        self.disable_crosshair_mode()
+        self._connect_ruler_events()
+        for v in self._get_visible_viewers():
+            if not v.is_3d:
+                v.enable_ruler_mode()
+        # Deactivate Labels layers so their built-in drag doesn't steal clicks.
+        self.deactivate_labels()
+        self._update_ruler_readout()
+
+    def disable_ruler_mode(self):
+        """Turn off the ruler and clear the current measurement."""
+        self._ruler_enabled = False
+        self._ruler_start = None
+        self._ruler_end = None
+        self._ruler_preview = None
+        self._disconnect_ruler_events()
+        for v in self._get_all_2d_viewers():
+            v.disable_ruler_mode()
+        self.sig_ruler_distance.emit(None)
+
+    def _connect_ruler_events(self):
+        self._disconnect_ruler_events()
+        for vw in self._get_visible_viewers():
+            if not vw.is_3d:
+                vw.sig_ruler_clicked.connect(self._on_ruler_click)
+                vw.sig_ruler_moved.connect(self._on_ruler_move)
+                vw.sig_ruler_double_click.connect(self._on_ruler_clear)
+
+    def _disconnect_ruler_events(self):
+        for vw in self._get_all_2d_viewers():
+            for sig, slot in (
+                (vw.sig_ruler_clicked, self._on_ruler_click),
+                (vw.sig_ruler_moved, self._on_ruler_move),
+                (vw.sig_ruler_double_click, self._on_ruler_clear),
+            ):
+                try:
+                    sig.disconnect(slot)
+                except (TypeError, RuntimeError):
+                    pass
+
+    def _on_ruler_click(self, pos_zyx: list):
+        if not self._ruler_enabled:
+            return
+        p = [pos_zyx[0], pos_zyx[1], pos_zyx[2]]
+        if self._ruler_start is None:
+            # First point of a measurement.
+            self._ruler_start = p
+            self._ruler_end = None
+            self._ruler_preview = p
+        elif self._ruler_end is None:
+            # Second point — finalise the measurement.
+            self._ruler_end = p
+            self._ruler_preview = None
+        else:
+            # Both placed — a new click starts a fresh measurement.
+            self._ruler_start = p
+            self._ruler_end = None
+            self._ruler_preview = p
+        self._update_ruler_readout()
+
+    def _on_ruler_move(self, pos_zyx: list):
+        if not self._ruler_enabled:
+            return
+        # Live preview only while choosing the second point.
+        if self._ruler_start is None or self._ruler_end is not None:
+            return
+        self._ruler_preview = [pos_zyx[0], pos_zyx[1], pos_zyx[2]]
+        self._update_ruler_readout()
+
+    def _on_ruler_clear(self):
+        self._ruler_start = None
+        self._ruler_end = None
+        self._ruler_preview = None
+        self._update_ruler_readout()
+
+    def _ruler_scale(self):
+        """Return (sz, sy, sx) mm/voxel for the loaded volume."""
+        for vw in self._get_visible_viewers():
+            if not vw.is_3d and getattr(vw, "_scale_zyx", None) is not None:
+                return vw._scale_zyx
+        affine = self._cached_data.get("affine")
+        if affine is not None:
+            sxyz = get_spacing_from_affine(affine)
+            return (float(sxyz[2]), float(sxyz[1]), float(sxyz[0]))
+        return (1.0, 1.0, 1.0)
+
+    def _ruler_distance(self, a, b) -> float:
+        sz, sy, sx = self._ruler_scale()
+        dz = (a[0] - b[0]) * sz
+        dy = (a[1] - b[1]) * sy
+        dx = (a[2] - b[2]) * sx
+        return math.sqrt(dz * dz + dy * dy + dx * dx)
+
+    def _current_ruler_segment(self):
+        """Return the (a, b) point pair to measure/draw, or None."""
+        if self._ruler_start is not None and self._ruler_end is not None:
+            return (self._ruler_start, self._ruler_end)
+        if self._ruler_start is not None and self._ruler_preview is not None:
+            return (self._ruler_start, self._ruler_preview)
+        return None
+
+    def _update_ruler_readout(self):
+        seg = self._current_ruler_segment()
+        if seg is None:
+            self._refresh_all_rulers("")
+            self.sig_ruler_distance.emit(None)
+            return
+        dist = self._ruler_distance(seg[0], seg[1])
+        self._refresh_all_rulers(f"{dist:.1f} mm")
+        self.sig_ruler_distance.emit(dist)
+
+    def _refresh_all_rulers(self, dist_text: str = ""):
+        for vw in self._get_all_2d_viewers():
+            vw.update_ruler(self._ruler_start, self._ruler_end, self._ruler_preview, dist_text)
 
     # ── Interpolation ─────────────────────────────────────────────────────────
 

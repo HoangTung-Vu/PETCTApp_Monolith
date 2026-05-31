@@ -12,6 +12,7 @@ from .tabs.workflow_tab import WorkflowTab
 from .tabs.view_display_tab import ViewDisplayTab
 from .tabs.refine_tab import RefineTab
 from .tabs.eraser_tab import EraserTab
+from .tabs.ruler_tab import RulerTab
 from .tabs.logs_tab import LogsTab
 
 
@@ -67,6 +68,10 @@ class ControlPanel(QWidget):
     sig_eraser_undo_clicked = pyqtSignal()
     sig_eraser_save_clicked = pyqtSignal()
 
+    # Ruler
+    sig_ruler_toggled = pyqtSignal(bool)
+    sig_ruler_clear = pyqtSignal()
+
     sig_load_from_dicom = pyqtSignal(str, str, str, str)   # dcm_folder, doctor, patient, resample_mode
 
     def __init__(self, parent=None):
@@ -79,12 +84,14 @@ class ControlPanel(QWidget):
         self.view_display_tab = ViewDisplayTab()
         self.refine_tab = RefineTab()
         self.eraser_tab = EraserTab()
+        self.ruler_tab = RulerTab()
         self.logs_tab = LogsTab()
 
         self.tabs.addTab(self.workflow_tab, "Workflow")
         self.tabs.addTab(self.view_display_tab, "View & Display")
         self.tabs.addTab(self.refine_tab, "Segmentation")
         self.tabs.addTab(self.eraser_tab, "Eraser")
+        self.tabs.addTab(self.ruler_tab, "Ruler")
         self.tabs.addTab(self.logs_tab, "Logs")
 
         # Tab indices for the tab-change handler
@@ -151,6 +158,11 @@ class ControlPanel(QWidget):
         e.sig_eraser_undo_clicked.connect(self.sig_eraser_undo_clicked)
         e.sig_eraser_save_clicked.connect(self.sig_eraser_save_clicked)
 
+        # Ruler
+        ru = self.ruler_tab
+        ru.sig_ruler_toggled.connect(self.sig_ruler_toggled)
+        ru.sig_ruler_clear.connect(self.sig_ruler_clear)
+
 
     # ── Proxy accessors (kept for backwards compat with MainWindow) ──
 
@@ -169,6 +181,10 @@ class ControlPanel(QWidget):
     @property
     def btn_eraser_toggle(self):
         return self.eraser_tab.btn_eraser_toggle
+
+    def set_ruler_distance(self, mm):
+        """Update the Ruler tab distance readout (float mm, or None)."""
+        self.ruler_tab.set_distance(mm)
 
     # ── Progress / report helpers (delegate to tabs) ──
 
@@ -220,6 +236,10 @@ class ControlPanel(QWidget):
         # Always disable eraser if it was enabled
         if self.eraser_tab.btn_eraser_toggle.isChecked():
             self.eraser_tab.btn_eraser_toggle.setChecked(False)
+
+        # Always disable ruler if it was enabled (auto-off on leaving the tab)
+        if self.ruler_tab.btn_ruler_toggle.isChecked():
+            self.ruler_tab.btn_ruler_toggle.setChecked(False)
 
         # Emit general tab changed signal for MainWindow/Handlers
         self.sig_tab_changed.emit(index)

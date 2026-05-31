@@ -211,6 +211,11 @@ class MainWindow(
         lm.sig_eraser_region_removed.connect(self._on_eraser_region_removed)
         lm.sig_eraser_background_click.connect(self._on_eraser_background_click)
 
+        # Ruler
+        cp.sig_ruler_toggled.connect(self._on_ruler_toggled)
+        cp.sig_ruler_clear.connect(lm._on_ruler_clear)
+        lm.sig_ruler_distance.connect(cp.set_ruler_distance)
+
         # Report
         cp.sig_report_clicked.connect(self._on_report_clicked)
         cp.sig_toggle_lesion_ids.connect(self._on_toggle_lesion_ids)
@@ -241,9 +246,17 @@ class MainWindow(
         Napari resets ``camera.mouse_pan`` and ``camera.mouse_zoom`` during
         widget resize — reuse the existing crosshair toggle to restore state.
         """
-        xhair_on = self.control_panel.view_display_tab.btn_crosshair.isChecked()
-        if not getattr(self, '_crosshair_suppressed_by_tab', False):
-            self._on_crosshair_toggled(xhair_on)
+        if self.layout_manager._ruler_enabled:
+            # Ruler active: just re-assert camera mouse settings (napari resets
+            # mouse_pan on resize). Don't touch the crosshair — doing so would
+            # toggle the ruler off mid-measurement.
+            for v in self.layout_manager._get_visible_viewers():
+                if not v.is_3d:
+                    v.viewer.camera.mouse_pan = False
+        else:
+            xhair_on = self.control_panel.view_display_tab.btn_crosshair.isChecked()
+            if not getattr(self, '_crosshair_suppressed_by_tab', False):
+                self._on_crosshair_toggled(xhair_on)
 
         # Show restore button if sidebar is collapsed
         sidebar_width = self._splitter.sizes()[0]
@@ -284,11 +297,34 @@ class MainWindow(
         )
 
     def _on_crosshair_toggled(self, enabled: bool):
-        """Toggle the full crosshair overlay."""
+        """Toggle the full crosshair overlay (mutually exclusive with the ruler)."""
         if enabled:
+            # Turning the crosshair on disables the ruler. Unchecking the ruler
+            # toggle runs _on_ruler_toggled(False), which itself re-enables the
+            # crosshair (since its button is now checked) — so return afterwards
+            # to avoid a redundant second enable.
+            ru_btn = self.control_panel.ruler_tab.btn_ruler_toggle
+            if ru_btn.isChecked():
+                ru_btn.setChecked(False)
+                return
             self.layout_manager.enable_crosshair_mode()
         else:
             self.layout_manager.disable_crosshair_mode()
+
+    def _on_ruler_toggled(self, enabled: bool):
+        """Toggle the distance-measurement ruler (mutually exclusive with crosshair)."""
+        lm = self.layout_manager
+        if enabled:
+            # Ruler takes over: turn off the crosshair overlay but leave its
+            # toggle button checked so it can be restored when the ruler is off.
+            if lm._crosshair_enabled:
+                lm.disable_crosshair_mode()
+            lm.enable_ruler_mode()
+        else:
+            lm.disable_ruler_mode()
+            # Restore the crosshair if the user had it enabled.
+            if self.control_panel.view_display_tab.btn_crosshair.isChecked():
+                lm.enable_crosshair_mode()
 
     # ──── Shared helpers ────
 
@@ -487,6 +523,7 @@ class MainWindow(
     _TAB_VIEW     = 1
     _TAB_REFINE   = 2
     _TAB_ERASER   = 3
+    _TAB_RULER    = 4
 
     def _on_tab_changed(self, index: int):
         """Delegate tab change events to specialized handlers."""
