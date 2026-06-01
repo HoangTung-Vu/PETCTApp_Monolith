@@ -12,6 +12,7 @@ class RulerTab(QWidget):
     # Signals
     sig_ruler_toggled = pyqtSignal(bool)  # True=enable, False=disable
     sig_ruler_clear = pyqtSignal()
+    sig_ruler_export = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -29,7 +30,9 @@ class RulerTab(QWidget):
             "  the distance accounts for the through-plane offset.\n"
             "• Each completed measurement stays on screen; keep clicking\n"
             "  to add more.\n"
-            "• Double-click (or Clear All) to remove every measurement.\n\n"
+            "• Double-click (or Clear All) to remove every measurement.\n"
+            "• Press H to toggle hover slice-sync (other views follow\n"
+            "  the cursor).\n\n"
             "Enabling the ruler turns off the crosshair."
         )
         info.setStyleSheet("color: gray; font-style: italic;")
@@ -62,6 +65,11 @@ class RulerTab(QWidget):
         self.btn_ruler_clear = QPushButton("Clear All")
         self.btn_ruler_clear.clicked.connect(self.sig_ruler_clear.emit)
         layout.addWidget(self.btn_ruler_clear)
+
+        # 6. Export each measurement as 6 dmax-style images
+        self.btn_ruler_export = QPushButton("Export Images")
+        self.btn_ruler_export.clicked.connect(self.sig_ruler_export.emit)
+        layout.addWidget(self.btn_ruler_export)
 
     def _on_ruler_toggled(self, checked: bool):
         self.btn_ruler_toggle.setText("Disable Ruler" if checked else "Enable Ruler")

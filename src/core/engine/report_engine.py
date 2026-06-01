@@ -196,6 +196,165 @@ class ReportEngine:
         img_arr = (np.clip(rgb, 0, 1) * 255).astype(np.uint8)
         return Image.fromarray(img_arr)
 
+    _font_cache: dict = {}
+
+    @staticmethod
+    def _resolve_font(size: int):
+        """Return a PIL font of roughly ``size`` px (cached), with fallbacks."""
+        if size in ReportEngine._font_cache:
+            return ReportEngine._font_cache[size]
+        from PIL import ImageFont
+
+        font = None
+        for name in ("DejaVuSans.ttf", "Arial.ttf"):
+            try:
+                font = ImageFont.truetype(name, size)
+                break
+            except Exception:
+                continue
+        if font is None:
+            try:
+                font = ImageFont.load_default(size)   # Pillow >= 10.1
+            except Exception:
+                font = ImageFont.load_default()
+        ReportEngine._font_cache[size] = font
+        return font
+
+    @staticmethod
+    def _draw_ruler_marker(draw, pt, color, r: int):
+        """Filled dot + crosshair ticks, mirroring RulerOverlay._draw_marker."""
+        x, y = int(round(pt[0])), int(round(pt[1]))
+        draw.ellipse([x - r, y - r, x + r, y + r], fill=color, outline=color)
+        inner = int(round(r * 1.4))
+        outer = int(round(r * 2.4))
+        w = max(1, r // 3)
+        draw.line([(x - outer, y), (x - inner, y)], fill=color, width=w)
+        draw.line([(x + inner, y), (x + outer, y)], fill=color, width=w)
+        draw.line([(x, y - outer), (x, y - inner)], fill=color, width=w)
+        draw.line([(x, y + inner), (x, y + outer)], fill=color, width=w)
+
+    @staticmethod
+    def export_line_images(
+        out_dir,
+        ct_napari: np.ndarray,
+        pet_napari: np.ndarray,
+        mask_napari,
+        p1_zyx,
+        p2_zyx,
+        spacing: tuple,
+        ct_wl: tuple,
+        pet_wl: tuple,
+        ct_colormap: str = "gray",
+        pet_colormap: str = "jet",
+        mask_opacity: float = 0.5,
+        length_mm: float = None
+    ):
+        """Render 6 images (axial/coronal/sagittal × CT/PET) for the line p1->p2.
+
+        CT uses the midpoint slice, PET uses a full-volume MIP, and the two
+        endpoints are joined by a green line with crosshair markers + a yellow
+        distance label — matching the live RulerOverlay. ``mask_napari`` may be
+        None to skip the overlay. All points are in Napari (Z, Y, X) data space.
+
+        Args:
+            out_dir: Output directory (created if missing).
+            ct_napari: CT volume in Napari (Z, Y, X) order.
+            pet_napari: PET volume in Napari (Z, Y, X) order.
+            mask_napari: Mask volume in Napari (Z, Y, X) order, or None to skip.
+            p1_zyx: First endpoint [z, y, x] in Napari data space.
+            p2_zyx: Second endpoint [z, y, x] in Napari data space.
+            spacing: (sx, sy, sz) mm/voxel for aspect-ratio correction.
+            ct_wl: (window, level) for CT display.
+            pet_wl: (window, level) for PET display.
+            ct_colormap: Napari colormap name for CT.
+            pet_colormap: Napari colormap name for PET.
+            mask_opacity: Mask overlay opacity (0.0-1.0).
+            length_mm: If given, draw this length (mm) as a text label at the
+                line midpoint of every image. None skips the label.
+        """
+        from PIL import ImageDraw
+
+        out_dir = Path(out_dir)
+        out_dir.mkdir(parents=True, exist_ok=True)
+
+        sx, sy, sz = spacing
+        ct_w, ct_l = ct_wl
+        pet_w, pet_l = pet_wl
+
+        z1, y1, x1 = p1_zyx
+        z2, y2, x2 = p2_zyx
+
+        mid_z = max(0, min(int(round((z1 + z2) / 2)), ct_napari.shape[0] - 1))
+        mid_y = max(0, min(int(round((y1 + y2) / 2)), ct_napari.shape[1] - 1))
+        mid_x = max(0, min(int(round((x1 + x2) / 2)), ct_napari.shape[2] - 1))
+
+        # Use MIP for PET (and mask), midpoint slice for CT.
+        pet_axial_mip = np.max(pet_napari, axis=0)
+        pet_coronal_mip = np.max(pet_napari, axis=1)
+        pet_sagittal_mip = np.max(pet_napari, axis=2)
+
+        if mask_napari is not None:
+            mask_axial_mip = np.max(mask_napari, axis=0)
+            mask_coronal_mip = np.max(mask_napari, axis=1)
+            mask_sagittal_mip = np.max(mask_napari, axis=2)
+        else:
+            mask_axial_mip = mask_coronal_mip = mask_sagittal_mip = None
+
+        line_slices = {
+            "axial": (ct_napari[mid_z, :, :], pet_axial_mip, mask_axial_mip, sx, sy, (x1, y1), (x2, y2)),
+            "coronal": (ct_napari[:, mid_y, :], pet_coronal_mip, mask_coronal_mip, sx, sz, (x1, z1), (x2, z2)),
+            "sagittal": (ct_napari[:, :, mid_x], pet_sagittal_mip, mask_sagittal_mip, sy, sz, (y1, z1), (y2, z2)),
+        }
+
+        for plane, (ct_sl, pet_sl, mask_sl, step_w, step_h, p1, p2) in line_slices.items():
+            ct_img = ReportEngine._render_slice(ct_sl, mask_sl, ct_w, ct_l, ct_colormap, mask_opacity)
+            pet_img = ReportEngine._render_slice(pet_sl, mask_sl, pet_w, pet_l, pet_colormap, mask_opacity)
+
+            base_w, base_h = ct_img.size
+            min_step = min(step_w, step_h)
+            new_w, new_h = base_w, base_h
+            if min_step > 0:
+                new_w = int(round(base_w * (step_w / min_step)))
+                new_h = int(round(base_h * (step_h / min_step)))
+                if new_w != base_w or new_h != base_h:
+                    resample_filter = getattr(Image, "Resampling", Image).LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
+                    ct_img = ct_img.resize((new_w, new_h), resample_filter)
+                    pet_img = pet_img.resize((new_w, new_h), resample_filter)
+
+            # Scale coordinates to the resized image
+            p1_scaled = (p1[0] * (new_w / base_w), p1[1] * (new_h / base_h))
+            p2_scaled = (p2[0] * (new_w / base_w), p2[1] * (new_h / base_h))
+
+            # Mirror the live RulerOverlay: green line + endpoint markers +
+            # a yellow distance label (with a 1px black shadow for legibility).
+            line_color = (0, 255, 128)
+            text_color = (255, 255, 0)
+            base = min(new_w, new_h)
+            line_w = max(2, int(round(base * 0.006)))
+            marker_r = max(3, int(round(base * 0.012)))
+
+            label = f"{length_mm:.1f} mm" if length_mm is not None else None
+            font = ReportEngine._resolve_font(max(9, int(round(base * 0.025))))
+            mx = (p1_scaled[0] + p2_scaled[0]) / 2.0
+            my = (p1_scaled[1] + p2_scaled[1]) / 2.0
+
+            for img in (ct_img, pet_img):
+                draw = ImageDraw.Draw(img)
+                draw.line([p1_scaled, p2_scaled], fill=line_color, width=line_w)
+                if label is not None:
+                    pad = marker_r + 4
+                    try:
+                        bbox = draw.textbbox((0, 0), label, font=font)
+                        th = bbox[3] - bbox[1]
+                    except Exception:
+                        th = getattr(font, "size", 12)
+                    tx, ty = mx + pad, my - pad - th
+                    draw.text((tx + 1, ty + 1), label, font=font, fill=(0, 0, 0))
+                    draw.text((tx, ty), label, font=font, fill=text_color)
+
+            ct_img.save(out_dir / f"{plane}_ct.png")
+            pet_img.save(out_dir / f"{plane}_pet.png")
+
     @staticmethod
     def export_report(
         report_dir: Path,
@@ -422,54 +581,9 @@ class ReportEngine:
             
             z1, y1, x1 = shape_z - 1 - vza, shape_y - 1 - vya, vxa
             z2, y2, x2 = shape_z - 1 - vzb, shape_y - 1 - vyb, vxb
-            
-            mid_z = max(0, min(int(round((z1 + z2) / 2)), ct_napari.shape[0] - 1))
-            mid_y = max(0, min(int(round((y1 + y2) / 2)), ct_napari.shape[1] - 1))
-            mid_x = max(0, min(int(round((x1 + x2) / 2)), ct_napari.shape[2] - 1))
-            
-            # Use MIP for PET and Mask, midpoint for CT
-            pet_axial_mip = np.max(pet_napari, axis=0)
-            mask_axial_mip = np.max(dmax_mask_napari, axis=0)
-            
-            pet_coronal_mip = np.max(pet_napari, axis=1)
-            mask_coronal_mip = np.max(dmax_mask_napari, axis=1)
-            
-            pet_sagittal_mip = np.max(pet_napari, axis=2)
-            mask_sagittal_mip = np.max(dmax_mask_napari, axis=2)
-            
-            dmax_slices = {
-                "axial": (ct_napari[mid_z, :, :], pet_axial_mip, mask_axial_mip, sx, sy, (x1, y1), (x2, y2)),
-                "coronal": (ct_napari[:, mid_y, :], pet_coronal_mip, mask_coronal_mip, sx, sz, (x1, z1), (x2, z2)),
-                "sagittal": (ct_napari[:, :, mid_x], pet_sagittal_mip, mask_sagittal_mip, sy, sz, (y1, z1), (y2, z2)),
-            }
-            
-            from PIL import ImageDraw
-            for plane, (ct_sl, pet_sl, mask_sl, step_w, step_h, p1, p2) in dmax_slices.items():
-                ct_img = ReportEngine._render_slice(ct_sl, mask_sl, ct_w, ct_l, ct_colormap, mask_opacity)
-                pet_img = ReportEngine._render_slice(pet_sl, mask_sl, pet_w, pet_l, pet_colormap, mask_opacity)
-                
-                base_w, base_h = ct_img.size
-                min_step = min(step_w, step_h)
-                new_w, new_h = base_w, base_h
-                if min_step > 0:
-                    new_w = int(round(base_w * (step_w / min_step)))
-                    new_h = int(round(base_h * (step_h / min_step)))
-                    if new_w != base_w or new_h != base_h:
-                        resample_filter = getattr(Image, "Resampling", Image).LANCZOS if hasattr(Image, "Resampling") else Image.LANCZOS
-                        ct_img = ct_img.resize((new_w, new_h), resample_filter)
-                        pet_img = pet_img.resize((new_w, new_h), resample_filter)
-                        
-                # Scale coordinates to resized image
-                p1_scaled = (p1[0] * (new_w / base_w), p1[1] * (new_h / base_h))
-                p2_scaled = (p2[0] * (new_w / base_w), p2[1] * (new_h / base_h))
-                
-                # Draw a light red line connecting the tumors
-                line_color = (255, 128, 128)
-                img_draw_ct = ImageDraw.Draw(ct_img)
-                img_draw_ct.line([p1_scaled, p2_scaled], fill=line_color, width=3)
-                
-                img_draw_pet = ImageDraw.Draw(pet_img)
-                img_draw_pet.line([p1_scaled, p2_scaled], fill=line_color, width=3)
-                
-                ct_img.save(dmax_dir / f"{plane}_ct.png")
-                pet_img.save(dmax_dir / f"{plane}_pet.png")
+
+            ReportEngine.export_line_images(
+                dmax_dir, ct_napari, pet_napari, dmax_mask_napari,
+                (z1, y1, x1), (z2, y2, x2), (sx, sy, sz),
+                (ct_w, ct_l), (pet_w, pet_l), ct_colormap, pet_colormap, mask_opacity,
+            )

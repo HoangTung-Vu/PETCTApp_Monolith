@@ -214,6 +214,7 @@ class MainWindow(
         # Ruler
         cp.sig_ruler_toggled.connect(self._on_ruler_toggled)
         cp.sig_ruler_clear.connect(lm._on_ruler_clear)
+        cp.sig_ruler_export.connect(self._on_ruler_export_clicked)
         lm.sig_ruler_distance.connect(cp.set_ruler_distance)
 
         # Report
@@ -239,6 +240,9 @@ class MainWindow(
 
         self.shortcut_crosshair = QShortcut(QKeySequence("x"), self)
         self.shortcut_crosshair.activated.connect(self._on_shortcut_toggle_crosshair)
+
+        self.shortcut_hover_sync = QShortcut(QKeySequence("h"), self)
+        self.shortcut_hover_sync.activated.connect(self._on_shortcut_toggle_hover_sync)
 
     def _on_splitter_moved(self, pos, index):
         """Re-enforce napari camera settings after sidebar splitter drag.
@@ -286,6 +290,13 @@ class MainWindow(
         """Toggle crosshair overlay via 'x' hotkey."""
         self.control_panel.view_display_tab.btn_crosshair.click()
 
+    def _on_shortcut_toggle_hover_sync(self):
+        """Toggle ruler hover slice-sync via 'h' hotkey (Ruler tab only)."""
+        if self.control_panel.tabs.currentIndex() != self._TAB_RULER:
+            return
+        enabled = self.layout_manager.toggle_ruler_hover_sync()
+        print(f"[MainWindow] Ruler hover sync {'ON' if enabled else 'OFF'}")
+
     def _on_eraser_background_click(self):
         """Notify the user they clicked on background (no tumor voxel there)."""
         from PyQt6.QtWidgets import QMessageBox
@@ -325,6 +336,57 @@ class MainWindow(
             # Restore the crosshair if the user had it enabled.
             if self.control_panel.view_display_tab.btn_crosshair.isChecked():
                 lm.enable_crosshair_mode()
+
+    def _on_ruler_export_clicked(self):
+        """Export 6 dmax-style images (3 planes × CT/PET) per ruler measurement."""
+        from pathlib import Path
+        import numpy as np
+        from ..utils.nifti_utils import to_napari
+        from ..utils.dimension_utils import get_spacing_from_affine
+        from ..core.engine.report_engine import ReportEngine
+
+        lm, sm = self.layout_manager, self.session_manager
+        measurements = list(lm._ruler_measurements)   # completed (start, end) pairs
+        if not measurements:
+            QMessageBox.warning(
+                self, "No Measurements",
+                "Draw at least one ruler measurement first.",
+            )
+            return
+        if sm.pet_image is None:
+            QMessageBox.warning(self, "Missing Data", "PET image must be loaded.")
+            return
+
+        out_root = QFileDialog.getExistingDirectory(
+            self, "Select Ruler Export Directory", "",
+            QFileDialog.Option.ShowDirsOnly,
+        )
+        if not out_root:
+            return  # user cancelled
+
+        pet_zyx = lm._cached_data_zyx.get("pet")
+        ct_zyx = lm._cached_data_zyx.get("ct")
+        if ct_zyx is None:                              # mirror report worker fallback
+            ct_zyx = np.zeros_like(pet_zyx)
+        mask_zyx = (to_napari(sm.get_tumor_mask_data().astype(np.uint8))
+                    if sm.tumor_mask else None)
+
+        sx, sy, sz = get_spacing_from_affine(sm.pet_image.affine)
+        spacing = (abs(float(sx)), abs(float(sy)), abs(float(sz)))
+        out_dir = Path(out_root) / f"ruler_{sm.current_session_id}"
+
+        for i, (start, end) in enumerate(measurements, 1):
+            ReportEngine.export_line_images(
+                out_dir / f"measurement_{i}", ct_zyx, pet_zyx, mask_zyx,
+                start, end, spacing, lm._ct_wl, lm._pet_wl,
+                lm._ct_colormap, lm._pet_colormap, lm._tumor_opacity,
+                length_mm=lm._ruler_distance(start, end)
+            )
+        print(f"[Ruler] Exported {len(measurements)} measurement(s) to {out_dir}")
+        QMessageBox.information(
+            self, "Ruler Export",
+            f"Exported {len(measurements)} measurement(s) to:\n{out_dir}",
+        )
 
     # ──── Shared helpers ────
 

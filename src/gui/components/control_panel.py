@@ -71,6 +71,7 @@ class ControlPanel(QWidget):
     # Ruler
     sig_ruler_toggled = pyqtSignal(bool)
     sig_ruler_clear = pyqtSignal()
+    sig_ruler_export = pyqtSignal()
 
     sig_load_from_dicom = pyqtSignal(str, str, str, str)   # dcm_folder, doctor, patient, resample_mode
 
@@ -162,6 +163,7 @@ class ControlPanel(QWidget):
         ru = self.ruler_tab
         ru.sig_ruler_toggled.connect(self.sig_ruler_toggled)
         ru.sig_ruler_clear.connect(self.sig_ruler_clear)
+        ru.sig_ruler_export.connect(self.sig_ruler_export)
 
 
     # ── Proxy accessors (kept for backwards compat with MainWindow) ──

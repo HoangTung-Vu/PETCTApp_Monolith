@@ -149,6 +149,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._ruler_measurements = []   # list of (start, end), each [z, y, x]
         self._ruler_start = None        # in-progress start, or None
         self._ruler_preview = None      # live preview point for in-progress segment
+        self._ruler_hover_sync = True   # hover-follow slice sync (toggled with H)
 
         # Initialise default layout so grid cells exist before first data load
         self.set_active_views(["axial_ct", "axial_pet"])
@@ -1061,6 +1062,12 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
     def _on_ruler_move(self, pos_zyx: list):
         if not self._ruler_enabled:
             return
+        # Hover liên tục đồng bộ slice các viewer còn lại theo con trỏ — giống
+        # crosshair nhưng kích hoạt bằng hover. Áp dụng cho cả point 1 (chưa click)
+        # lẫn point 2 (đã đặt point 1). Có thể tắt/bật bằng phím H.
+        if self._ruler_hover_sync:
+            self._xhair_pos = [pos_zyx[0], pos_zyx[1], pos_zyx[2]]
+            self._sync_viewer_slices()
         # Live preview only while choosing the second point of a segment.
         if self._ruler_start is None:
             return
@@ -1073,6 +1080,11 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._ruler_start = None
         self._ruler_preview = None
         self._update_ruler_readout()
+
+    def toggle_ruler_hover_sync(self) -> bool:
+        """Flip hover-follow slice sync; returns the new state."""
+        self._ruler_hover_sync = not self._ruler_hover_sync
+        return self._ruler_hover_sync
 
     def _ruler_scale(self):
         """Return (sz, sy, sx) mm/voxel for the loaded volume."""
