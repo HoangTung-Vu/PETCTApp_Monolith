@@ -1,8 +1,8 @@
 @echo off
 setlocal EnableDelayedExpansion
 
-set "SCRIPT_DIR=%~dp0"
-cd /d "%SCRIPT_DIR%"
+set "SCRIPTS_DIR=%~dp0"
+cd /d "%SCRIPTS_DIR%.."
 
 if exist ".env" (
     for /f "usebackq tokens=1,* delims==" %%a in (".env") do (
@@ -14,8 +14,8 @@ if exist ".env" (
 
 :: [1] Configuration
 if "%ENGINE_NNUNET_PORT%"=="" set "ENGINE_NNUNET_PORT=8104"
-if "%ENGINE_NNUNET_IMAGE%"=="" set "ENGINE_NNUNET_IMAGE=engine-nnunet"
-if "%ENGINE_NNUNET_CONTAINER%"=="" set "ENGINE_NNUNET_CONTAINER=engine-nnunet-container"
+if "%ENGINE_NNUNET_IMAGE%"=="" set "ENGINE_NNUNET_IMAGE=nnunet-engine"
+if "%ENGINE_NNUNET_CONTAINER%"=="" set "ENGINE_NNUNET_CONTAINER=nnunet-engine-container"
 
 :: Detect logical CPU core count for numpy/torch thread tuning
 for /f "tokens=2 delims==" %%a in ('wmic cpu get NumberOfLogicalProcessors /value 2^>nul') do (
@@ -23,31 +23,24 @@ for /f "tokens=2 delims==" %%a in ('wmic cpu get NumberOfLogicalProcessors /valu
 )
 if "%CPU_CORES%"=="" set "CPU_CORES=4"
 
-:: Give numpy/OpenBLAS/MKL full access to all cores (host-side; container env is set separately)
-set "OMP_NUM_THREADS=%CPU_CORES%"
-set "OPENBLAS_NUM_THREADS=%CPU_CORES%"
-set "MKL_NUM_THREADS=%CPU_CORES%"
-set "NUMEXPR_NUM_THREADS=%CPU_CORES%"
-
 set "GPU_FLAG="
-set "QT_OPENGL=desktop"
 nvidia-smi >nul 2>&1
 if !errorlevel! equ 0 (
-    echo NVIDIA GPU detected. Enabling GPU passthrough and discrete GPU rendering.
+    echo NVIDIA GPU detected. Enabling GPU passthrough.
     set "GPU_FLAG=--gpus all"
     set "CUDA_VISIBLE_DEVICES=0"
 ) else (
-    echo No NVIDIA GPU detected. Running CPU mode ^(see README_SETUP.md for GPU^).
+    echo No NVIDIA GPU detected. Running CPU mode.
 )
 
 echo =====================================
-echo   PET/CT Segmentation App Launcher (Windows / WSL2)
+echo   PET/CT AI Engine Launcher
 echo =====================================
 
-echo.
-echo -- Step 1: Building Docker image --
-echo Building Docker image: %ENGINE_NNUNET_IMAGE% ...
-docker build -t "%ENGINE_NNUNET_IMAGE%" "%SCRIPT_DIR%AI_engines\engine_nnunet_old_ver"
+::echo.
+::echo -- Step 1: Building Docker image --
+::echo Building Docker image: %ENGINE_NNUNET_IMAGE% ...
+::docker build -t "%ENGINE_NNUNET_IMAGE%" "AI_engines\engine_nnunet_old_ver"
 
 echo.
 echo -- Step 2: Starting container --
@@ -62,9 +55,11 @@ echo -- Step 3: Health check (waits for model preload) --
 call :wait_for_health %ENGINE_NNUNET_PORT% "nnUNet Engine"
 
 echo.
-echo -- Step 4: Launch PyQt GUI (high priority, %CPU_CORES% cores) --
-cd /d "%SCRIPT_DIR%"
-start /wait /high /b "" uv run python -m src.main
+echo =====================================
+echo   Engine is running on port %ENGINE_NNUNET_PORT%.
+echo   Press any key to stop the engine.
+echo =====================================
+pause >nul
 
 echo.
 echo -- Cleanup --
