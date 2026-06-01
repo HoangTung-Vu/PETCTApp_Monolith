@@ -111,16 +111,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._dynamic_grid.setSpacing(1)
         self.stack.addWidget(self._grid_container)
 
-        # Pool of 9 reusable 2D viewers
-        self._viewer_pool: list[ViewerWidget] = [ViewerWidget() for _ in range(9)]
-        for vw in self._viewer_pool:
-            vw.hide()
-
-        # Fixed view assignment: view_id → ViewerWidget
+        # Pool of reusable 2D viewers — created lazily on first use via _get_viewer()
+        self._viewer_pool: list[ViewerWidget] = []
         self._fixed_view_map: dict[str, ViewerWidget] = {}
-        for i, view_id in enumerate(VIEW_LABELS.keys()):
-            if i < len(self._viewer_pool):
-                self._fixed_view_map[view_id] = self._viewer_pool[i]
 
         # 3D viewer
         self._init_3d_view()
@@ -159,6 +152,15 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
         # Initialise default layout so grid cells exist before first data load
         self.set_active_views(["axial_ct", "axial_pet"])
+
+    def _get_viewer(self, view_id: str) -> "ViewerWidget":
+        """Return the ViewerWidget for *view_id*, creating it on first call."""
+        if view_id not in self._fixed_view_map:
+            vw = ViewerWidget()
+            vw.hide()
+            self._viewer_pool.append(vw)
+            self._fixed_view_map[view_id] = vw
+        return self._fixed_view_map[view_id]
 
     # ── 3D viewer init ───────────────────────────────────────────────────────
 
@@ -204,10 +206,10 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 vw.hide()
                 vw.viewer.layers.clear()
 
-        # Place assigned viewers into grid
+        # Place assigned viewers into grid (creates viewer on first use)
         for i, view_id in enumerate(sorted_views):
             row, col = divmod(i, cols)
-            vw = self._fixed_view_map[view_id]
+            vw = self._get_viewer(view_id)
             self._dynamic_grid.addWidget(vw, row, col)
             vw.show()
 
