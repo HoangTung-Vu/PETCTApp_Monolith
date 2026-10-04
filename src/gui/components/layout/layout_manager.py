@@ -452,6 +452,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             self.viewer_3d.viewer.layers[pet_name].visible = False
 
         self.viewer_3d.viewer.dims.ndisplay = 3
+        # Layers are reused across sessions, so napari's automatic fit on the
+        # first add_image no longer happens — fit the camera to this volume.
+        self.viewer_3d.viewer.reset_view()
         self._is_3d_loaded = True
 
     # ── View mode (3D only) ───────────────────────────────────────────────────
