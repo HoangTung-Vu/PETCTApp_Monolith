@@ -4,7 +4,7 @@ from pathlib import Path
 import httpx
 from PyQt6.QtCore import QThread, pyqtSignal
 
-from ...utils.nifti_utils import bytes_to_nifti, nifti_to_bytes
+from ...utils.nifti_utils import bytes_to_nifti, nifti_to_gzip_bytes
 from .core import HTTP_TIMEOUT, _inference_lock, get_engine_url
 
 # How often to poll the server for job progress (ms).
@@ -13,29 +13,25 @@ _POLL_INTERVAL_MS = 750
 _UPLOAD_CHUNK = 1 << 20  # 1 MiB
 
 
-def _resolve_source(img):
-    """Pick the upload source for a nibabel image.
+def _resolve_source(img, stream_path=None):
+    """Pick the upload source for a session image (in the app's LAS orientation).
 
-    Default: stream the original file from disk — for session CT/PET the in-memory
-    image is an unmodified ``nib.load`` of its source, so the on-disk ``.nii.gz`` is
-    byte-equivalent *and* gzip-compressed. That skips the re-encode CPU cost, uploads
-    a smaller payload, and is read lazily in chunks (no full buffer in RAM).
+    Default: stream ``stream_path`` from disk — the SessionManager sets it only when
+    that file's bytes equal the in-memory image (a LAS NIfTI loaded unchanged). That
+    skips the re-encode CPU cost, uploads the compressed file, and is read lazily in
+    chunks (no full buffer in RAM).
 
-    Fallback: serialize in RAM via ``nifti_to_bytes`` when no on-disk file backs the
-    image (in-memory image, or the source was deleted/moved). The server detects gzip
-    by magic bytes, so a raw-uncompressed fallback payload parses fine too.
+    Fallback (DICOM sessions, reoriented NIfTI, missing file): serialize the LAS image
+    in RAM as multi-member gzip, compressed on all cores. The server detects gzip by
+    magic bytes and ``gzip.decompress`` reads multi-member streams.
 
     Returns ``("path", Path, size)`` or ``("bytes", data)``.
     """
-    try:
-        fname = img.get_filename()
-    except Exception:
-        fname = None
-    if fname:
-        p = Path(fname)
+    if stream_path:
+        p = Path(stream_path)
         if p.is_file():
             return ("path", p, p.stat().st_size)
-    return ("bytes", nifti_to_bytes(img))
+    return ("bytes", nifti_to_gzip_bytes(img))
 
 
 def _build_multipart(files):
@@ -85,9 +81,12 @@ class SegmentationWorker(QThread):
     finished = pyqtSignal(object)       # (mask_nib_image, None, "tumor")
     error = pyqtSignal(str)
 
-    def __init__(self, images):
+    def __init__(self, images, stream_paths=None):
+        """``images``: nibabel image(s) to segment; ``stream_paths``: matching
+        source files that may be streamed unchanged (None entries → serialize)."""
         super().__init__()
         self.images = images
+        self.stream_paths = stream_paths
 
     def run(self):
         try:
@@ -99,8 +98,9 @@ class SegmentationWorker(QThread):
                 # doesn't split a single job across two servers.
                 engine_url = get_engine_url()
                 images = self.images if isinstance(self.images, list) else [self.images]
-                files = [(f"image_{i}.nii.gz", _resolve_source(img))
-                         for i, img in enumerate(images)]
+                paths = self.stream_paths or [None] * len(images)
+                files = [(f"image_{i}.nii.gz", _resolve_source(img, path))
+                         for i, (img, path) in enumerate(zip(images, paths))]
                 segments, total, content_type = _build_multipart(files)
 
                 with httpx.Client(timeout=HTTP_TIMEOUT) as client:

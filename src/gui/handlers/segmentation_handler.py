@@ -26,9 +26,10 @@ class SegmentationHandlerMixin:
             )
             return
 
+        # LAS volumes (the training orientation); unchanged LAS files are streamed.
         input_data = [ct_img, pet_img]
-
-        self.worker = SegmentationWorker(input_data)
+        sm = self.session_manager
+        self.worker = SegmentationWorker(input_data, [sm.ct_stream_path, sm.pet_stream_path])
 
         # Non-modal status dialog: upload → inference % → done. The user can keep
         # viewing/panning/zooming while it runs.
@@ -47,6 +48,14 @@ class SegmentationHandlerMixin:
     def _on_segmentation_finished(self, result_tuple):
         mask_img, _prob_array, seg_type = result_tuple
         data = np.asarray(mask_img.dataobj, dtype=np.uint8)
+
+        ct_img = self.session_manager.ct_image
+        if ct_img is None or data.shape != tuple(ct_img.shape):
+            self._on_segmentation_error(
+                f"The engine returned a mask of shape {data.shape}, "
+                f"but the image grid is {None if ct_img is None else tuple(ct_img.shape)}."
+            )
+            return
 
         self.session_manager.set_tumor_mask(data)
         self._push_mask_to_all("tumor", data)

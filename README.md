@@ -6,9 +6,10 @@
 
 ## Project Overview
 
-This project is a desktop application built with Python, PyQt6, and Napari, designed for medical professionals and researchers to process PET/CT imaging data. It provides an end-to-end workflow from loading NIfTI files to running AI-driven segmentation, manual refinement, and generating clinical quantifications (SUVmax, SUVmean, MTV, gTLG).
+This project is a desktop application built with Python, PyQt6, and Napari, designed for medical professionals and researchers to process PET/CT imaging data. It provides an end-to-end workflow from loading DICOM series or NIfTI files (any orientation) to running AI-driven segmentation, manual refinement, and generating clinical quantifications (SUVmax, SUVmean, MTV, gTLG).
 
 Key features:
+*   **Direct DICOM Import:** CT/PET series are read straight into memory (no NIfTI conversion), PET is converted to SUV (body weight), and patient/physician names come from the DICOM tags.
 *   **Multi-Modal Visualization:** Interactive orthogonal (grid) views, fusion (overlay) layouts, and 3D volume rendering powered by Napari.
 *   **Automated AI Segmentation:** Dockerized nnU-Net backend for rapid tumor segmentation with real-time inference progress.
 *   **Precision Refinement Tools:** Paint/Eraser 3D brushes, SUV-based thresholding, and Iterative Thresholding.

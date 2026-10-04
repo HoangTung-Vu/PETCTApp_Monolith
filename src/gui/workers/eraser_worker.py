@@ -2,6 +2,8 @@ from PyQt6.QtCore import QObject, pyqtSignal, QThread
 import numpy as np
 from skimage.morphology import flood
 
+from ...utils.nifti_utils import mask_bbox
+
 
 class EraserFloodWorker(QThread):
     """
@@ -10,8 +12,8 @@ class EraserFloodWorker(QThread):
     the indices to be removed.
     """
     
-    # Emits exactly the boolean mask of the component to erase:
-    # (component_mask_zyx)
+    # Emits the ZYX indices (np.nonzero tuple) of the component to erase.
+    # Computed here so the UI thread never scans the full volume.
     component_found = pyqtSignal(object)
     error = pyqtSignal(str)
 
@@ -40,7 +42,10 @@ class EraserFloodWorker(QThread):
                 return
 
             component_mask = flood(self.mask_zyx, (z, y, x))
-            self.component_found.emit(component_mask)
+            # np.nonzero over the whole volume costs ~0.25 s; scan only the bbox.
+            bbox = mask_bbox(component_mask)
+            local = np.nonzero(component_mask[bbox])
+            self.component_found.emit(tuple(idx + s.start for idx, s in zip(local, bbox)))
         except Exception as e:
             self.error.emit(f"Eraser Flood Failed: {str(e)}")
         finally:

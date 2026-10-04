@@ -11,6 +11,21 @@ from scipy.ndimage import label, find_objects
 from ...utils.dimension_utils import get_voxel_volume_from_affine
 
 
+def _label_components(mask: np.ndarray):
+    """``scipy.ndimage.label`` + ``find_objects`` in the fast memory order.
+
+    Both are 50–100× slower on Fortran-ordered input (NIfTI's layout), so an
+    F-ordered mask is processed through its C-contiguous transpose; labels come
+    back in ``mask``'s axis order. Returns ``(labels, n, slices)``.
+    """
+    if mask.flags.f_contiguous and not mask.flags.c_contiguous:
+        labels_t, n = label(mask.T)
+        slices = [None if s is None else s[::-1] for s in find_objects(labels_t)]
+        return labels_t.T, n, slices
+    labels, n = label(mask)
+    return labels, n, find_objects(labels)
+
+
 class ReportEngine:
     """Computes clinical PET metrics on a per-lesion basis using connected
     component analysis.
@@ -69,11 +84,9 @@ class ReportEngine:
         voxel_vol_ml = voxel_vol_mm3 / 1000.0
 
         # ── Connected component labeling ──
-        labeled_array, num_features = label(roi)
-
         # find_objects returns tight bounding slices per component (O(N) total,
         # not O(N×L)) — avoids scanning the full array once per lesion.
-        component_slices = find_objects(labeled_array)
+        labeled_array, num_features, component_slices = _label_components(roi)
 
         lesions = []
         g_tlg = 0.0
@@ -400,7 +413,6 @@ class ReportEngine:
 
         ct_napari = ct_zyx if ct_zyx is not None else to_napari(ct_data)
         pet_napari = pet_zyx if pet_zyx is not None else to_napari(pet_data)
-        mask_napari = to_napari(mask_data)
 
         sx, sy, sz = get_spacing_from_affine(affine)
         sx, sy, sz = abs(float(sx)), abs(float(sy)), abs(float(sz))
@@ -482,9 +494,10 @@ class ReportEngine:
 
         # ── Isolated Masks ──
         # Re-run connected components to map lesion IDs back to local mask labels
-        from scipy.ndimage import label, find_objects
-        labeled_array, _ = label(mask_data > 0)
-        component_slices = find_objects(labeled_array)
+        labeled_array, _, component_slices = _label_components(mask_data > 0)
+        # One ZYX copy of the labels; each lesion then only compares the three
+        # 2D slices it renders (was a full-volume compare + to_napari per lesion).
+        labeled_napari = to_napari(labeled_array)
         label_map = {}
         for index, sl in enumerate(component_slices, start=1):
             if sl is None: continue
@@ -520,22 +533,21 @@ class ReportEngine:
             iy = max(0, min(iy, ct_napari.shape[1] - 1))
             ix = max(0, min(ix, ct_napari.shape[2] - 1))
 
-            # Isolate mask for this specific tumor
+            # Isolate mask for this specific tumor (all lesions as fallback)
             mask_label = label_map.get(lid)
-            if mask_label is not None:
-                isolated_mask_data = (labeled_array == mask_label).astype(np.uint8)
-                isolated_mask_napari = to_napari(isolated_mask_data)
-            else:
-                isolated_mask_napari = mask_napari  # Fallback
+
+            def lesion_mask(sl):
+                lab = labeled_napari[sl]
+                return (lab == mask_label) if mask_label is not None else (lab > 0)
 
             # Napari (Z, Y, X) slicing:
             # Axial:    data[iz, :, :] -> shape (Y, X) -> Width=X, Height=Y -> aspect sx/sy
             # Coronal:  data[:, iy, :] -> shape (Z, X) -> Width=X, Height=Z -> aspect sx/sz
             # Sagittal: data[:, :, ix] -> shape (Z, Y) -> Width=Y, Height=Z -> aspect sy/sz
             slices = {
-                "axial":    (ct_napari[iz, :, :], pet_napari[iz, :, :], isolated_mask_napari[iz, :, :], sx, sy),
-                "coronal":  (ct_napari[:, iy, :], pet_napari[:, iy, :], isolated_mask_napari[:, iy, :], sx, sz),
-                "sagittal": (ct_napari[:, :, ix], pet_napari[:, :, ix], isolated_mask_napari[:, :, ix], sy, sz),
+                "axial":    (ct_napari[iz, :, :], pet_napari[iz, :, :], lesion_mask(np.s_[iz, :, :]), sx, sy),
+                "coronal":  (ct_napari[:, iy, :], pet_napari[:, iy, :], lesion_mask(np.s_[:, iy, :]), sx, sz),
+                "sagittal": (ct_napari[:, :, ix], pet_napari[:, :, ix], lesion_mask(np.s_[:, :, ix]), sy, sz),
             }
 
             for plane, (ct_sl, pet_sl, mask_sl, step_w, step_h) in slices.items():
@@ -569,11 +581,9 @@ class ReportEngine:
             label_b = label_map.get(lesion_b["id"])
             
             if label_a is not None and label_b is not None:
-                dmax_mask_data = ((labeled_array == label_a) | (labeled_array == label_b)).astype(np.uint8)
+                dmax_mask_napari = ((labeled_napari == label_a) | (labeled_napari == label_b)).astype(np.uint8)
             else:
-                dmax_mask_data = mask_data
-                
-            dmax_mask_napari = to_napari(dmax_mask_data)
+                dmax_mask_napari = (labeled_napari > 0).astype(np.uint8)
             
             # Map coordinates to Napari indices
             vza, vya, vxa = lesion_a["center_voxel"][2], lesion_a["center_voxel"][1], lesion_a["center_voxel"][0]

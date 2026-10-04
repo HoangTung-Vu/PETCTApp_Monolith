@@ -89,23 +89,19 @@ class EraserMixin:
             from PyQt6.QtCore import Qt
             QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
 
-            def _on_component_found(component_mask_zyx):
+            def _on_component_found(component_indices_zyx):
                 QApplication.restoreOverrideCursor()
-                
-                num_voxels = int(np.sum(component_mask_zyx))
+
+                num_voxels = len(component_indices_zyx[0])
                 if num_voxels == 0:
                     return
-                    
-                # Identify the exact 3D indices (in ZYX) to emit
-                component_indices_zyx = np.nonzero(component_mask_zyx)
-                
-                # Apply in-place removal to the master numpy array buffer
-                mask_zyx[component_mask_zyx] = 0
+
+                # In-place removal touches only the component's voxels.
+                mask_zyx[component_indices_zyx] = 0
                 print(f"[Eraser] Removed component at {coord_zyx} ({num_voxels} voxels).")
-                
+
                 # Emit the diff directly instead of doing heavy numpy copies.
-                # old_mask_xyz vs new_mask_xyz is skipped in favor of a direct diff.
-                self.sig_eraser_region_removed.emit(component_indices_zyx, component_mask_zyx, mask_zyx)
+                self.sig_eraser_region_removed.emit(component_indices_zyx, mask_zyx)
                 
             def _on_error(msg):
                 QApplication.restoreOverrideCursor()

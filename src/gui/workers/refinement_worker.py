@@ -104,7 +104,7 @@ class SUVApplyWorker(QThread):
     def run(self):
         try:
             pet_data = self.pet_image.get_fdata(dtype=np.float32)
-            result = np.zeros(self.base_roi.shape, dtype=np.uint8)
+            result = np.zeros_like(self.base_roi, dtype=np.uint8)
 
             if self.components_info is not None:
                 # Apply per-component
@@ -119,22 +119,13 @@ class SUVApplyWorker(QThread):
                     np.copyto(result[slc], 1, where=(comp_mask & pet_thresh))
             else:
                 # Apply global with bounding box optimization
+                from ...utils.nifti_utils import mask_bbox
                 roi = self.base_roi > 0
-                z_nz, y_nz, x_nz = np.nonzero(roi)
-                if len(z_nz) > 0:
-                    z_min, z_max = z_nz.min(), z_nz.max() + 1
-                    y_min, y_max = y_nz.min(), y_nz.max() + 1
-                    x_min, x_max = x_nz.min(), x_nz.max() + 1
-                    
-                    roi_cropped = roi[z_min:z_max, y_min:y_max, x_min:x_max]
-                    pet_cropped = pet_data[z_min:z_max, y_min:y_max, x_min:x_max]
-                    
-                    pet_thresh_cropped = pet_cropped >= self.threshold
-                    np.copyto(
-                        result[z_min:z_max, y_min:y_max, x_min:x_max], 
-                        1, 
-                        where=(roi_cropped & pet_thresh_cropped)
-                    )
+                bbox = mask_bbox(roi)
+                if bbox is not None:
+                    roi_cropped = roi[bbox]
+                    pet_thresh_cropped = pet_data[bbox] >= self.threshold
+                    np.copyto(result[bbox], 1, where=(roi_cropped & pet_thresh_cropped))
 
             self.apply_finished.emit(result)
         except Exception as e:

@@ -18,9 +18,10 @@ class WorkflowTab(QWidget):
     sig_segment_clicked = pyqtSignal()
     sig_new_session_clicked = pyqtSignal(str, str)   # doctor, patient
     sig_load_session_clicked = pyqtSignal(int)        # session_id
+    sig_delete_session_clicked = pyqtSignal(int)      # session_id
     sig_report_clicked = pyqtSignal()
     sig_toggle_lesion_ids = pyqtSignal(bool)
-    sig_load_from_dicom = pyqtSignal(str, str, str, str)   # dcm_folder, doctor, patient, resample_mode
+    sig_load_from_dicom = pyqtSignal(str, str, str)   # dcm_folder, fallback doctor, fallback patient
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -48,20 +49,25 @@ class WorkflowTab(QWidget):
         session_layout.addRow(self.btn_new_session)
 
         self.btn_load_dicom = QPushButton("Load from DICOM Folder…")
+        self.btn_load_dicom.setToolTip(
+            "Import CT/PET series directly from DICOM. Patient and physician names "
+            "come from the DICOM tags; the fields above are only used when the tags are empty."
+        )
         self.btn_load_dicom.clicked.connect(self._emit_load_from_dicom)
         session_layout.addRow(self.btn_load_dicom)
-
-        self.combo_resample_mode = QComboBox()
-        self.combo_resample_mode.addItem("Resample to CT grid", "ct")
-        self.combo_resample_mode.addItem("Resample to PET grid", "pet")
-        session_layout.addRow("Resample:", self.combo_resample_mode)
 
         self.combo_sessions = QComboBox()
         self.btn_load_this_session = QPushButton("Load Selected")
         self.btn_load_this_session.clicked.connect(self._emit_load_session)
+        self.btn_delete_session = QPushButton("Delete Selected")
+        self.btn_delete_session.setToolTip(
+            "Remove the session from the app. Image files and the saved segmentation stay on disk."
+        )
+        self.btn_delete_session.clicked.connect(self._emit_delete_session)
 
         session_layout.addRow("Previous:", self.combo_sessions)
         session_layout.addRow(self.btn_load_this_session)
+        session_layout.addRow(self.btn_delete_session)
 
         grp_session.setLayout(session_layout)
         layout.addWidget(grp_session)
@@ -172,8 +178,7 @@ class WorkflowTab(QWidget):
             return
         doc = self.input_doctor.text().strip()
         pat = self.input_patient.text().strip()
-        resample_mode = self.combo_resample_mode.currentData()
-        self.sig_load_from_dicom.emit(folder, doc, pat, resample_mode)
+        self.sig_load_from_dicom.emit(folder, doc, pat)
 
     def _apply_engine_host(self):
         # Persist + clean via the config setter, then reflect the cleaned
@@ -188,6 +193,11 @@ class WorkflowTab(QWidget):
         data = self.combo_sessions.currentData()
         if data is not None:
             self.sig_load_session_clicked.emit(int(data))
+
+    def _emit_delete_session(self):
+        data = self.combo_sessions.currentData()
+        if data is not None:
+            self.sig_delete_session_clicked.emit(int(data))
 
     def show_progress(self):
         self.progress_bar.setVisible(True)

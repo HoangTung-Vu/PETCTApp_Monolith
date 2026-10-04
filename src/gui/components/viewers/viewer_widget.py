@@ -208,8 +208,8 @@ class ViewerWidget(QWidget):
         effective_blending = blending if self.is_3d else "translucent_no_depth"
 
         if name in self.viewer.layers:
-            self.viewer.layers[name].data = data_zyx
             self.viewer.layers[name].scale = self._scale_zyx
+            self.viewer.layers[name].data = data_zyx
             self.viewer.layers[name].colormap = colormap
             self.viewer.layers[name].blending = effective_blending
             self.viewer.layers[name].opacity = opacity
@@ -248,8 +248,10 @@ class ViewerWidget(QWidget):
                 layer.refresh()
                 return
 
-            # Fallback if shapes don't match (e.g. initial load)
+            # Fallback if shapes don't match (e.g. initial load / new session)
             was_visible = layer.visible
+            if self._scale_zyx is not None:
+                layer.scale = self._scale_zyx
             layer.data = mask_data
             layer.visible = was_visible
             layer.refresh()
@@ -276,6 +278,25 @@ class ViewerWidget(QWidget):
             layer.editable = False
 
         self._enforce_layer_order()
+
+    def remove_layer(self, layer_type: str):
+        """Remove the layer for ``layer_type`` if present."""
+        name = self.LAYER_NAMES.get(layer_type, layer_type)
+        if name in self.viewer.layers:
+            self.viewer.layers.remove(name)
+
+    def release_data(self):
+        """Swap image/mask data for a 1-voxel placeholder, keeping the layers.
+
+        Frees the session arrays without paying napari's layer teardown and
+        re-creation cost on the next load.
+        """
+        self.hide_lesion_ids()
+        for layer in list(self.viewer.layers):
+            if isinstance(layer, (napari.layers.Image, napari.layers.Labels)):
+                layer.data = np.zeros((1, 1, 1), dtype=layer.data.dtype)
+            if isinstance(layer, napari.layers.Image):
+                layer.visible = False      # LayoutManager sets visibility again on load
 
     def _enforce_layer_order(self):
         """Ensure rendering order: CT < PET < Tumor < ROI < Preview < Lesion"""

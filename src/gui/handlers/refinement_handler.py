@@ -61,16 +61,13 @@ class RefinementHandlerMixin:
             if roi_data is None:
                 roi_data = np.zeros_like(result)
             else:
-                roi_data = roi_data.copy()
+                roi_data = np.copy(roi_data)   # keeps the F layout (.copy() would not)
 
             # Using assignment replaces existing ROI correctly within the painted box
-            roi_data[base_roi > 0] = result[base_roi > 0]
+            np.copyto(roi_data, result, where=base_roi > 0)
 
             self.session_manager.set_roi_mask(roi_data)
-            
-            # Pass pre-flipped/transposed view to bypass `to_napari` array copy
-            roi_data_zyx = np.flip(np.transpose(roi_data, (2, 1, 0)), axis=(0, 1))
-            self._push_mask_to_all("roi", roi_data, data_zyx=roi_data_zyx)
+            self._push_mask_to_all("roi", roi_data)
         except Exception as e:
             print(f"Apply ROI Failed: {e}")
 
@@ -169,7 +166,7 @@ class RefinementHandlerMixin:
             )
             return
 
-        self._painted_roi = roi_mask.copy()
+        self._painted_roi = np.copy(roi_mask)
 
         from ..workers import ThresholdComputeWorker
         self._threshold_worker = ThresholdComputeWorker(
@@ -212,7 +209,7 @@ class RefinementHandlerMixin:
             )
             return
 
-        self._painted_roi = roi_mask.copy()
+        self._painted_roi = np.copy(roi_mask)
 
         from ..workers import ThresholdComputeWorker
         self._threshold_worker = ThresholdComputeWorker(
@@ -287,7 +284,7 @@ class RefinementHandlerMixin:
         idx = self._current_component_idx
 
         # PRECOMPUTE: Static background components (i < current and i > current)
-        self._base_preview = np.zeros(self._painted_roi.shape, dtype=np.uint8)
+        self._base_preview = np.zeros_like(self._painted_roi, dtype=np.uint8)
         pet_data = self._cached_pet_f32
         for i, c in enumerate(self._components_info):
             label_id = c["label"]
@@ -301,18 +298,20 @@ class RefinementHandlerMixin:
             elif i > self._current_component_idx:
                 self._base_preview[slc][c_mask & (self._painted_roi[slc] > 0)] = 1
 
-        # PRECOMPUTE: Extract 1D array of PET values and boolean 3D mask for CURRENT component
-        self._active_comp_mask = (self._roi_labels == comp["label"])
-        self._active_pet_vals = pet_data[self._active_comp_mask]
-
         # Bounding box of the active component (from find_objects on the ROI labels).
         # Restricting per-tick work to this bbox cuts the slider-tick cost from
         # ~O(volume) full copy to O(bbox) — keeps live preview snappy on big volumes.
         self._active_bbox = self._roi_slices[comp["label"] - 1]
+
+        # PRECOMPUTE: the component's mask and PET values inside its bbox. Both use
+        # the same (C-order) traversal of the crop, so the 1D values line up with
+        # ``buf[bbox][mask]`` in _update_component_preview.
+        self._active_comp_mask = (self._roi_labels[self._active_bbox] == comp["label"])
+        self._active_pet_vals = pet_data[self._active_bbox][self._active_comp_mask]
         # Persistent buffer reused across every slider tick of THIS component.
         # Same shape as the full mask so downstream `_push_mask_to_all` / napari
         # `np.copyto` semantics are unchanged.
-        self._preview_buffer = self._base_preview.copy()
+        self._preview_buffer = np.copy(self._base_preview)
 
         # Jump viewer to centroid of this component
         self._jump_to_component(comp["label"])
@@ -435,13 +434,11 @@ class RefinementHandlerMixin:
         #    same 1D vector can be assigned back via the full-volume mask. We do
         #    this only inside the bbox to keep the write cheap.
         buf_crop = buf[slc]
-        mask_crop = self._active_comp_mask[slc]
-        buf_crop[mask_crop] = valid_indices
+        buf_crop[self._active_comp_mask] = valid_indices
 
-        # Pass a pre-transposed, pre-flipped view to avoid to_napari memory bloat
-        preview_zyx = np.flip(np.transpose(buf, (2, 1, 0)), axis=(0, 1))
-
-        self._push_mask_to_all("roi", buf, data_zyx=preview_zyx)
+        # Only the bbox changed since the previous tick — copy just that block
+        # into the viewers' ZYX array (the first push of a buffer is a full one).
+        self.layout_manager.update_mask_region(buf, "roi", slc)
 
     def _apply_all_component_thresholds(self):
         """Apply the final per-component thresholds, merge into tumor_mask, clear ROI."""

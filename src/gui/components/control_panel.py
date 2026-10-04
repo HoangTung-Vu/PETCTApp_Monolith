@@ -28,6 +28,7 @@ class ControlPanel(QWidget):
     sig_segment_clicked = pyqtSignal()
     sig_new_session_clicked = pyqtSignal(str, str)
     sig_load_session_clicked = pyqtSignal(int)
+    sig_delete_session_clicked = pyqtSignal(int)
     sig_report_clicked = pyqtSignal()
     sig_toggle_lesion_ids = pyqtSignal(bool)
     sig_tab_changed = pyqtSignal(int) # index
@@ -73,7 +74,7 @@ class ControlPanel(QWidget):
     sig_ruler_clear = pyqtSignal()
     sig_ruler_export = pyqtSignal()
 
-    sig_load_from_dicom = pyqtSignal(str, str, str, str)   # dcm_folder, doctor, patient, resample_mode
+    sig_load_from_dicom = pyqtSignal(str, str, str)   # dcm_folder, fallback doctor, fallback patient
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -116,6 +117,7 @@ class ControlPanel(QWidget):
         w.sig_segment_clicked.connect(self.sig_segment_clicked)
         w.sig_new_session_clicked.connect(self.sig_new_session_clicked)
         w.sig_load_session_clicked.connect(self.sig_load_session_clicked)
+        w.sig_delete_session_clicked.connect(self.sig_delete_session_clicked)
         w.sig_report_clicked.connect(self.sig_report_clicked)
         w.sig_load_from_dicom.connect(self.sig_load_from_dicom)
         w.sig_toggle_lesion_ids.connect(self.sig_toggle_lesion_ids)

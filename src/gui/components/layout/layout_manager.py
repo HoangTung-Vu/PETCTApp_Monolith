@@ -67,7 +67,7 @@ def _view_sort_key(view_id: str):
 class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
     """Dynamic multi-view layout manager with a pool of 9 ViewerWidgets."""
 
-    sig_eraser_region_removed   = pyqtSignal(object, object, object)
+    sig_eraser_region_removed   = pyqtSignal(object, object)   # (indices_zyx, mask_zyx)
     sig_eraser_background_click = pyqtSignal()
     sig_mask_painted            = pyqtSignal(str)
     sig_mask_modified           = pyqtSignal(str)
@@ -198,14 +198,16 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
         # Remove all widgets from the grid without destroying them (already done above)
 
+        previously_active = set(self._active_views)
         self._active_views = sorted_views
 
-        # Hide unassigned pool viewers and clear their memory
+        # Unassigned viewers are only hidden. Their layers are kept — creating or
+        # removing a napari layer costs ~0.4 s — and they share the cached arrays,
+        # so keeping them costs no extra memory.
         assigned_views = set(sorted_views)
         for view_id, vw in self._fixed_view_map.items():
             if view_id not in assigned_views:
                 vw.hide()
-                vw.viewer.layers.clear()
 
         # Place assigned viewers into grid (creates viewer on first use)
         for i, view_id in enumerate(sorted_views):
@@ -213,6 +215,10 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             vw = self._get_viewer(view_id)
             self._dynamic_grid.addWidget(vw, row, col)
             vw.show()
+            if view_id not in previously_active:
+                # A re-shown viewer may still carry an old paint/shape tool.
+                vw.disable_shape_drag()
+                vw.deactivate_labels()
 
         for c in range(cols):
             self._dynamic_grid.setColumnStretch(c, 1)
@@ -347,6 +353,13 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                     if pet_name in vw.viewer.layers:
                         vw.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
 
+                # Drop image layers the current session has no data for
+                # (placeholders kept from a previous session).
+                if ct_zyx is None:
+                    vw.remove_layer("ct")
+                if pet_zyx is None:
+                    vw.remove_layer("pet")
+
                 # Set layer visibility
                 ct_name  = vw.LAYER_NAMES["ct"]
                 pet_name = vw.LAYER_NAMES["pet"]
@@ -355,11 +368,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 if pet_name in vw.viewer.layers:
                     vw.viewer.layers[pet_name].visible = wants_pet
 
-                # Load masks
-                if self._cached_data_zyx.get("tumor") is not None:
-                    vw.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-                if self._cached_data_zyx.get("roi") is not None:
-                    vw.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
+                # Load masks (drop layers left over from a previous session)
+                self._load_masks_into(vw)
 
                 # Set camera orientation (axis order) without resetting slice
                 vw.set_camera_view(axis)
@@ -383,9 +393,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
                 if self._cached_lesion_data:
                     vw.show_lesion_ids(*self._cached_lesion_data)
-
-                from PyQt6.QtWidgets import QApplication
-                QApplication.processEvents()
+                else:
+                    vw.hide_lesion_ids()
         finally:
             # ── Restore crosshair position that may have been clobbered ──
             self._xhair_pos = saved_pos
@@ -393,6 +402,15 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
         # Now sync all viewer slices to the (preserved) crosshair position
         self._sync_viewer_slices()
+
+    def _load_masks_into(self, vw):
+        """Push cached masks into ``vw``; remove mask layers that have no data."""
+        for mask_type in ("tumor", "roi"):
+            data = self._cached_data_zyx.get(mask_type)
+            if data is not None:
+                vw.load_mask_zyx(data, mask_type)
+            else:
+                vw.remove_layer(mask_type)
 
     # ── 3D data loading ───────────────────────────────────────────────────────
 
@@ -408,14 +426,17 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
         if ct_zyx is not None and ct_affine is not None:
             self.viewer_3d.load_image_zyx(ct_zyx, ct_affine, "ct", self._ct_colormap)
+        else:
+            self.viewer_3d.remove_layer("ct")
         if pet_zyx is not None and pet_affine is not None:
             self.viewer_3d.load_image_zyx(pet_zyx, pet_affine, "pet", self._pet_colormap, opacity=1.0)
-        if self._cached_data_zyx.get("tumor") is not None:
-            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["tumor"], "tumor")
-        if self._cached_data_zyx.get("roi") is not None:
-            self.viewer_3d.load_mask_zyx(self._cached_data_zyx["roi"], "roi")
+        else:
+            self.viewer_3d.remove_layer("pet")
+        self._load_masks_into(self.viewer_3d)
         if self._cached_lesion_data:
             self.viewer_3d.show_lesion_ids(*self._cached_lesion_data)
+        else:
+            self.viewer_3d.hide_lesion_ids()
 
         ct_name  = self.viewer_3d.LAYER_NAMES["ct"]
         pet_name = self.viewer_3d.LAYER_NAMES["pet"]
@@ -425,6 +446,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         p_max = self._pet_wl[1] + self._pet_wl[0] / 2
         if ct is not None and ct_name in self.viewer_3d.viewer.layers:
             self.viewer_3d.viewer.layers[ct_name].contrast_limits = (c_min, c_max)
+            self.viewer_3d.viewer.layers[ct_name].visible = True
         if pet is not None and pet_name in self.viewer_3d.viewer.layers:
             self.viewer_3d.viewer.layers[pet_name].contrast_limits = (p_min, p_max)
             self.viewer_3d.viewer.layers[pet_name].visible = False
@@ -740,44 +762,75 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
     # ── Mask update ───────────────────────────────────────────────────────────
 
     def update_mask(self, mask_data, mask_type, data_zyx=None):
+        """Replace a mask (XYZ ``mask_data``) in every visible viewer.
+
+        The ZYX cache array is updated in place whenever the shape allows, so
+        every viewer layer keeps sharing one array. ``data_zyx`` is used only
+        when it is a contiguous ZYX array; a strided view (flip/transpose of
+        XYZ) is rebuilt with the threaded ``to_napari`` instead — a
+        single-threaded strided copy of a whole-body mask takes ~1 s.
+        """
         if mask_data is None:
             return
+        from ....utils.nifti_utils import to_napari
 
         is_same_object = (mask_data is self._cached_data.get(mask_type))
         self._cached_data[mask_type] = mask_data
         existing_zyx = self._cached_data_zyx.get(mask_type)
+        expected_shape = mask_data.shape[::-1]
+        reuse = existing_zyx is not None and existing_zyx.shape == expected_shape
 
-        if data_zyx is None:
-            if is_same_object and existing_zyx is not None:
-                # Array is the same object, its ZYX counterpart is already in sync or we don't need to rebuild it
-                data_zyx = existing_zyx
-            else:
-                from ....utils.nifti_utils import to_napari
-                data_zyx = to_napari(mask_data.astype(np.uint8, copy=False))
+        if data_zyx is not None and not data_zyx.flags.c_contiguous:
+            data_zyx = None
 
-        if existing_zyx is not None and getattr(existing_zyx, 'shape', None) == data_zyx.shape:
-            if data_zyx is not existing_zyx:
+        if data_zyx is not None:
+            if reuse and data_zyx is not existing_zyx:
                 np.copyto(existing_zyx, data_zyx, casting='unsafe')
+                data_zyx = existing_zyx
+        elif reuse:
+            if not is_same_object:
+                to_napari(np.asarray(mask_data, dtype=np.uint8), out=existing_zyx)
             data_zyx = existing_zyx
-            
-        self._cached_data_zyx[mask_type] = data_zyx
+        else:
+            data_zyx = to_napari(np.asarray(mask_data, dtype=np.uint8))
 
-        print(f"[LayoutManager] update_mask: starting viewer loop for {mask_type}")
+        self._cached_data_zyx[mask_type] = data_zyx
+        self._push_mask_to_viewers(data_zyx, mask_type)
+
+    def update_mask_region(self, mask_data, mask_type, region_xyz):
+        """Copy only ``region_xyz`` (3 slices, XYZ) of ``mask_data`` into the ZYX cache.
+
+        Used by the threshold-preview slider, which changes one component's
+        bounding box per tick. Falls back to a full ``update_mask`` when the
+        cache does not hold this mask yet.
+        """
+        existing_zyx = self._cached_data_zyx.get(mask_type)
+        if (existing_zyx is None or mask_data is not self._cached_data.get(mask_type)
+                or existing_zyx.shape != mask_data.shape[::-1]):
+            self.update_mask(mask_data, mask_type)
+            return
+        sx, sy, sz = region_xyz
+        Z, Y, _ = existing_zyx.shape
+        # to_napari: z_nap = Z-1-z, y_nap = Y-1-y, x_nap = x
+        z_nap = slice(Z - sz.stop, Z - sz.start)
+        y_nap = slice(Y - sy.stop, Y - sy.start)
+        block = mask_data[sx, sy, sz]                       # (x, y, z)
+        existing_zyx[z_nap, y_nap, sx] = block.transpose(2, 1, 0)[::-1, ::-1, :]
+        self._push_mask_to_viewers(existing_zyx, mask_type)
+
+    def refresh_mask(self, mask_type):
+        """Redraw a mask whose cached ZYX array was edited in place."""
+        data_zyx = self._cached_data_zyx.get(mask_type)
+        if data_zyx is not None:
+            self._push_mask_to_viewers(data_zyx, mask_type)
+
+    def _push_mask_to_viewers(self, data_zyx, mask_type):
         self._disconnect_mask_events()
-        from PyQt6.QtWidgets import QApplication
-        viewers = self._get_visible_viewers()
-        for i, v in enumerate(viewers):
-            print(f"[LayoutManager] update_mask: pushing to viewer {i+1}/{len(viewers)}...")
+        for v in self._get_visible_viewers():
             v.load_mask_zyx(data_zyx, mask_type)
-            QApplication.processEvents()  # Prevent OS "Not Responding" freeze during heavy layer creation
-            
-        print(f"[LayoutManager] update_mask: pushing to 3D viewer...")
         if self._is_3d_loaded:
             self.viewer_3d.load_mask_zyx(data_zyx, mask_type)
-            
-        print(f"[LayoutManager] update_mask: connecting events...")
         self._connect_mask_events()
-        print(f"[LayoutManager] update_mask: finished for {mask_type}")
 
     def get_active_mask_data(self, layer_type: str):
         for vw in self._get_visible_viewers():
@@ -810,7 +863,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
                 self._cached_data_zyx[mask_type] = None
                 return
             from ....utils.nifti_utils import to_napari
-            self._cached_data_zyx[mask_type] = to_napari(mask_data.astype(np.uint8))
+            self._cached_data_zyx[mask_type] = to_napari(np.asarray(mask_data, dtype=np.uint8))
 
         if self._cached_data_zyx[mask_type] is not None:
             for v in self._get_visible_viewers():
@@ -819,9 +872,16 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
     # ── Clear ─────────────────────────────────────────────────────────────────
 
     def clear_all_viewers(self):
-        for vw in self._viewer_pool:
-            vw.viewer.layers.clear()
-        self.viewer_3d.viewer.layers.clear()
+        """Drop the session's data from every viewer, keeping the napari layers.
+
+        Removing and re-adding layers costs ~0.4 s per layer (vispy overlays),
+        i.e. several seconds per session switch with 6 views. Layer data is
+        swapped for a 1-voxel placeholder instead, which frees the arrays; the
+        next ``load_data`` fills the same layers again.
+        """
+        self._disconnect_mask_events()
+        for vw in list(self._viewer_pool) + [self.viewer_3d]:
+            vw.release_data()
         self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None, "ct_filename": "", "pet_filename": ""}
         self._cached_data_zyx = {"tumor": None, "roi": None}
         self._is_3d_loaded = False

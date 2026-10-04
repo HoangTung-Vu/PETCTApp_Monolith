@@ -74,19 +74,18 @@ class AdaptiveThresholdingRefinementEngine:
             raise ValueError("roi_mask is empty.")
 
         # Bounding box crop optimization to prevent 10s label block on 512^3 arrays
-        z_nz, y_nz, x_nz = np.nonzero(roi)
-        if len(z_nz) == 0:
+        # (mask_bbox: np.nonzero is ~10 s on a Fortran-ordered volume).
+        from ...utils.nifti_utils import mask_bbox
+        bbox = mask_bbox(roi)
+        if bbox is None:
             return [], None
 
-        z_min, z_max = z_nz.min(), z_nz.max() + 1
-        y_min, y_max = y_nz.min(), y_nz.max() + 1
-        x_min, x_max = x_nz.min(), x_nz.max() + 1
-
-        roi_cropped = roi[z_min:z_max, y_min:y_max, x_min:x_max]
+        roi_cropped = roi[bbox]
         labels_cropped, num_components = cc_label(roi_cropped)
 
+        # C-ordered on purpose: find_objects is ~100× slower on F-ordered input.
         labels = np.zeros(roi.shape, dtype=np.int32)
-        labels[z_min:z_max, y_min:y_max, x_min:x_max] = labels_cropped
+        labels[bbox] = labels_cropped
 
         slices = find_objects(labels)
         components_info = []

@@ -47,9 +47,10 @@ class ReportWorker(QThread):
         else:
             report_dir = FileManager.get_session_dir(session_id) / "report"
 
-        ct_data = sm.get_ct_data().astype(np.float32) if sm.ct_image else None
-        pet_data = sm.get_pet_data().astype(np.float32) if sm.pet_image else None
-        mask_data = sm.get_tumor_mask_data() if sm.tumor_mask else None
+        # Stored dtype, no copies — the renderer only needs numeric arrays.
+        ct_data = sm.get_ct_data()
+        pet_data = sm.get_pet_data()
+        mask_data = sm.get_tumor_mask_data()
 
         if pet_data is None or mask_data is None:
             return
@@ -65,7 +66,7 @@ class ReportWorker(QThread):
             metrics=metrics,
             ct_data=ct_data,
             pet_data=pet_data,
-            mask_data=mask_data.astype(np.uint8),
+            mask_data=mask_data,
             affine=affine,
             ct_wl=self.ct_wl,
             pet_wl=self.pet_wl,

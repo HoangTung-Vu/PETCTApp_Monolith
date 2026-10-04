@@ -30,7 +30,10 @@ class SessionRepository:
         doctor_name: Optional[str] = None,
         ct_path: Optional[str] = None,
         pet_path: Optional[str] = None,
-        tumor_seg_path: Optional[str] = None
+        tumor_seg_path: Optional[str] = None,
+        ct_series_uid: Optional[str] = None,
+        pet_series_uid: Optional[str] = None,
+        resample_mode: Optional[str] = None,
     ) -> Session:
         """Create a new session."""
         session = Session(
@@ -39,6 +42,9 @@ class SessionRepository:
             ct_path=ct_path,
             pet_path=pet_path,
             tumor_seg_path=tumor_seg_path,
+            ct_series_uid=ct_series_uid,
+            pet_series_uid=pet_series_uid,
+            resample_mode=resample_mode,
             status="active"
         )
         self.db.add(session)

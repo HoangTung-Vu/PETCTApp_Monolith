@@ -1,16 +1,16 @@
 """
-DicomImportHandlerMixin — DICOM conversion triggered from the Workflow tab.
+DicomImportHandlerMixin — DICOM import triggered from the Workflow tab.
 
 Flow:
   1. User clicks "Load from DICOM Folder…" in the Workflow tab.
-  2. _on_load_from_dicom starts DicomConversionWorker (background thread).
-  3. On success, _on_dicom_auto_finished immediately creates a new session
-     with the converted NIfTI files — no extra click required.
+  2. DicomScanWorker reads the headers and lists the CT / PET series.
+  3. DicomSeriesDialog lets the user pick the series (auto-picks preselected)
+     and the common grid; patient/physician names come from the DICOM tags.
+  4. DataLoaderWorker(action="create_dicom") reads the series into memory and
+     creates the session — no NIfTI files are written.
 """
 
-import os
-from pathlib import Path
-from PyQt6.QtWidgets import QMessageBox
+from PyQt6.QtWidgets import QDialog, QMessageBox
 
 
 class DicomImportHandlerMixin:
@@ -18,72 +18,53 @@ class DicomImportHandlerMixin:
     def _init_dicom_import_handler(self):
         """Call from MainWindow.__init__ after UI is set up."""
         self.dicom_worker = None
-        self._dicom_auto_doctor  = "Doctor"
-        self._dicom_auto_patient = "Patient"
+        self._dicom_folder = ""
+        self._dicom_manual_names = ("", "")
 
     # ------------------------------------------------------------------
     # Entry point — Workflow tab "Load from DICOM Folder…"
     # ------------------------------------------------------------------
 
-    def _on_load_from_dicom(self, dcm_folder: str, doctor: str, patient: str, resample_mode: str = "ct"):
-        from ..workers.dicom_conversion_worker import DicomConversionWorker
+    def _on_load_from_dicom(self, dcm_folder: str, doctor: str = "", patient: str = ""):
+        from ..workers.dicom_scan_worker import DicomScanWorker
 
-        out_dir = os.path.join(dcm_folder, "nifti_output")
-        pid_str = os.path.basename(dcm_folder) or "PATIENT"
-
-        self._dicom_auto_doctor  = doctor  or "Doctor"
-        self._dicom_auto_patient = patient or "Patient"
-
-        self.dicom_worker = DicomConversionWorker(
-            dcm_root=dcm_folder,
-            out_dir=out_dir,
-            pid_str=pid_str,
-            do_suv=True,
-            do_resample=True,
-            resample_mode=resample_mode,
-        )
-        self.dicom_worker.sig_log.connect(self._on_dicom_log)
-        self.dicom_worker.sig_finished.connect(self._on_dicom_auto_finished)
-        self.dicom_worker.sig_error.connect(self._on_dicom_error)
-
-        self.control_panel.show_progress()
-        self._set_ui_busy(True)
-        self.dicom_worker.start()
+        self._dicom_folder = dcm_folder
+        self._dicom_manual_names = (doctor, patient)
+        self.dicom_worker = DicomScanWorker(dcm_folder)
+        self._spawn_worker(self.dicom_worker, self._on_dicom_scanned, self._on_dicom_error)
 
     # ------------------------------------------------------------------
     # Worker callbacks
     # ------------------------------------------------------------------
 
-    def _on_dicom_log(self, msg: str):
-        print(f"[DICOM] {msg}")
-
-    def _on_dicom_auto_finished(self, ct_path: str, pet_path: str):
+    def _on_dicom_scanned(self, series: list):
         self._set_ui_busy(False)
         self.control_panel.hide_progress()
-        self._on_dicom_load_into_session(
-            ct_path, pet_path,
-            self._dicom_auto_doctor,
-            self._dicom_auto_patient,
-        )
-
-    def _on_dicom_error(self, error_msg: str):
-        self._show_worker_error(error_msg, "DICOM Conversion Failed")
-
-    # ------------------------------------------------------------------
-    # Load converted NIfTI into a new session
-    # ------------------------------------------------------------------
-
-    def _on_dicom_load_into_session(
-        self, ct_path: str, pet_path: str, doctor: str, patient: str
-    ):
-        if not ct_path and not pet_path:
+        if not series:
             QMessageBox.warning(
                 self,
-                "Nothing to Load",
-                "No converted files available. Run conversion first.",
+                "No DICOM Series",
+                "No usable CT or PET series were found in the selected folder.\n\n"
+                "Scouts/localizers, multi-frame and dynamic series are skipped "
+                "(see the Logs tab for details).",
             )
             return
 
+        from ..components.dicom_series_dialog import DicomSeriesDialog
+        dialog = DicomSeriesDialog(series, self._dicom_folder, *self._dicom_manual_names, parent=self)
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return
+        doctor, patient = dialog.names()
+        self._load_dicom_session(dialog.selected_ct, dialog.selected_pet, dialog.resample_mode, doctor, patient)
+
+    def _on_dicom_error(self, error_msg: str):
+        self._show_worker_error(error_msg, "DICOM Import Failed")
+
+    # ------------------------------------------------------------------
+    # Load the chosen series into a new session
+    # ------------------------------------------------------------------
+
+    def _load_dicom_session(self, ct_series, pet_series, resample_mode: str, doctor: str, patient: str):
         # DICOM import creates a new session — prompt to save unsaved tumor first.
         if not self._prompt_unsaved_segmentation("switch"):
             return
@@ -94,11 +75,12 @@ class DicomImportHandlerMixin:
 
         self.loader_worker = DataLoaderWorker(
             self.session_manager,
-            action="create",
-            ct_path=Path(ct_path)  if ct_path  else None,
-            pet_path=Path(pet_path) if pet_path else None,
-            new_doctor=doctor  or "Doctor",
-            new_patient=patient or "Patient",
+            action="create_dicom",
+            dicom_ct=ct_series,
+            dicom_pet=pet_series,
+            resample_mode=resample_mode,
+            new_doctor=doctor,
+            new_patient=patient,
         )
         self._spawn_worker(self.loader_worker, self._on_data_loaded, self._on_data_error)
 

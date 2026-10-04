@@ -190,6 +190,7 @@ class MainWindow(
         # Session
         cp.sig_new_session_clicked.connect(self.create_new_session)
         cp.sig_load_session_clicked.connect(self.load_existing_session)
+        cp.sig_delete_session_clicked.connect(self.delete_session)
 
         # Refinement — Manual Edit (tumor mask)
         cp.sig_manual_edit_tool.connect(self._on_manual_edit_tool)
@@ -368,8 +369,7 @@ class MainWindow(
         ct_zyx = lm._cached_data_zyx.get("ct")
         if ct_zyx is None:                              # mirror report worker fallback
             ct_zyx = np.zeros_like(pet_zyx)
-        mask_zyx = (to_napari(sm.get_tumor_mask_data().astype(np.uint8))
-                    if sm.tumor_mask else None)
+        mask_zyx = to_napari(sm.get_tumor_mask_data()) if sm.tumor_mask is not None else None
 
         sx, sy, sz = get_spacing_from_affine(sm.pet_image.affine)
         spacing = (abs(float(sx)), abs(float(sy)), abs(float(sz)))
@@ -463,6 +463,46 @@ class MainWindow(
         )
         self._spawn_worker(self.loader_worker, self._on_data_loaded, self._on_data_error)
 
+    def delete_session(self, session_id: int):
+        """Delete a session record (image and segmentation files are kept)."""
+        sm = self.session_manager
+        session = sm.repository.get_by_id(session_id)
+        if session is None:
+            self._refresh_session_list()
+            return
+
+        busy = [
+            getattr(self, name, None)
+            for name in ("loader_worker", "worker", "_merge_save_worker", "save_worker",
+                         "report_save_worker", "report_worker", "ensure_roi_worker")
+        ]
+        if any(w is not None and w.isRunning() for w in busy):
+            QMessageBox.information(
+                self, "Busy",
+                "A loading, segmentation or save task is still running. "
+                "Delete the session when it has finished.",
+            )
+            return
+
+        is_current = session_id == sm.current_session_id
+        reply = QMessageBox.question(
+            self,
+            "Delete Session",
+            f"Delete session {session_id} — {session.patient_name or 'unnamed'}?\n\n"
+            "The session is removed from the app. The CT/PET images and the saved "
+            "segmentation file stay on disk."
+            + ("\n\nThis is the session currently open; unsaved edits are discarded." if is_current else ""),
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No,
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            return
+
+        if is_current:
+            self._reset_all_state()
+        sm.delete_session(session_id)
+        self._refresh_session_list()
+
     def load_ct_dialog(self):
         file_path, _ = QFileDialog.getOpenFileName(
             self, "Load CT Image", "", "NIfTI files (*.nii.gz *.nii)"
@@ -522,10 +562,25 @@ class MainWindow(
         self._crosshair_suppressed_by_tab = False
 
         print(f"Async data loading completed for session {self.session_manager.current_session_id}.")
+        self._warn_about_import()
+
+    def _warn_about_import(self):
+        """Surface DICOM import caveats (estimated SUV, geometry warnings)."""
+        sm = self.session_manager
+        lines = list(sm.load_warnings)
+        if sm.suv_info is not None and sm.suv_info.estimated:
+            lines = ["SUV was computed with estimated values — check before reporting:"] + \
+                    [f"  • {note}" for note in sm.suv_info.notes] + lines
+        if lines:
+            QMessageBox.warning(self, "DICOM Import Warnings", "\n".join(lines))
 
     def _on_data_error(self, error_msg):
         print(f"Data Loading Error: {error_msg}")
         self._show_worker_error(error_msg, "Loading Failed")
+        # The viewers were cleared before loading; show whatever is still loaded.
+        sm = self.session_manager
+        if sm.current_session_id is not None and (sm.ct_image is not None or sm.pet_image is not None):
+            self._do_refresh_after_load()
 
     def _refresh_session_list(self):
         sessions = self.session_manager.get_all_sessions()

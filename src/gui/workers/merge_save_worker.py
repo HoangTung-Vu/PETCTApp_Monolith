@@ -34,7 +34,7 @@ class MergeSaveWorker(QThread):
             # 1. Merge ROI into tumor
             if self.roi_data_xyz is not None and sm.tumor_mask is not None:
                 tumor_data = sm.get_tumor_mask_data()
-                merged = np.maximum(tumor_data, self.roi_data_xyz).astype(np.uint8)
+                merged = np.maximum(tumor_data, self.roi_data_xyz)   # uint8 × uint8 → uint8
                 sm.set_tumor_mask(merged)
 
                 # Clear ROI
