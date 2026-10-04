@@ -452,10 +452,24 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
             self.viewer_3d.viewer.layers[pet_name].visible = False
 
         self.viewer_3d.viewer.dims.ndisplay = 3
-        # Layers are reused across sessions, so napari's automatic fit on the
-        # first add_image no longer happens — fit the camera to this volume.
-        self.viewer_3d.viewer.reset_view()
         self._is_3d_loaded = True
+
+    def reset_3d_orientation(self):
+        """Return the 3D view to the anterior coronal MIP (Reset button)."""
+        if self._is_3d_loaded:
+            self._present_coronal_mip()
+
+    def _present_coronal_mip(self):
+        """Fit the 3D camera and look at the patient from the front.
+
+        The anterior coronal view of a PET MIP: head up, patient right on the
+        screen's left (radiological). Napari's scene axes are the to_napari
+        axes (z → feet, y → back, x → patient left), so the camera looks along
+        +y with −z up. Also refits the zoom, which reused layers would not do.
+        """
+        viewer = self.viewer_3d.viewer
+        viewer.reset_view()
+        viewer.camera.set_view_direction(view_direction=(0, 1, 0), up_direction=(-1, 0, 0))
 
     # ── View mode (3D only) ───────────────────────────────────────────────────
 
@@ -463,8 +477,11 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         """Handles 3D mode toggling. 2D views use set_active_views instead."""
         if mode == "3d":
             self.stack.setCurrentWidget(self.view_3d_widget)
+            first_open = not self._is_3d_loaded      # first 3D view of this session
             self._load_3d_data()
             self.viewer_3d.viewer.dims.ndisplay = 3
+            if first_open:
+                self._present_coronal_mip()
             # Napari handles LMB-drag rotation in 3D; wheel zoom stays under
             # our eventFilter (Ctrl+wheel only). Force-toggle mouse_pan so
             # the napari→vispy event fires reliably (True→True is a no-op).

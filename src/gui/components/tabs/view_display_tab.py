@@ -94,6 +94,7 @@ class ViewDisplayTab(QWidget):
     # Kept only for 3D view button
     sig_layout_changed           = pyqtSignal(str)
     sig_toggle_3d_pet            = pyqtSignal(bool)
+    sig_reset_3d_view            = pyqtSignal()
 
     sig_overlay_pet_opacity_changed = pyqtSignal(float)
     sig_tumor_opacity_changed    = pyqtSignal(float)
@@ -166,6 +167,11 @@ class ViewDisplayTab(QWidget):
 
         self.chk_3d_pet.clicked.connect(_on_3d_toggle)
         vc_lay.addWidget(self.chk_3d_pet)
+
+        self.btn_3d_reset = QPushButton("3D: Reset to Coronal")
+        self.btn_3d_reset.setToolTip("Return the 3D view to the anterior coronal MIP (head up).")
+        self.btn_3d_reset.clicked.connect(self.sig_reset_3d_view.emit)
+        vc_lay.addWidget(self.btn_3d_reset)
 
         layout.addWidget(_make_collapsible("View Mode", view_content))
 

@@ -171,6 +171,7 @@ class MainWindow(
         cp.sig_active_views_changed.connect(lm.set_active_views)
         cp.sig_layout_changed.connect(lm.set_view_mode)      # "3d" only
         cp.sig_toggle_3d_pet.connect(lm.toggle_3d_pet)
+        cp.sig_reset_3d_view.connect(lm.reset_3d_orientation)
 
         # Display
         cp.sig_overlay_pet_opacity_changed.connect(lm.set_overlay_pet_opacity)

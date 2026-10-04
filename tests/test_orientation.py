@@ -107,3 +107,55 @@ def test_mask_load_checks_shape(tmp_path):
     np.testing.assert_array_equal(np.asarray(m.dataobj), np.asarray(mask.dataobj))
     with pytest.raises(ValueError):
         load_mask_volume(tmp_path / "seg.nii.gz", ref_shape=(1, 2, 3))
+
+
+# ── 3D camera orientation readout ────────────────────────────────────────────
+
+from src.utils.view_orientation import describe_camera, direction_letters  # noqa: E402
+
+# Napari scene axes (z, y, x) = (inferior, posterior, patient left).
+SUP, POST, LEFT = (-1, 0, 0), (0, 1, 0), (0, 0, 1)
+
+
+def neg(v):
+    return tuple(-c for c in v)
+
+
+@pytest.mark.parametrize("view, up, expect", [
+    # camera looks posteriorly from the front, head up → anterior coronal MIP
+    (POST, SUP, dict(view_from="Anterior", azimuth=0, elevation=0, roll=0,
+                     up="S", down="I", left="R", right="L")),
+    # camera at the patient's left, looking right → left lateral
+    (neg(LEFT), SUP, dict(view_from="Left lateral", azimuth=90, elevation=0, roll=0,
+                          up="S", left="A", right="P")),
+    # camera behind the patient → posterior view, patient left on screen left
+    (neg(POST), SUP, dict(view_from="Posterior", azimuth=180, elevation=0, roll=0,
+                          left="L", right="R")),
+    # camera above the head looking toward the feet, anterior up
+    (neg(SUP), neg(POST), dict(view_from="Superior", elevation=90, roll=0, up="A", down="P")),
+    # anterior view, patient rotated 90° clockwise: head points to the screen's right
+    (POST, neg(LEFT), dict(view_from="Anterior", roll=90, right="S", up="R", down="L")),
+    # … and 90° counter-clockwise: head to the screen's left
+    (POST, LEFT, dict(view_from="Anterior", roll=-90, left="S", right="I", up="L")),
+])
+def test_describe_camera_standard_views(view, up, expect):
+    o = describe_camera(view, up)
+    for key, value in expect.items():
+        got = getattr(o, key)
+        if isinstance(value, str):
+            assert got == value, (key, got)
+        else:
+            assert abs(((got - value + 180) % 360) - 180) < 1e-6, (key, got)
+
+
+def test_oblique_view_letters_and_angles():
+    # 30° from anterior toward the left, 20° above the axial plane
+    az, el = np.radians(30), np.radians(20)
+    pos_ras = np.array([-np.sin(az) * np.cos(el), np.cos(az) * np.cos(el), np.sin(el)])
+    look_ras = -pos_ras
+    view_scene = (-look_ras[2], -look_ras[1], -look_ras[0])
+    o = describe_camera(view_scene, SUP)
+    assert o.view_from == "Anterior"
+    assert abs(o.azimuth - 30) < 1e-6 and abs(o.elevation - 20) < 1e-6 and abs(o.roll) < 1e-6
+    assert abs(o.off_axis - np.degrees(np.arccos(np.cos(az) * np.cos(el)))) < 1e-6
+    assert direction_letters([-0.8, 0.6, 0]) == "LA"

@@ -9,6 +9,7 @@ from ....utils.dimension_utils import get_spacing_from_affine
 from .crosshair_overlay import CrosshairOverlay
 from .colorbar_overlay import ColorBarOverlay
 from .ruler_overlay import RulerOverlay
+from .orientation_overlay import OrientationOverlay
 
 
 class ViewerWidget(QWidget):
@@ -421,6 +422,10 @@ class ViewerWidget(QWidget):
     def set_3d_view(self):
         self.viewer.dims.ndisplay = 3
         self.is_3d = True
+        # Anatomical edge letters + numeric camera orientation readout.
+        if getattr(self, "_orientation_overlay", None) is None:
+            self._orientation_overlay = OrientationOverlay(self, self.qt_viewer.canvas.native)
+        self._orientation_overlay.set_enabled(True)
         for layer in self.viewer.layers:
             if isinstance(layer, napari.layers.Labels):
                 layer.editable = False
