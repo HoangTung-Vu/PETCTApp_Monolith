@@ -2,7 +2,8 @@ import os
 import threading
 
 from dotenv import load_dotenv
-from PyQt6.QtCore import QSettings
+
+from ...core.config import app_settings
 
 # Load a local .env (if present) so the engine host can be set without code edits.
 load_dotenv()
@@ -21,9 +22,7 @@ ENGINE_NNUNET_MODEL = os.getenv(
 _DEFAULT_ENGINE_IP = os.getenv("ENGINE_NNUNET_IP", "localhost")
 _DEFAULT_ENGINE_PORT = os.getenv("ENGINE_NNUNET_PORT", "8104")
 
-# QSettings location for persisting the GUI-configured IP/port across runs.
-_SETTINGS_ORG = "PETCTApp"
-_SETTINGS_APP = "PETCTApp"
+# QSettings keys for persisting the GUI-configured IP/port across runs.
 _SETTINGS_IP_KEY = "engine/nnunet_ip"
 _SETTINGS_PORT_KEY = "engine/nnunet_port"
 
@@ -50,7 +49,7 @@ def _clean_port(value) -> str:
 
 def _initial(key: str, default: str, cleaner) -> str:
     """Resolve a startup value: GUI-saved value > env default."""
-    saved = QSettings(_SETTINGS_ORG, _SETTINGS_APP).value(key, "", type=str)
+    saved = app_settings().value(key, "", type=str)
     return cleaner(saved) if saved else cleaner(default)
 
 
@@ -74,7 +73,7 @@ def set_engine_endpoint(ip: str, port) -> tuple[str, str]:
     global _engine_ip, _engine_port
     _engine_ip = _clean_ip(ip)
     _engine_port = _clean_port(port)
-    s = QSettings(_SETTINGS_ORG, _SETTINGS_APP)
+    s = app_settings()
     s.setValue(_SETTINGS_IP_KEY, _engine_ip)
     s.setValue(_SETTINGS_PORT_KEY, _engine_port)
     return _engine_ip, _engine_port

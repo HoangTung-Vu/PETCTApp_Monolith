@@ -1,19 +1,28 @@
+from pathlib import Path
+
 from sqlalchemy import create_engine, inspect, text
 from sqlalchemy.orm import sessionmaker, scoped_session
 from .models import Base
-import os
+from ..core.config import settings
 
-# Ensure datadir exists
-DB_FOLDER = os.path.join(os.path.dirname(os.path.dirname(os.path.dirname(__file__))), 'storage')
-os.makedirs(DB_FOLDER, exist_ok=True)
+# The database location is chosen by the user at startup, so the engine is
+# created by init_db() rather than at import. SessionLocal is bound there too;
+# modules that imported it earlier hold the same object and see the binding.
+engine = None
 
-DATABASE_URL = f"sqlite:///{os.path.join(DB_FOLDER, 'petct.db')}"
+SessionLocal = sessionmaker(autocommit=False, autoflush=False)
 
-engine = create_engine(DATABASE_URL, echo=False)
+def init_db(db_path=None):
+    """Open (creating if needed) the database at ``db_path`` or ``settings.DB_PATH``."""
+    global engine
+    path = Path(db_path or settings.DB_PATH)
+    path.parent.mkdir(parents=True, exist_ok=True)
 
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+    if engine is not None:
+        engine.dispose()
+    engine = create_engine(f"sqlite:///{path}", echo=False)
+    SessionLocal.configure(bind=engine)
 
-def init_db():
     Base.metadata.create_all(bind=engine)
     _add_missing_columns()
 

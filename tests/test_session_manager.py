@@ -6,8 +6,6 @@ Run: .venv/bin/pytest tests/test_session_manager.py -q
 import nibabel as nib
 import numpy as np
 import pytest
-from sqlalchemy import create_engine
-from sqlalchemy.orm import sessionmaker
 
 from tests.test_dicom_loader import study  # noqa: F401  (pytest fixture)
 from tests.test_orientation import las_phantom, reoriented_copy
@@ -16,13 +14,9 @@ from tests.test_orientation import las_phantom, reoriented_copy
 @pytest.fixture
 def sm(tmp_path, monkeypatch):
     import src.database.db as dbm
-    import src.database.session_repository as repo
     from src.core.config import settings
 
-    engine = create_engine(f"sqlite:///{tmp_path / 'test.db'}")
-    monkeypatch.setattr(dbm, "engine", engine)
-    dbm.init_db()
-    monkeypatch.setattr(repo, "SessionLocal", sessionmaker(bind=engine))
+    dbm.init_db(tmp_path / "test.db")
     monkeypatch.setattr(settings, "DATA_DIR", tmp_path / "data")
     from src.core.session_manager import SessionManager
     return SessionManager()

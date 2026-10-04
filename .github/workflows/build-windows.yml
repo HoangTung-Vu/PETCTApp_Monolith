@@ -1,0 +1,49 @@
+name: Build Windows installer
+
+# Push a tag like v1.0.0 to build and publish a GitHub Release with the
+# installer attached. "Run workflow" on the Actions tab builds a test installer
+# (downloadable from the run's artifacts) without releasing anything.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Pick version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $v = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $v = "0.0.0-dev.${{ github.run_number }}"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build installer
+        shell: pwsh
+        run: ./packaging/build_windows.ps1 -Version "${{ steps.ver.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: PETCTApp-Setup-${{ steps.ver.outputs.version }}
+          path: dist/installer/*.exe
+          if-no-files-found: error
+
+      - name: Publish release
+        if: github.ref_type == 'tag'
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/installer/*.exe

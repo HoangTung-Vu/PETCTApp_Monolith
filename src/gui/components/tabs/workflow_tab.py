@@ -126,6 +126,27 @@ class WorkflowTab(QWidget):
         grp_engine.setLayout(engine_layout)
         layout.addWidget(grp_engine)
 
+        # ── Data Folder (where petct.db lives) ──
+        grp_storage = QGroupBox("Data Folder")
+        storage_layout = QFormLayout()
+
+        from ....core.config import settings, storage_dir_override
+
+        self.input_data_folder = QLineEdit(str(settings.STORAGE_DIR))
+        self.input_data_folder.setReadOnly(True)
+        self.input_data_folder.setToolTip("The session database (petct.db) is stored here.")
+        storage_layout.addRow("Folder:", self.input_data_folder)
+
+        self.btn_change_data_folder = QPushButton("Change…")
+        self.btn_change_data_folder.clicked.connect(self._change_data_folder)
+        if storage_dir_override():
+            self.btn_change_data_folder.setEnabled(False)
+            self.btn_change_data_folder.setToolTip("Set by the PETCT_STORAGE_DIR environment variable.")
+        storage_layout.addRow(self.btn_change_data_folder)
+
+        grp_storage.setLayout(storage_layout)
+        layout.addWidget(grp_storage)
+
         # ── Report Section ──
         grp_report = QGroupBox("Report")
         report_layout = QVBoxLayout()
@@ -188,6 +209,13 @@ class WorkflowTab(QWidget):
         )
         self.input_engine_host.setText(ip)
         self.input_engine_port.setText(port)
+
+    def _change_data_folder(self):
+        from ..storage_location import change_location
+        folder = change_location(self)
+        if folder is not None:
+            self.input_data_folder.setText(str(folder))
+            self.input_data_folder.setToolTip("Used after the app restarts.")
 
     def _emit_load_session(self):
         data = self.combo_sessions.currentData()

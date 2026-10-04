@@ -7,7 +7,7 @@ requires-python = ">=3.13"
 dependencies = [
     "dotenv>=0.9.9",
     "httpx>=0.28.1",
-    "napari[all,optional,pyqt6]>=0.6.6",
+    "napari[optional,pyqt6]>=0.6.6",
     "nibabel>=5.3.3",
     "numpy>=2.3.5",
     "pydantic>=2.12.5",
@@ -19,4 +19,11 @@ dependencies = [
     "scipy>=1.17.0",
     "simpleitk>=2.5.3",
     "sqlalchemy>=2.0.0",
+]
+
+[dependency-groups]
+# Windows installer build (packaging/build_windows.ps1): uv sync --group build
+build = [
+    "pyinstaller>=6.11",
+    "pyinstaller-hooks-contrib",
 ]

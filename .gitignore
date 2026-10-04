@@ -18,7 +18,6 @@ temp/
 #Pycache
 __pycache__
 
-uv.lock
 app_architecture.md
 
 autoPET-interactive/
@@ -53,3 +52,7 @@ find_largest_lesion.py
 iterative_threshold.mmd
 lesion_overview.png
 lesion_overview.py
+
+.claude/
+.rtk/
+CLAUDE.md

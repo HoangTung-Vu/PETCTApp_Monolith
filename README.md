@@ -102,7 +102,27 @@ After applying the patch, rebuild the Docker image: `./start.sh` will detect the
 
 ---
 
-## Installation & Setup
+## Install on Windows (no Python or git needed)
+
+1. Download `PETCTApp-Setup-<version>.exe` from the [Releases](https://github.com/HoangTung-Vu/PETCTApp_Monolith/releases) page and run it. It installs for the current user without admin rights; Windows SmartScreen may warn because the installer is unsigned. Click **More info → Run anyway**.
+2. On first launch, choose the **data folder** where the session database (`petct.db`) is kept. The default is `%LOCALAPPDATA%\PETCTApp`. Pick a local disk, not a network share or a OneDrive folder. To move it later, use **Workflow tab → Data Folder → Change…**, which can copy the existing database across.
+3. In **Workflow tab → AI Engine**, enter the IP and port of the machine running the nnU-Net engine (`localhost` / `8104` if it runs on the same PC; see below for starting it).
+
+Uninstalling or upgrading never deletes the data folder. Logs are written to `%LOCALAPPDATA%\PETCTApp\logs\app.log`.
+
+### Building a release
+
+The installer is built by GitHub Actions (`.github/workflows/build-windows.yml`) on a Windows runner:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0   # builds and publishes a Release with the installer
+```
+
+**Actions → Build Windows installer → Run workflow** builds a test installer (downloadable from the run's artifacts) without publishing. To build on a Windows machine yourself: `pwsh packaging/build_windows.ps1 -Version 1.0.0` (needs `uv`; installs Inno Setup through Chocolatey if missing).
+
+---
+
+## Installation & Setup (from source)
 
 See [README_SETUP.md](README_SETUP.md) for full GPU driver and Docker setup instructions.
 
@@ -137,7 +157,8 @@ PETCTApp_Monolith/
 │       ├── src/                  # Engine source code
 │       ├── main.py               # FastAPI app
 │       └── Dockerfile
-├── storage/                      # SQLite database and NIfTI session files
+├── packaging/                    # Windows installer: PyInstaller spec, Inno Setup script, build script
+├── storage/                      # Default data folder when run from source (petct.db)
 ├── tests/                        # Test suite
 ├── start.sh / start.bat          # Launchers (build Docker + run GUI)
 └── pyproject.toml                # Python dependencies (managed by uv)

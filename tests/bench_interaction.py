@@ -82,15 +82,9 @@ def make_data(shape) -> dict:
 
 def isolate_storage(tmp: Path):
     """Point the DB and the session storage at a throw-away directory."""
-    from sqlalchemy import create_engine
-    from sqlalchemy.orm import sessionmaker
     import src.database.db as dbm
 
-    dbm.engine = create_engine(f"sqlite:///{tmp / 'bench.db'}")
-    dbm.SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=dbm.engine)
-    dbm.init_db()
-    import src.database.session_repository as repo
-    repo.SessionLocal = dbm.SessionLocal
+    dbm.init_db(tmp / "bench.db")
     from src.core.config import settings
     settings.DATA_DIR = tmp / "data"
     settings.DATA_DIR.mkdir(parents=True, exist_ok=True)
