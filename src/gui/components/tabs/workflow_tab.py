@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFormLayout, QGroupBox,
     QComboBox, QProgressBar, QLineEdit, QTableWidget, QTableWidgetItem,
-    QHeaderView, QCheckBox, QLabel, QFileDialog
+    QHeaderView, QCheckBox, QLabel, QFileDialog, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
@@ -28,8 +28,18 @@ class WorkflowTab(QWidget):
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
-        
+        main_layout = QVBoxLayout(self)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        # Create a scroll area
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+
+        # Container widget
+        container = QWidget()
+        layout = QVBoxLayout(container)
+
         # ── Current Session Info ──
         self.lbl_current_session = QLabel("Current Session: None")
         self.lbl_current_session.setStyleSheet("font-weight: bold; color: #337ab7; font-size: 14px; margin-bottom: 5px;")
@@ -57,6 +67,10 @@ class WorkflowTab(QWidget):
         session_layout.addRow(self.btn_load_dicom)
 
         self.combo_sessions = QComboBox()
+        # Long session names must not widen the page past the sidebar (the
+        # scroll area has no horizontal scrollbar); they are elided instead.
+        self.combo_sessions.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_sessions.setMinimumContentsLength(8)
         self.btn_load_this_session = QPushButton("Load Selected")
         self.btn_load_this_session.clicked.connect(self._emit_load_session)
         self.btn_delete_session = QPushButton("Delete Selected")
@@ -198,6 +212,9 @@ class WorkflowTab(QWidget):
         layout.addWidget(grp_report)
 
         layout.addStretch()
+
+        scroll.setWidget(container)
+        main_layout.addWidget(scroll)
 
     # ── Helpers ──
 

@@ -1,9 +1,9 @@
 """Eraser tab: Connected-component eraser toggle, undo, save."""
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel
+    QWidget, QVBoxLayout, QPushButton, QLabel, QScrollArea
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 
 
 class EraserTab(QWidget):
@@ -19,7 +19,13 @@ class EraserTab(QWidget):
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
 
         # 1. Info
         info = QLabel(
@@ -55,6 +61,9 @@ class EraserTab(QWidget):
         layout.addWidget(self.btn_eraser_save)
 
         layout.addStretch()
+
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
 
     def _on_eraser_toggled(self, checked: bool):
         self.btn_eraser_toggle.setText("Disable Eraser" if checked else "Enable Eraser")

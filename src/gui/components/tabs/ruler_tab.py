@@ -1,9 +1,9 @@
 """Ruler tab: distance-measurement toggle + multi-measurement readout."""
 
 from PyQt6.QtWidgets import (
-    QWidget, QVBoxLayout, QPushButton, QLabel, QListWidget
+    QWidget, QVBoxLayout, QPushButton, QLabel, QListWidget, QScrollArea
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 
 
 class RulerTab(QWidget):
@@ -19,7 +19,13 @@ class RulerTab(QWidget):
         self._init_ui()
 
     def _init_ui(self):
-        layout = QVBoxLayout(self)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        inner = QWidget()
+        layout = QVBoxLayout(inner)
 
         # 1. Info
         info = QLabel(
@@ -70,6 +76,9 @@ class RulerTab(QWidget):
         self.btn_ruler_export = QPushButton("Export Images")
         self.btn_ruler_export.clicked.connect(self.sig_ruler_export.emit)
         layout.addWidget(self.btn_ruler_export)
+
+        scroll.setWidget(inner)
+        outer.addWidget(scroll)
 
     def _on_ruler_toggled(self, checked: bool):
         self.btn_ruler_toggle.setText("Disable Ruler" if checked else "Enable Ruler")
