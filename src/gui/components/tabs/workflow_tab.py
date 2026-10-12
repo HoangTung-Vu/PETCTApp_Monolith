@@ -5,7 +5,7 @@ from PyQt6.QtWidgets import (
     QComboBox, QProgressBar, QLineEdit, QTableWidget, QTableWidgetItem,
     QHeaderView, QCheckBox, QLabel, QFileDialog
 )
-from PyQt6.QtCore import pyqtSignal
+from PyQt6.QtCore import Qt, pyqtSignal
 
 
 class WorkflowTab(QWidget):
@@ -148,10 +148,44 @@ class WorkflowTab(QWidget):
         layout.addWidget(grp_storage)
 
         # ── Report Section ──
+        # Lesion values are computed when a segmentation is loaded or saved;
+        # the export button only writes them (CSV + images) to a folder.
         grp_report = QGroupBox("Report")
         report_layout = QVBoxLayout()
 
-        self.btn_report = QPushButton("Generate Report")
+        self.lbl_lesion_status = QLabel("No segmentation loaded")
+        self.lbl_lesion_status.setWordWrap(True)
+        report_layout.addWidget(self.lbl_lesion_status)
+
+        # Total TLG
+        ttlg_form = QFormLayout()
+        self.lbl_ttlg = QLabel("—")
+        ttlg_form.addRow("tTLG:", self.lbl_ttlg)
+        report_layout.addLayout(ttlg_form)
+
+        # Per-lesion table
+        self.tbl_lesions = QTableWidget()
+        self.tbl_lesions.setColumnCount(len(self._LESION_COLUMNS))
+        self.tbl_lesions.setHorizontalHeaderLabels([title for title, _ in self._LESION_COLUMNS])
+        self.tbl_lesions.verticalHeader().setVisible(False)
+        self.tbl_lesions.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.tbl_lesions.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_lesions.setMaximumHeight(220)
+        report_layout.addWidget(self.tbl_lesions)
+
+        hint = QLabel("Double-click a lesion in a 2D view to show its values there.")
+        hint.setWordWrap(True)
+        hint.setStyleSheet("color: gray; font-style: italic;")
+        report_layout.addWidget(hint)
+
+        # Toggle lesion bounding boxes
+        self.chk_show_lesion_ids = QCheckBox("Show Lesion IDs")
+        self.chk_show_lesion_ids.setChecked(False)
+        self.chk_show_lesion_ids.toggled.connect(self.sig_toggle_lesion_ids.emit)
+        report_layout.addWidget(self.chk_show_lesion_ids)
+
+        self.btn_report = QPushButton("Export Report…")
+        self.btn_report.setToolTip("Write the lesion values (CSV) and per-lesion images to a folder.")
         self.btn_report.clicked.connect(self.sig_report_clicked.emit)
         report_layout.addWidget(self.btn_report)
 
@@ -159,27 +193,6 @@ class WorkflowTab(QWidget):
         self.report_progress.setRange(0, 0)
         self.report_progress.setVisible(False)
         report_layout.addWidget(self.report_progress)
-
-        # Global gTLG
-        gtlg_form = QFormLayout()
-        self.lbl_gtlg = QLabel("—")
-        gtlg_form.addRow("gTLG:", self.lbl_gtlg)
-        report_layout.addLayout(gtlg_form)
-
-        # Per-lesion table
-        self.tbl_lesions = QTableWidget()
-        self.tbl_lesions.setColumnCount(4)
-        self.tbl_lesions.setHorizontalHeaderLabels(["ID", "SUVmax", "SUVmean", "MTV (mL)"])
-        self.tbl_lesions.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.Stretch)
-        self.tbl_lesions.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
-        self.tbl_lesions.setMaximumHeight(180)
-        report_layout.addWidget(self.tbl_lesions)
-
-        # Toggle lesion bounding boxes
-        self.chk_show_lesion_ids = QCheckBox("Show Lesion IDs")
-        self.chk_show_lesion_ids.setChecked(False)
-        self.chk_show_lesion_ids.toggled.connect(self.sig_toggle_lesion_ids.emit)
-        report_layout.addWidget(self.chk_show_lesion_ids)
 
         grp_report.setLayout(report_layout)
         layout.addWidget(grp_report)
@@ -241,21 +254,52 @@ class WorkflowTab(QWidget):
         self.report_progress.setVisible(False)
         self.btn_report.setEnabled(True)
 
-    def show_report_results(self, metrics: dict):
-        """Populate the report labels and table with computed metrics."""
-        self.lbl_gtlg.setText(str(metrics.get("gTLG", "—")))
-        lesions = metrics.get("lesions", [])
+    # (header, lesion key) — values shown with 2 decimals, the ID as is
+    _LESION_COLUMNS = [
+        ("ID", "id"),
+        ("MTV (mL)", "MTV"),
+        ("SUVmax", "SUVmax"),
+        ("SUVmean", "SUVmean"),
+        ("SUVpeak", "SUVpeak"),
+        ("TLG", "TLG"),
+    ]
+
+    def show_lesion_stats(self, stats, stale: bool = False, message: str = ""):
+        """Fill the tTLG label and lesion table from ``SessionManager.lesion_stats``.
+
+        ``stats`` None clears them and shows ``message`` as the status. ``stale``
+        flags values computed before the latest (unsaved) mask edit.
+        """
+        if stats is None:
+            self.clear_report_results(message)
+            return
+        lesions = stats["lesions"]
+        self.lbl_ttlg.setText(f"{stats['tTLG']:.2f}")
         self.tbl_lesions.setRowCount(len(lesions))
         for row, lesion in enumerate(lesions):
-            self.tbl_lesions.setItem(row, 0, QTableWidgetItem(str(lesion.get("id", ""))))
-            self.tbl_lesions.setItem(row, 1, QTableWidgetItem(str(lesion.get("SUVmax", ""))))
-            self.tbl_lesions.setItem(row, 2, QTableWidgetItem(str(lesion.get("SUVmean", ""))))
-            self.tbl_lesions.setItem(row, 3, QTableWidgetItem(str(lesion.get("MTV", ""))))
+            for col, (_, key) in enumerate(self._LESION_COLUMNS):
+                value = lesion[key]
+                text = str(value) if key == "id" else f"{value:.2f}"
+                item = QTableWidgetItem(text)
+                item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                self.tbl_lesions.setItem(row, col, item)
 
-    def clear_report_results(self):
+        if stale:
+            self.lbl_lesion_status.setText("Segmentation edited — values update when it is saved.")
+            self.lbl_lesion_status.setStyleSheet("color: #f0ad4e;")
+        else:
+            n = len(lesions)
+            self.lbl_lesion_status.setText(
+                "No lesions in the segmentation." if n == 0 else f"{n} lesion{'s' if n != 1 else ''}"
+            )
+            self.lbl_lesion_status.setStyleSheet("")
+
+    def clear_report_results(self, message: str = "No segmentation loaded"):
         """Reset report labels and table to placeholder."""
-        self.lbl_gtlg.setText("—")
+        self.lbl_ttlg.setText("—")
         self.tbl_lesions.setRowCount(0)
+        self.lbl_lesion_status.setText(message)
+        self.lbl_lesion_status.setStyleSheet("")
 
     def set_current_session_label(self, text: str):
         """Update the session name at the top of the tab."""

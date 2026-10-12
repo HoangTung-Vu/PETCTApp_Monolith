@@ -56,6 +56,9 @@ class MergeSaveWorker(QThread):
             # 4. Save to disk (already off-thread)
             sm.save_session()
 
+            # 5. Recompute lesion statistics for the saved mask
+            sm.update_lesion_stats()
+
             self.finished.emit()
         except Exception as e:
             import traceback

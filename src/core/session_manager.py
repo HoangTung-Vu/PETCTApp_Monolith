@@ -54,15 +54,20 @@ class SessionManager:
         # True when the in-memory tumor mask differs from what's on disk.
         # Cleared on fresh load_session/create_session/update_current_session
         # (tumor file path), and on successful save_session.
-        # Set by set_tumor_mask, ensure_roi_mask (zeros init), and by viewer
-        # paint events via MainWindow's sig_mask_modified handler.
+        # Set by set_tumor_mask, the eraser, and by viewer paint events via
+        # MainWindow's sig_mask_modified handler.
         self.tumor_dirty: bool = False
 
         self.patient_name: str = ""
         self.doctor_name: str = ""
 
-        self.lesion_bboxes: list = []
-        self.lesion_ids: list = []
+        # Per-lesion quantification of the saved tumor mask
+        # (ReportEngine.compute_lesion_stats), recomputed when a segmentation is
+        # loaded or saved. None = not available (no PET / no mask). ``stale`` is
+        # set when the mask is edited after the computation; the old values are
+        # kept until the next save recomputes them.
+        self.lesion_stats: Optional[dict] = None
+        self.lesion_stats_stale: bool = False
 
         # LAS → native voxel order of each loaded image (used when saving the mask).
         self._ct_back_ornt: Optional[np.ndarray] = None
@@ -282,6 +287,7 @@ class SessionManager:
             self.tumor_mask = seg
             # Fresh load from disk → in-memory matches disk
             self.tumor_dirty = False
+            self.clear_lesion_data()
         if "ct" in loaded or "pet" in loaded:
             self.clear_lesion_data()
             # A new image on a different grid invalidates the old masks.
@@ -394,8 +400,39 @@ class SessionManager:
         return self.repository.get_all()
 
     def clear_lesion_data(self):
-        self.lesion_bboxes = []
-        self.lesion_ids = []
+        """Forget the lesion statistics (new session / new mask from disk)."""
+        self.lesion_stats = None
+        self.lesion_stats_stale = False
+
+    def invalidate_lesion_stats(self):
+        """The mask was edited: keep showing the old values, recompute on save."""
+        if self.lesion_stats is not None:
+            self.lesion_stats_stale = True
+
+    def update_lesion_stats(self):
+        """(Re)compute the per-lesion statistics if they are missing or stale.
+
+        Runs in worker threads right after a load or a save. Without PET or a
+        tumor mask the statistics are ``None``. A failure is logged and leaves
+        them ``None`` — it must not fail the load / save that triggered it.
+        """
+        if self.pet_image is None or self.tumor_mask is None:
+            self.clear_lesion_data()
+            return
+        if self.lesion_stats is not None and not self.lesion_stats_stale:
+            return
+        try:
+            self.lesion_stats = ReportEngine.compute_lesion_stats(
+                self.get_pet_data(), self.get_tumor_mask_data(), self.pet_image.affine
+            )
+        except Exception:
+            import traceback
+            traceback.print_exc()
+            self.clear_lesion_data()
+            return
+        self.lesion_stats_stale = False
+        print(f"[SessionManager] Lesion stats: {len(self.lesion_stats['lesions'])} lesion(s), "
+              f"tTLG={self.lesion_stats['tTLG']:.2f}")
 
     # ── Mask helpers ──────────────────────────────────────────────────────
 
@@ -405,7 +442,7 @@ class SessionManager:
             raise ValueError("A CT or PET image must be loaded to set the mask (need affine).")
         self.tumor_mask = nib.Nifti1Image(np.asarray(mask_array, dtype=np.uint8), ref.affine)
         self.tumor_dirty = True
-        self.clear_lesion_data()
+        self.invalidate_lesion_stats()
 
     def set_roi_mask(self, mask_array: np.ndarray):
         self.roi_mask = np.asarray(mask_array, dtype=np.uint8)
@@ -422,9 +459,10 @@ class SessionManager:
         if ref is None:
             return
         if self.tumor_mask is None:
+            # In memory only: the file is written by the Segmentation tab's save
+            # button. An untouched empty mask has nothing to lose, so it is not dirty.
             print(f"[SessionManager] Creating new zeroed Tumor Mask ({ref.shape})")
             self.tumor_mask = nib.Nifti1Image(np.zeros(ref.shape, dtype=np.uint8, order="F"), ref.affine)
-            self.tumor_dirty = True
         if self.roi_mask is None:
             self.roi_mask = np.zeros(ref.shape, dtype=np.uint8, order="F")
 
@@ -435,27 +473,3 @@ class SessionManager:
         self.set_tumor_mask(merged)
         self.clear_roi_mask()
         return merged
-
-    # ── Report generation ─────────────────────────────────────────────────
-
-    def generate_report(self) -> dict:
-        """Generate a clinical report from the tumor segmentation.
-
-        The report handler saves the session right before this runs, so the
-        in-memory mask is exactly the saved one.
-        """
-        if self.current_session_id is None:
-            raise ValueError("No active session.")
-        if self.pet_image is None:
-            raise ValueError("PET image must be loaded to generate a report.")
-        if self.tumor_mask is None:
-            raise ValueError(
-                "No tumor mask found for this session. "
-                "Run segmentation and save first."
-            )
-
-        result = ReportEngine.compute_report(self.pet_image, self.tumor_mask)
-
-        self.lesion_bboxes = [lesion["bbox"] for lesion in result["lesions"]]
-        self.lesion_ids = [lesion["id"] for lesion in result["lesions"]]
-        return result

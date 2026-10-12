@@ -10,6 +10,7 @@ from .crosshair_overlay import CrosshairOverlay
 from .colorbar_overlay import ColorBarOverlay
 from .ruler_overlay import RulerOverlay
 from .orientation_overlay import OrientationOverlay
+from .lesion_info_overlay import LesionInfoOverlay
 
 
 class ViewerWidget(QWidget):
@@ -36,6 +37,9 @@ class ViewerWidget(QWidget):
     sig_ruler_clicked = pyqtSignal(list)
     sig_ruler_moved = pyqtSignal(list)
     sig_ruler_double_click = pyqtSignal()
+
+    # Double-click in a 2D view (outside ruler / drawing tools): [z, y, x] voxel
+    sig_lesion_double_click = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -78,6 +82,9 @@ class ViewerWidget(QWidget):
 
         # ── ColorBar overlay ────────────────────────────────────────────
         self._colorbar_overlay = ColorBarOverlay(self, self.qt_viewer.canvas.native)
+
+        # ── Lesion quantification overlay ───────────────────────────────
+        self._lesion_overlay = LesionInfoOverlay(self, self.qt_viewer.canvas.native)
 
         # ── Ruler overlay ───────────────────────────────────────────────
         self._ruler_enabled = False        # managed by LayoutManager
@@ -127,6 +134,10 @@ class ViewerWidget(QWidget):
         self._ruler_dblclick_cb = self._make_ruler_dblclick_cb()
         if self._ruler_dblclick_cb not in self.viewer.mouse_double_click_callbacks:
             self.viewer.mouse_double_click_callbacks.append(self._ruler_dblclick_cb)
+
+        self._lesion_dblclick_cb = self._make_lesion_dblclick_cb()
+        if self._lesion_dblclick_cb not in self.viewer.mouse_double_click_callbacks:
+            self.viewer.mouse_double_click_callbacks.append(self._lesion_dblclick_cb)
 
         # Default: no pan-on-drag (panning handled manually via RMB), arrow cursor always
         self.viewer.camera.mouse_pan = False
@@ -293,6 +304,7 @@ class ViewerWidget(QWidget):
         re-creation cost on the next load.
         """
         self.hide_lesion_ids()
+        self.set_lesion_infos([], False)
         for layer in list(self.viewer.layers):
             if isinstance(layer, (napari.layers.Image, napari.layers.Labels)):
                 layer.data = np.zeros((1, 1, 1), dtype=layer.data.dtype)
@@ -597,10 +609,14 @@ class ViewerWidget(QWidget):
             self._crosshair_overlay.update()
         if self._ruler_enabled:
             self._ruler_overlay.update()
+        if self._lesion_overlay.has_infos():
+            self._lesion_overlay.update()
         self.sig_camera_changed.emit(self)
 
     def _on_slice_changed(self, event=None):
         """Emit step tuple when slice scrolling happens."""
+        if self._lesion_overlay.has_infos():
+            self._lesion_overlay.update()
         self.sig_slice_changed.emit(tuple(self.viewer.dims.current_step))
 
     # ── Crosshair canvas coordinate computation ─────────────────────────
@@ -793,6 +809,30 @@ class ViewerWidget(QWidget):
                 return
             self.sig_ruler_double_click.emit()
         return on_dblclick
+
+    def _make_lesion_dblclick_cb(self):
+        """Double-click callback: report the voxel under the cursor (lesion info toggle).
+
+        Skipped in 3D, in ruler mode and while a drawing tool is active (the
+        active layer is not in pan_zoom mode). Eraser mode is filtered by the
+        MainWindow handler.
+        """
+        def on_dblclick(viewer, event):
+            if self.is_3d or self._ruler_enabled or event.button != 1:
+                return
+            active = viewer.layers.selection.active
+            if active is not None and getattr(active, "mode", "pan_zoom") != "pan_zoom":
+                return
+            pos = self._event_data_pos(viewer, event)
+            if pos is not None:
+                self.sig_lesion_double_click.emit([int(round(c)) for c in pos])
+        return on_dblclick
+
+    # ── Lesion quantification boxes ─────────────────────────────────────
+
+    def set_lesion_infos(self, infos: list, stale: bool):
+        """Show quantification boxes for ``infos`` (see ``LesionInfoOverlay``)."""
+        self._lesion_overlay.set_infos(infos, stale)
 
     # ── Lesion ID Labels ────────────────────────────────────────────────
 

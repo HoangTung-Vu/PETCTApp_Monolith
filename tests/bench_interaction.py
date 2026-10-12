@@ -3,7 +3,8 @@
 Runs a real ``MainWindow`` (needs a display) against a throw-away SQLite DB and
 times the interactions reported as slow: session load / switch, slice
 scrolling, crosshair moves, brush painting, eraser + undo, threshold-preview
-slider ticks and confirm-and-save. With ``--with-3d`` the edit paths are timed
+slider ticks and confirm-and-save — plus the lesion quantification paths
+(values after load / save, double-click info box toggle, report export). With ``--with-3d`` the edit paths are timed
 a second time after the 3D view has been opened once.
 
 Usage:
@@ -133,8 +134,18 @@ class Bench:
 
 
 class FakeMouseEvent:
-    def __init__(self, position):
+    def __init__(self, position, button=1):
         self.position = position
+        self.button = button
+
+
+def check(ok, what):
+    print(f"[bench] check {'OK  ' if ok else 'FAIL'} {what}")
+    if not ok:
+        CHECK_FAILURES.append(what)
+
+
+CHECK_FAILURES = []
 
 
 def run(args):
@@ -181,6 +192,11 @@ def run(args):
     wait_load(0)
     b.record("load_session_first", time.perf_counter() - t0)
     first_id = sm.current_session_id
+    n_les = len(sm.lesion_stats["lesions"]) if sm.lesion_stats else -1
+    check(n_les == len(_LESIONS), f"lesion values after load ({n_les} lesions)")
+    check(win.control_panel.workflow_tab.tbl_lesions.rowCount() == n_les,
+          "session-tab table filled without export")
+    check(not sm.lesion_stats_stale, "values not flagged as edited after load")
 
     # Second session, then switch back to the first one.
     win.create_new_session("Bench Doctor", "Bench Patient")
@@ -198,6 +214,7 @@ def run(args):
     lm.set_active_views(views)
     b.pump(200)
     b.record("set_6_views", time.perf_counter() - t0)
+    check(not sm.lesion_stats_stale, "changing the layout doesn't flag values as edited")
 
     # ── 3. Wheel scrolling in the axial CT view ──
     canvas = lm._fixed_view_map["axial_ct"].qt_viewer.canvas.native
@@ -220,11 +237,42 @@ def run(args):
         b.pump()
     b.record("crosshair_move", time.perf_counter() - t0, n)
 
+    # ── 4b. Double-click lesion info box (toggle on → views jump + boxes paint) ──
+    lx, ly, lz = lesion_centres(shape)[2]
+    lesion_pos = [Zn - 1 - lz, Yn - 1 - ly, lx]
+    vw_ax = lm._fixed_view_map["axial_ct"]
+    sc = vw_ax._scale_zyx
+    vw_ax._lesion_dblclick_cb(vw_ax.viewer, FakeMouseEvent(
+        tuple(c * s for c, s in zip(lesion_pos, sc))))       # real callback path
+    b.pump(50)
+    check(len(lm._shown_lesion_keys) == 1, "double-click shows the lesion box")
+    check([int(round(v)) for v in lm._xhair_pos] == lesion_pos, "views jumped to the lesion")
+    shown = [v for v in lm._get_visible_viewers() if v._lesion_overlay.has_infos()]
+    check(len(shown) == len(views), f"box pushed to all {len(views)} visible 2D views")
+    win._on_lesion_double_clicked(lesion_pos)                # toggle off
+    b.pump(50)
+    check(not lm._shown_lesion_keys, "second double-click hides it")
+    n_t = 20
+    t0 = b.start("lesion_info_toggle")
+    for _ in range(n_t):
+        win._on_lesion_double_clicked(lesion_pos)
+        b.pump()
+    b.record("lesion_info_toggle", time.perf_counter() - t0, n_t)
+    # Leave lesion 3's box on: it must survive the edits below (re-keyed by SUVmax voxel).
+    if not lm._shown_lesion_keys:
+        win._on_lesion_double_clicked(lesion_pos)
+    t0 = b.start("lesion_box_slice_repaint")
+    for i in range(n):
+        lm._on_viewer_crosshair_click([lesion_pos[0] + (i % 6) - 3, lesion_pos[1], lesion_pos[2]])
+        b.pump()
+    b.record("lesion_box_slice_repaint", time.perf_counter() - t0, n)
+
     def edit_paths(suffix):
         # ── 5. Brush painting on the tumor layer (Refine tab) ──
         win.control_panel.tabs.setCurrentIndex(win._TAB_REFINE)
         b.wait(lambda: sm.roi_mask is not None and win.control_panel.tabs.isEnabled())
         b.pump(200)
+        check(not sm.lesion_stats_stale, "entering the Segmentation tab doesn't flag values")
         win._on_manual_edit_tool("paint")
         vw = lm._fixed_view_map["axial_ct"]
         layer = vw.viewer.layers[vw.LAYER_NAMES["tumor"]]
@@ -258,11 +306,15 @@ def run(args):
         b.pump(200)
 
         # ── 7. Confirm & save (merge ROI into tumor, write to disk) ──
+        check(sm.lesion_stats_stale, "brush edit marks lesion values stale")
         t0 = b.start(f"confirm_and_save{suffix}")
         win._on_confirm_and_save()
         b.wait(lambda: not win._merge_save_worker.isRunning())
         b.pump(100)
         b.record(f"confirm_and_save{suffix}", time.perf_counter() - t0)
+        check(not sm.lesion_stats_stale, "red button recomputed the lesion values "
+              f"({len(sm.lesion_stats['lesions'])} lesions)")
+        check(len(lm._shown_lesion_keys) == 1, "lesion box survives the recompute")
 
         # ── 8. Eraser double-click on a lesion, then undo ──
         win.control_panel.tabs.setCurrentIndex(win._TAB_ERASER)
@@ -273,6 +325,9 @@ def run(args):
         scale = vw._scale_zyx
         pos = ((Zn - 1 - ez) * scale[0], (Yn - 1 - ey) * scale[1], ex * scale[2])
         before = len(win._eraser_undo_stack)
+        shown_before = list(lm._shown_lesion_keys)
+        win._on_lesion_double_clicked([Zn - 1 - ez, Yn - 1 - ey, ex])
+        check(lm._shown_lesion_keys == shown_before, "eraser-mode double-click doesn't toggle boxes")
         t0 = b.start(f"eraser_click{suffix}")
         vw._eraser_callback(vw.viewer, FakeMouseEvent(pos))
         b.wait(lambda: len(win._eraser_undo_stack) > before)
@@ -283,6 +338,22 @@ def run(args):
         win._on_eraser_undo()
         b.pump()
         b.record(f"eraser_undo{suffix}", time.perf_counter() - t0)
+
+        # Erase again and save from the Eraser tab → values recomputed.
+        before = len(win._eraser_undo_stack)
+        vw._eraser_callback(vw.viewer, FakeMouseEvent(pos))
+        b.wait(lambda: len(win._eraser_undo_stack) > before)
+        n_before = len(sm.lesion_stats["lesions"])
+        t0 = b.start(f"eraser_save_recompute{suffix}")
+        win.save_session()
+        b.wait(lambda: not win.save_worker.isRunning())
+        b.pump(50)
+        b.record(f"eraser_save_recompute{suffix}", time.perf_counter() - t0)
+        check(len(sm.lesion_stats["lesions"]) == n_before - 1 and not sm.lesion_stats_stale,
+              "eraser save recomputed the values (one lesion fewer)")
+        win._on_eraser_undo()                         # restore lesion 0 for later passes
+        win.save_session()
+        b.wait(lambda: not win.save_worker.isRunning())
         win.control_panel.eraser_tab.btn_eraser_toggle.setChecked(False)
         win.control_panel.tabs.setCurrentIndex(win._TAB_WORKFLOW)
         b.pump(200)
@@ -297,6 +368,25 @@ def run(args):
         lm.set_active_views(views)
         b.pump(300)
         edit_paths("_after_3d")
+
+    # ── 9. Export: folder pick + write the stored values (no save, no compute) ──
+    import src.gui.handlers.report_handler as rh
+    export_root = tmp / "export"
+    rh.QFileDialog.getExistingDirectory = staticmethod(lambda *a, **k: str(export_root))
+    rh.QMessageBox.information = staticmethod(lambda *a, **k: None)
+    stats_before = sm.lesion_stats
+    t0 = b.start("export_report")
+    win._on_report_clicked()
+    b.wait(lambda: not win.report_worker.isRunning())
+    b.pump(50)
+    b.record("export_report", time.perf_counter() - t0)
+    check(sm.lesion_stats is stats_before, "export did not recompute")
+    csv_path = export_root / str(sm.current_session_id) / "report_metabolic.csv"
+    head = csv_path.read_text().splitlines()[0] if csv_path.exists() else ""
+    check("SUVpeak" in head and "TLG" in head, "CSV has SUVpeak + TLG columns")
+
+    if CHECK_FAILURES:
+        print(f"[bench] {len(CHECK_FAILURES)} check(s) FAILED: {CHECK_FAILURES}")
 
     win._prompt_unsaved_segmentation = lambda context: True
     win.close()

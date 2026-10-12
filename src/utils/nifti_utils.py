@@ -362,3 +362,19 @@ def point_from_napari(point_zyx: tuple, napari_shape_zyx: tuple) -> list:
     
     # 2. Undo Transpose -> (X, Y, Z) == (x_prime, y_prime, z_prime)
     return [x_prime, y_prime, z_prime]
+
+
+def crop_to_napari(slices_xyz: tuple, crop_xyz: np.ndarray, shape_xyz: tuple) -> tuple:
+    """Map a bounding-box crop of an XYZ volume into Napari (Z, Y, X) space.
+
+    ``slices_xyz`` are the crop's slices (step 1) in the XYZ volume of shape
+    ``shape_xyz``. Returns ``(lo_zyx, crop_zyx)``: the crop's start index in the
+    ``to_napari`` volume and the crop itself in that order, so that
+    ``to_napari(vol)[lo_z:lo_z+dz, lo_y:lo_y+dy, lo_x:lo_x+dx] == crop_zyx``
+    (``crop_zyx`` is a view of ``crop_xyz``).
+    """
+    sx, sy, sz = slices_xyz
+    _, Y, Z = shape_xyz
+    lo_zyx = (Z - sz.stop, Y - sy.stop, sx.start)
+    crop_zyx = crop_xyz.transpose(2, 1, 0)[::-1, ::-1, :]
+    return lo_zyx, crop_zyx

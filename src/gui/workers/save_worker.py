@@ -16,6 +16,8 @@ class SaveWorker(QThread):
         try:
             print(f"[SaveWorker] Starting async save for session {self.session_manager.current_session_id}...")
             self.session_manager.save_session()
+            # A saved (edited) mask gets fresh lesion statistics.
+            self.session_manager.update_lesion_stats()
             self.finished.emit()
         except Exception as e:
             import traceback

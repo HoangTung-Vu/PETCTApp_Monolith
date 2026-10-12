@@ -220,8 +220,8 @@ class ControlPanel(QWidget):
     def hide_report_progress(self):
         self.workflow_tab.hide_report_progress()
 
-    def show_report_results(self, metrics: dict):
-        self.workflow_tab.show_report_results(metrics)
+    def show_lesion_stats(self, stats, stale: bool = False, message: str = ""):
+        self.workflow_tab.show_lesion_stats(stats, stale, message)
 
     def clear_report_results(self):
         self.workflow_tab.clear_report_results()

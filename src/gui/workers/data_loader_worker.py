@@ -72,6 +72,7 @@ class DataLoaderWorker(QThread):
 
             # Volumes are fully read into memory by the SessionManager loaders,
             # so nothing heavy is left for the main thread to decompress.
+            self.session_manager.update_lesion_stats()
             self.finished.emit(True)
 
         except Exception as e:

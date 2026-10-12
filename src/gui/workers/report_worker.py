@@ -2,78 +2,52 @@ from PyQt6.QtCore import QThread, pyqtSignal
 
 
 class ReportWorker(QThread):
-    """Computes the clinical PET report and exports CSV + images in a background thread."""
+    """Exports the session's lesion statistics (CSV + images) in a background thread.
 
-    finished = pyqtSignal(dict)   # metrics dict
+    Nothing is computed or saved here: the statistics were computed when the
+    segmentation was loaded / saved (``SessionManager.lesion_stats``).
+    """
+
+    finished = pyqtSignal(dict)   # the exported stats
     error = pyqtSignal(str)
 
-    def __init__(self, session_manager, report_dir=None, ct_wl=None, pet_wl=None, ct_colormap="gray", pet_colormap="jet", mask_opacity=0.7, ct_zyx=None, pet_zyx=None):
+    def __init__(self, stats, report_dir, ct_zyx, pet_zyx, affine, ct_wl=None, pet_wl=None,
+                 ct_colormap="gray", pet_colormap="jet", mask_opacity=0.7):
         super().__init__()
-        self.session_manager = session_manager
+        self.stats = stats
         self.report_dir = report_dir
+        self.ct_zyx = ct_zyx
+        self.pet_zyx = pet_zyx
+        self.affine = affine
         self.ct_wl = ct_wl or (350.0, 35.0)
         self.pet_wl = pet_wl or (10.0, 5.0)
         self.ct_colormap = ct_colormap
         self.pet_colormap = pet_colormap
         self.mask_opacity = mask_opacity
-        self.ct_zyx = ct_zyx
-        self.pet_zyx = pet_zyx
 
     def run(self):
         try:
-            metrics = self.session_manager.generate_report()
+            import numpy as np
+            from ...core.engine.report_engine import ReportEngine
 
-            # Export CSV + per-tumor images
-            self._export(metrics)
+            # No CT: render the CT images black, like before.
+            ct_zyx = self.ct_zyx if self.ct_zyx is not None else np.zeros_like(self.pet_zyx)
 
-            self.finished.emit(metrics)
+            ReportEngine.export_report(
+                report_dir=self.report_dir,
+                stats=self.stats,
+                ct_zyx=ct_zyx,
+                pet_zyx=self.pet_zyx,
+                affine=self.affine,
+                ct_wl=self.ct_wl,
+                pet_wl=self.pet_wl,
+                ct_colormap=self.ct_colormap,
+                pet_colormap=self.pet_colormap,
+                mask_opacity=self.mask_opacity,
+            )
+            print(f"[Report] Exported to {self.report_dir}")
+            self.finished.emit(self.stats)
         except Exception as e:
             import traceback
             traceback.print_exc()
             self.error.emit(str(e))
-
-    def _export(self, metrics):
-        from ...core.engine.report_engine import ReportEngine
-        from ...core.file_manager import FileManager
-        import numpy as np
-
-        sm = self.session_manager
-        session_id = sm.current_session_id
-        if session_id is None:
-            return
-
-        if self.report_dir is not None:
-            report_dir = self.report_dir
-        else:
-            report_dir = FileManager.get_session_dir(session_id) / "report"
-
-        # Stored dtype, no copies — the renderer only needs numeric arrays.
-        ct_data = sm.get_ct_data()
-        pet_data = sm.get_pet_data()
-        mask_data = sm.get_tumor_mask_data()
-
-        if pet_data is None or mask_data is None:
-            return
-
-        # If no CT, create zeros
-        if ct_data is None:
-            ct_data = np.zeros_like(pet_data)
-
-        affine = sm.pet_image.affine
-
-        ReportEngine.export_report(
-            report_dir=report_dir,
-            metrics=metrics,
-            ct_data=ct_data,
-            pet_data=pet_data,
-            mask_data=mask_data,
-            affine=affine,
-            ct_wl=self.ct_wl,
-            pet_wl=self.pet_wl,
-            ct_colormap=self.ct_colormap,
-            pet_colormap=self.pet_colormap,
-            mask_opacity=self.mask_opacity,
-            ct_zyx=self.ct_zyx,
-            pet_zyx=self.pet_zyx,
-        )
-        print(f"[Report] Exported to {report_dir}")

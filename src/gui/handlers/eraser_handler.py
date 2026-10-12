@@ -8,10 +8,6 @@ class EraserHandlerMixin:
         """Enable or disable eraser click mode on viewers."""
         if enabled:
             self.layout_manager.enable_eraser_click_mode()
-
-            # Clear report UI and hide lesion IDs when eraser is enabled
-            self._clear_all_report_ui()
-
             print("[Eraser] Mode enabled.")
         else:
             self.layout_manager.disable_eraser_click_mode()
@@ -34,9 +30,6 @@ class EraserHandlerMixin:
         self._eraser_undo_stack.append({"xyz": erased_indices_xyz, "zyx": erased_indices_zyx})
 
         self._set_tumor_voxels(erased_indices_xyz, erased_indices_zyx, 0)
-
-        # Clear report UI and hide lesion IDs
-        self._clear_all_report_ui()
         print(f"[Eraser] Preview updated. Undo stack depth: {len(self._eraser_undo_stack)}")
 
     def _on_eraser_undo(self):
@@ -50,7 +43,6 @@ class EraserHandlerMixin:
 
         backup = self._eraser_undo_stack.pop()
         self._set_tumor_voxels(backup["xyz"], backup["zyx"], 1)
-        self._clear_all_report_ui()
         print(f"[Eraser] Undo successful. Undo stack depth: {len(self._eraser_undo_stack)}")
 
     def _set_tumor_voxels(self, indices_xyz, indices_zyx, value: int):
@@ -60,8 +52,9 @@ class EraserHandlerMixin:
         if current_mask is not None:
             current_mask[indices_xyz] = value
             sm.tumor_dirty = True
-            sm.clear_lesion_data()
         mask_zyx = self.layout_manager._cached_data_zyx.get("tumor")
         if mask_zyx is not None:
             mask_zyx[indices_zyx] = value
         self.layout_manager.refresh_mask("tumor")
+        # Values update when the erased mask is saved
+        self._mark_lesion_stats_stale()

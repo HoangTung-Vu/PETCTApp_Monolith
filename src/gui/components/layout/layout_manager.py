@@ -23,6 +23,7 @@ import napari
 from ..viewers.viewer_widget import ViewerWidget
 from .mask_sync import MaskSyncMixin
 from .eraser_manager import EraserMixin
+from .lesion_info_manager import LesionInfoMixin
 from ....utils.dimension_utils import get_spacing_from_affine
 
 
@@ -64,7 +65,7 @@ def _view_sort_key(view_id: str):
 
 # ── Main class ───────────────────────────────────────────────────────────────
 
-class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
+class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
     """Dynamic multi-view layout manager with a pool of 9 ViewerWidgets."""
 
     sig_eraser_region_removed   = pyqtSignal(object, object)   # (indices_zyx, mask_zyx)
@@ -79,6 +80,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
 
     # Current ruler segment length in mm (float), or None when no measurement
     sig_ruler_distance = pyqtSignal(object)
+
+    # Double-click on a 2D view: [z, y, x] voxel (lesion quantification toggle)
+    sig_lesion_double_clicked = pyqtSignal(list)
 
     # ── Init ─────────────────────────────────────────────────────────────────
 
@@ -119,6 +123,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         self._init_3d_view()
 
         self._init_mask_sync()
+        self._init_lesion_info()
 
         # Data cache
         self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None, "ct_filename": "", "pet_filename": ""}
@@ -159,6 +164,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         if view_id not in self._fixed_view_map:
             vw = ViewerWidget()
             vw.hide()
+            vw.sig_lesion_double_click.connect(self._on_viewer_lesion_double_click)
+            vw.set_lesion_infos(self._shown_lesion_infos(), self._lesion_stale)
             self._viewer_pool.append(vw)
             self._fixed_view_map[view_id] = vw
         return self._fixed_view_map[view_id]
@@ -908,6 +915,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, QWidget):
         # Do not clear active views so layout persists between sessions
         # self._active_views = []
         self._cached_lesion_data = None
+        self.clear_lesion_info()
         self._info_label.hide()
         # self._clear_dynamic_grid()
 

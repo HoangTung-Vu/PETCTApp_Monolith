@@ -60,10 +60,7 @@ class SegmentationHandlerMixin:
         self.session_manager.set_tumor_mask(data)
         self._push_mask_to_all("tumor", data)
 
-        # Clear stale report UI and lesion
-        self._clear_all_report_ui()
-
-        # Save immediately
+        # Save immediately (the save worker also computes the lesion values)
         self.save_session()
         print(f"Segmentation {seg_type} finished and saved.")
 
@@ -73,9 +70,6 @@ class SegmentationHandlerMixin:
 
     def _push_mask_to_all(self, layer_type, data, data_zyx=None):
         self.layout_manager.update_mask(data, layer_type, data_zyx)
-        # Hide lesion IDs since mask changed
-        self.layout_manager.hide_lesion_ids()
-        self.control_panel.chk_show_lesion_ids.setChecked(False)
 
     def _on_segmentation_error(self, error_msg):
         self._close_seg_progress_dialog()

@@ -4,14 +4,22 @@ import shutil
 from pathlib import Path
 
 import numpy as np
-import nibabel as nib
 from PIL import Image
 from scipy.ndimage import label, find_objects
 
-from ...utils.dimension_utils import get_voxel_volume_from_affine
+from ...utils.dimension_utils import get_spacing_from_affine, get_voxel_volume_from_affine
+from ...utils.nifti_utils import crop_to_napari, mask_bbox
 
 
-def _label_components(mask: np.ndarray):
+# A lesion is a 26-connected component — the same unit the Eraser removes
+# (skimage.flood's default full connectivity).
+_CONNECTIVITY_26 = np.ones((3, 3, 3), dtype=bool)
+
+# SUVpeak sphere: 1 cm³ = 1000 mm³ → r = (3·1000 / 4π)^(1/3) ≈ 6.20 mm.
+SUVPEAK_RADIUS_MM = (3.0 * 1000.0 / (4.0 * np.pi)) ** (1.0 / 3.0)
+
+
+def _label_components(mask: np.ndarray, structure=None):
     """``scipy.ndimage.label`` + ``find_objects`` in the fast memory order.
 
     Both are 50–100× slower on Fortran-ordered input (NIfTI's layout), so an
@@ -19,11 +27,40 @@ def _label_components(mask: np.ndarray):
     back in ``mask``'s axis order. Returns ``(labels, n, slices)``.
     """
     if mask.flags.f_contiguous and not mask.flags.c_contiguous:
-        labels_t, n = label(mask.T)
+        st = None if structure is None else structure.T
+        labels_t, n = label(mask.T, structure=st)
         slices = [None if s is None else s[::-1] for s in find_objects(labels_t)]
         return labels_t.T, n, slices
-    labels, n = label(mask)
+    labels, n = label(mask, structure=structure)
     return labels, n, find_objects(labels)
+
+
+def _sphere_kernel(spacing_xyz, radius_mm: float):
+    """Boolean kernel of the voxel offsets whose centres lie within ``radius_mm``.
+
+    Returns ``(kernel, half)`` where ``half[d]`` is the kernel half-width (voxels)
+    along axis ``d``; the kernel is centred at index ``half``.
+    """
+    half = [int(np.floor(radius_mm / s)) if s > 0 else 0 for s in spacing_xyz]
+    ox, oy, oz = np.ogrid[-half[0]:half[0] + 1, -half[1]:half[1] + 1, -half[2]:half[2] + 1]
+    sx, sy, sz = spacing_xyz
+    kernel = (ox * sx) ** 2 + (oy * sy) ** 2 + (oz * sz) ** 2 <= radius_mm ** 2
+    return kernel, half
+
+
+def _sphere_mean(pet: np.ndarray, center, kernel: np.ndarray, half) -> float:
+    """Mean of ``pet`` under ``kernel`` centred on voxel ``center``.
+
+    The sphere is clipped at the volume edges; voxels inside it count whether
+    or not they belong to the lesion.
+    """
+    win, ker = [], []
+    for c, h, n in zip(center, half, pet.shape):
+        lo, hi = max(0, c - h), min(n, c + h + 1)
+        win.append(slice(lo, hi))
+        ker.append(slice(lo - (c - h), hi - (c - h)))
+    vals = pet[tuple(win)][kernel[tuple(ker)]]
+    return float(np.mean(vals, dtype=np.float64))
 
 
 class ReportEngine:
@@ -31,125 +68,99 @@ class ReportEngine:
     component analysis.
 
     Per-lesion metrics:
+        MTV     Metabolic Tumour Volume (mL) of the lesion.
         SUVmax  Maximum PET intensity within the lesion.
         SUVmean Mean PET intensity within the lesion.
-        MTV     Metabolic Tumour Volume (mL) of the lesion.
+        SUVpeak Mean PET intensity in a 1 cm³ sphere centred on the SUVmax voxel
+                (the sphere is not restricted to the lesion).
+        TLG     Total Lesion Glycolysis = SUVmean × MTV.
 
     Global metrics:
-        gTLG    Global Total Lesion Glycolysis = Σ(SUVmean_i × MTV_i).
+        tTLG    Total TLG = Σ TLG_i.
     """
 
     @staticmethod
-    def compute_report(
-        pet_image: nib.Nifti1Image,
-        mask_image: nib.Nifti1Image,
-    ) -> dict:
-        """Compute the per-lesion report dictionary.
-
-        Uses connected component labeling to identify individual lesions in
-        the binary mask.  Each lesion gets its own SUVmax, SUVmean, MTV, and
-        3-D bounding box.
+    def compute_lesion_stats(pet: np.ndarray, mask: np.ndarray, affine: np.ndarray) -> dict:
+        """Per-lesion quantification of a tumour mask.
 
         Args:
-            pet_image:  PET NIfTI image (intensity values = SUV or raw counts).
-            mask_image: Binary segmentation mask NIfTI image (0/1).
+            pet:    PET volume in SUV (XYZ, LAS), any dtype / memory order.
+            mask:   Tumour mask (XYZ, same grid); every non-zero voxel counts.
+            affine: 4x4 voxel → mm affine of the grid.
 
         Returns:
-            dict with keys:
-                ``gTLG``    float, global Total Lesion Glycolysis.
-                ``lesions`` list of dicts, each containing:
-                    ``id``      int, 1-based lesion ID.
-                    ``SUVmax``  float
-                    ``SUVmean`` float
-                    ``MTV``     float (mL)
-                    ``bbox``    tuple (x_min, y_min, z_min, x_max, y_max, z_max)
-
-        Raises:
-            ValueError: If shapes mismatch or mask is empty.
+            dict with ``tTLG`` (float) and ``lesions``, a list sorted head → feet
+            with 1-based ``id``. Each lesion holds ``MTV`` (mL), ``SUVmax``,
+            ``SUVmean``, ``SUVpeak``, ``TLG``, ``n_voxels``, ``bbox``
+            (inclusive ``(x0, y0, z0, x1, y1, z1)``), ``slices`` (the bbox as XYZ
+            slices), ``mask`` (bool crop of the lesion inside ``slices``),
+            ``suvmax_voxel``, ``center_voxel`` (bbox centre, XYZ) and
+            ``center_physical`` (mm). Values are unrounded.
         """
-        pet_data = pet_image.get_fdata(dtype=np.float32)
-        mask_data = np.asarray(mask_image.dataobj, dtype=np.uint8)
+        if pet.shape != mask.shape:
+            raise ValueError(f"Shape mismatch: PET {pet.shape} vs Mask {mask.shape}")
 
-        if pet_data.shape != mask_data.shape:
-            raise ValueError(
-                f"Shape mismatch: PET {pet_data.shape} vs Mask {mask_data.shape}"
-            )
+        bb = mask_bbox(mask)
+        if bb is None:
+            return {"tTLG": 0.0, "lesions": []}
 
-        roi = mask_data > 0
-        if not np.any(roi):
-            raise ValueError("Mask is empty - no voxels to compute report on.")
+        voxel_ml = get_voxel_volume_from_affine(affine) / 1000.0
+        spacing = [abs(float(s)) for s in get_spacing_from_affine(affine)]
+        kernel, half = _sphere_kernel(spacing, SUVPEAK_RADIUS_MM)
 
-        # Voxel volume derived from the affine determinant (source of truth)
-        voxel_vol_mm3 = get_voxel_volume_from_affine(pet_image.affine)
-        voxel_vol_ml = voxel_vol_mm3 / 1000.0
-
-        # ── Connected component labeling ──
-        # find_objects returns tight bounding slices per component (O(N) total,
-        # not O(N×L)) — avoids scanning the full array once per lesion.
-        labeled_array, num_features, component_slices = _label_components(roi)
+        # Label only the mask's bounding box. `>` keeps the crop's F layout, so
+        # the transpose fast path of _label_components applies.
+        labels, _, comp_slices = _label_components(mask[bb] > 0, _CONNECTIVITY_26)
+        offset = [s.start for s in bb]
 
         lesions = []
-        g_tlg = 0.0
-
-        for lesion_id, sl in enumerate(component_slices, start=1):
+        for k, sl in enumerate(comp_slices, start=1):
             if sl is None:
                 continue
+            comp = labels[sl] == k
+            abs_sl = tuple(slice(o + s.start, o + s.stop) for o, s in zip(offset, sl))
 
-            # Work on the bounding-box subarray only
-            sub_labeled = labeled_array[sl]
-            sub_pet = pet_data[sl]
-            component_mask = sub_labeled == lesion_id
-            pet_vals = sub_pet[component_mask]
+            # Boolean indexing / argmax walk the array in C order; on the
+            # F-ordered crops that is ~30× slower than going through the
+            # transposes (memory order). Element order doesn't matter here.
+            comp_t = comp.T
+            pet_t = pet[abs_sl].T
+            vals = pet_t[comp_t].astype(np.float64)
+            n_voxels = int(vals.size)
+            suv_mean = float(vals.mean())
+            mtv = n_voxels * voxel_ml
 
-            suv_max = float(np.max(pet_vals))
-            suv_mean = float(np.mean(pet_vals))
-            n_voxels = len(pet_vals)
-            mtv = n_voxels * voxel_vol_ml
+            peak_t = np.unravel_index(int(np.argmax(np.where(comp_t, pet_t, -np.inf))), comp_t.shape)
+            suvmax_voxel = tuple(int(s.start + i) for s, i in zip(abs_sl, peak_t[::-1]))
+            suv_max = float(pet[suvmax_voxel])
 
-            g_tlg += suv_mean * mtv
-
-            # Bounding box from tight slices (find_objects guarantees tight fit)
-            bbox = (
-                sl[0].start, sl[1].start, sl[2].start,
-                sl[0].stop - 1, sl[1].stop - 1, sl[2].stop - 1,
-            )
-
-            # Center voxel coordinates (NIfTI X, Y, Z)
-            cx = (sl[0].start + sl[0].stop - 1) / 2.0
-            cy = (sl[1].start + sl[1].stop - 1) / 2.0
-            cz = (sl[2].start + sl[2].stop - 1) / 2.0
+            x0, y0, z0 = (s.start for s in abs_sl)
+            x1, y1, z1 = (s.stop - 1 for s in abs_sl)
+            center = ((x0 + x1) / 2.0, (y0 + y1) / 2.0, (z0 + z1) / 2.0)
+            phys = affine @ np.array([*center, 1.0])
 
             lesions.append({
-                "id": lesion_id,
-                "SUVmax": round(suv_max, 2),
-                "SUVmean": round(suv_mean, 2),
-                "MTV": round(mtv, 2),
-                "bbox": bbox,
-                "center_voxel": (round(cx, 1), round(cy, 1), round(cz, 1)),
+                "MTV": mtv,
+                "SUVmax": suv_max,
+                "SUVmean": suv_mean,
+                "SUVpeak": _sphere_mean(pet, suvmax_voxel, kernel, half),
+                "TLG": suv_mean * mtv,
+                "n_voxels": n_voxels,
+                "bbox": (x0, y0, z0, x1, y1, z1),
+                "slices": abs_sl,
+                "mask": comp,
+                "suvmax_voxel": suvmax_voxel,
+                "center_voxel": center,
+                "center_physical": tuple(float(v) for v in phys[:3]),
             })
 
-        # Sort lesions by Z position (descending) so IDs go from head to feet.
-        # In nibabel (X, Y, Z) order: bbox indices 2 and 5 are z_min and z_max.
-        lesions.sort(key=lambda l: (l["bbox"][2] + l["bbox"][5]) / 2.0,
-                     reverse=True)
-
-        # Re-assign sequential IDs after sorting
+        # IDs go from head to feet: in LAS, larger z is superior.
+        lesions.sort(key=lambda l: (l["bbox"][2] + l["bbox"][5]) / 2.0, reverse=True)
         for idx, lesion in enumerate(lesions, start=1):
             lesion["id"] = idx
 
-        # Compute physical coordinates using affine
-        affine = pet_image.affine
-        for lesion in lesions:
-            cx, cy, cz = lesion["center_voxel"]
-            phys = affine @ np.array([cx, cy, cz, 1.0])
-            lesion["center_physical"] = (
-                round(float(phys[0]), 2),
-                round(float(phys[1]), 2),
-                round(float(phys[2]), 2),
-            )
-
         return {
-            "gTLG": round(g_tlg, 2),
+            "tTLG": float(sum(l["TLG"] for l in lesions)),
             "lesions": lesions,
         }
 
@@ -369,88 +380,96 @@ class ReportEngine:
             pet_img.save(out_dir / f"{plane}_pet.png")
 
     @staticmethod
+    def _lesion_plane(lo, crop, shape_zyx, axis: int, index: int) -> np.ndarray:
+        """2D bool mask of one lesion on Napari slice ``index`` along ``axis``.
+
+        ``lo`` / ``crop`` are the lesion's ZYX crop (``crop_to_napari``).
+        """
+        dims = [d for d in range(3) if d != axis]
+        out = np.zeros((shape_zyx[dims[0]], shape_zyx[dims[1]]), dtype=bool)
+        k = index - lo[axis]
+        if 0 <= k < crop.shape[axis]:
+            sub = np.take(crop, k, axis=axis)
+            a, b = lo[dims[0]], lo[dims[1]]
+            out[a:a + sub.shape[0], b:b + sub.shape[1]] = sub
+        return out
+
+    @staticmethod
     def export_report(
         report_dir: Path,
-        metrics: dict,
-        ct_data: np.ndarray,
-        pet_data: np.ndarray,
-        mask_data: np.ndarray,
+        stats: dict,
+        ct_zyx: np.ndarray,
+        pet_zyx: np.ndarray,
         affine: np.ndarray,
         ct_wl: tuple,
         pet_wl: tuple,
         ct_colormap: str = "gray",
         pet_colormap: str = "jet",
         mask_opacity: float = 0.5,
-        ct_zyx: np.ndarray = None,
-        pet_zyx: np.ndarray = None,
     ):
-        """Export report CSV and per-tumor slice images.
+        """Export report CSVs and per-tumor slice images from computed lesion stats.
 
-        Wipes and recreates ``report_dir`` on every call.
+        Wipes and recreates ``report_dir`` on every call. Nothing is recomputed:
+        values, IDs and lesion masks all come from ``stats``.
 
         Args:
-            report_dir: Target directory (e.g. storage/data/{sid}/report/).
-            metrics: Dict returned by ``compute_report``.
-            ct_data: CT volume in NIfTI (X, Y, Z) order, float32.
-            pet_data: PET volume in NIfTI (X, Y, Z) order, float32.
-            mask_data: Binary tumor mask in NIfTI (X, Y, Z) order, uint8.
-            affine: 4x4 NIfTI affine matrix.
+            report_dir: Target directory.
+            stats: Dict returned by ``compute_lesion_stats``.
+            ct_zyx: CT volume in Napari (Z, Y, X) order.
+            pet_zyx: PET volume in Napari (Z, Y, X) order (same grid).
+            affine: 4x4 NIfTI affine of the grid (XYZ voxel → mm).
             ct_wl: (window, level) for CT display.
             pet_wl: (window, level) for PET display.
             ct_colormap: Napari colormap name for CT.
             pet_colormap: Napari colormap name for PET.
             mask_opacity: Mask overlay opacity (0.0-1.0).
-            ct_zyx: Pre-converted CT in Napari (Z, Y, X) order — skips to_napari when provided.
-            pet_zyx: Pre-converted PET in Napari (Z, Y, X) order — skips to_napari when provided.
         """
         # Overwrite old report directory
         if report_dir.exists():
             shutil.rmtree(report_dir)
         report_dir.mkdir(parents=True, exist_ok=True)
 
-        from ...utils.nifti_utils import to_napari
-        from ...utils.dimension_utils import get_spacing_from_affine
+        sx, sy, sz = (abs(float(s)) for s in get_spacing_from_affine(affine))
+        shape_zyx = pet_zyx.shape
+        shape_xyz = shape_zyx[::-1]
+        shape_x, shape_y, shape_z = shape_xyz
 
-        ct_napari = ct_zyx if ct_zyx is not None else to_napari(ct_data)
-        pet_napari = pet_zyx if pet_zyx is not None else to_napari(pet_data)
+        lesions = stats.get("lesions", [])
+        t_tlg = stats.get("tTLG", 0.0)
 
-        sx, sy, sz = get_spacing_from_affine(affine)
-        sx, sy, sz = abs(float(sx)), abs(float(sy)), abs(float(sz))
-        
-        shape_x, shape_y, shape_z = ct_data.shape
+        def app_coords(voxel_xyz):
+            """NIfTI XYZ voxel → Napari (App GUI) (z, y, x)."""
+            vx, vy, vz = voxel_xyz
+            return shape_z - 1 - vz, shape_y - 1 - vy, vx
 
-        lesions = metrics.get("lesions", [])
-        g_tlg = metrics.get("gTLG", 0.0)
+        header = [
+            "id",
+            "voxel_x", "voxel_y", "voxel_z",
+            "physical_x_mm", "physical_y_mm", "physical_z_mm",
+            "SUVmax", "SUVmean", "SUVpeak", "MTV_mL", "TLG",
+        ]
+
+        def lesion_row(les):
+            app_z, app_y, app_x = app_coords(les["center_voxel"])
+            px, py, pz = les["center_physical"]
+            return [
+                les["id"],
+                int(round(app_x)), int(round(app_y)), int(round(app_z)),
+                round(px, 2), round(py, 2), round(pz, 2),
+                round(les["SUVmax"], 2), round(les["SUVmean"], 2), round(les["SUVpeak"], 2),
+                round(les["MTV"], 2), round(les["TLG"], 2),
+            ]
 
         # ── CSV ──
         csv_path = report_dir / "report_metabolic.csv"
         with open(csv_path, "w", newline="") as f:
             writer = csv.writer(f)
-            writer.writerow([
-                "id",
-                "voxel_x", "voxel_y", "voxel_z",
-                "physical_x_mm", "physical_y_mm", "physical_z_mm",
-                "SUVmax", "SUVmean", "MTV_mL", "TLG",
-            ])
+            writer.writerow(header)
             for les in lesions:
-                vx, vy, vz = les["center_voxel"]
-                px, py, pz = les["center_physical"]
-                tlg = round(les["SUVmean"] * les["MTV"], 2)
-                
-                # Convert NIfTI voxel coordinates to Napari (App GUI) coordinates
-                app_z = shape_z - 1 - vz
-                app_y = shape_y - 1 - vy
-                app_x = vx
-                
-                writer.writerow([
-                    les["id"],
-                    int(round(app_x)), int(round(app_y)), int(round(app_z)),
-                    px, py, pz,
-                    les["SUVmax"], les["SUVmean"], les["MTV"], tlg,
-                ])
+                writer.writerow(lesion_row(les))
             # Summary row
             writer.writerow([])
-            writer.writerow(["gTLG", g_tlg])
+            writer.writerow(["tTLG", round(t_tlg, 2)])
 
         # ── Additional Metrics (report_radiomics.csv) ──
         d_max = 0.0
@@ -469,43 +488,19 @@ class ReportEngine:
             writer2 = csv.writer(f2)
             writer2.writerow(["Metric", "Value"])
             writer2.writerow(["Dmax_mm", d_max])
-            
+
             if lesion_a and lesion_b:
                 writer2.writerow([])
                 writer2.writerow(["Dmax Points Info"])
-                writer2.writerow([
-                    "id", "voxel_x", "voxel_y", "voxel_z",
-                    "physical_x_mm", "physical_y_mm", "physical_z_mm",
-                    "SUVmax", "SUVmean", "MTV_mL", "TLG",
-                ])
+                writer2.writerow(header)
                 for les in (lesion_a, lesion_b):
-                    vx, vy, vz = les["center_voxel"]
-                    px, py, pz = les["center_physical"]
-                    tlg = round(les["SUVmean"] * les["MTV"], 2)
-                    app_z = shape_z - 1 - vz
-                    app_y = shape_y - 1 - vy
-                    app_x = vx
-                    writer2.writerow([
-                        les["id"],
-                        int(round(app_x)), int(round(app_y)), int(round(app_z)),
-                        px, py, pz,
-                        les["SUVmax"], les["SUVmean"], les["MTV"], tlg,
-                    ])
+                    writer2.writerow(lesion_row(les))
 
-        # ── Isolated Masks ──
-        # Re-run connected components to map lesion IDs back to local mask labels
-        labeled_array, _, component_slices = _label_components(mask_data > 0)
-        # One ZYX copy of the labels; each lesion then only compares the three
-        # 2D slices it renders (was a full-volume compare + to_napari per lesion).
-        labeled_napari = to_napari(labeled_array)
-        label_map = {}
-        for index, sl in enumerate(component_slices, start=1):
-            if sl is None: continue
-            bbox = (sl[0].start, sl[1].start, sl[2].start, sl[0].stop - 1, sl[1].stop - 1, sl[2].stop - 1)
-            for les in lesions:
-                if les["bbox"] == bbox:
-                    label_map[les["id"]] = index
-                    break
+        # ── Per-lesion ZYX crops (for isolating each lesion on its slices) ──
+        crops = {
+            les["id"]: crop_to_napari(les["slices"], les["mask"], shape_xyz)
+            for les in lesions
+        }
 
         # ── Per-tumor images ──
         images_dir = report_dir / "images"
@@ -519,35 +514,24 @@ class ReportEngine:
             tumor_dir = images_dir / str(lid)
             tumor_dir.mkdir(exist_ok=True)
 
-            cx, cy, cz = les["center_voxel"]
-            
-            # Use Napari coords for slicing
-            app_z = shape_z - 1 - cz
-            app_y = shape_y - 1 - cy
-            app_x = cx
-            
-            iz, iy, ix = int(round(app_z)), int(round(app_y)), int(round(app_x))
+            app_z, app_y, app_x = app_coords(les["center_voxel"])
+            iz = max(0, min(int(round(app_z)), shape_zyx[0] - 1))
+            iy = max(0, min(int(round(app_y)), shape_zyx[1] - 1))
+            ix = max(0, min(int(round(app_x)), shape_zyx[2] - 1))
 
-            # Clamp to volume bounds (Napari shape)
-            iz = max(0, min(iz, ct_napari.shape[0] - 1))
-            iy = max(0, min(iy, ct_napari.shape[1] - 1))
-            ix = max(0, min(ix, ct_napari.shape[2] - 1))
+            lo, crop = crops[lid]
 
-            # Isolate mask for this specific tumor (all lesions as fallback)
-            mask_label = label_map.get(lid)
-
-            def lesion_mask(sl):
-                lab = labeled_napari[sl]
-                return (lab == mask_label) if mask_label is not None else (lab > 0)
+            def lesion_mask(axis, index):
+                return ReportEngine._lesion_plane(lo, crop, shape_zyx, axis, index)
 
             # Napari (Z, Y, X) slicing:
             # Axial:    data[iz, :, :] -> shape (Y, X) -> Width=X, Height=Y -> aspect sx/sy
             # Coronal:  data[:, iy, :] -> shape (Z, X) -> Width=X, Height=Z -> aspect sx/sz
             # Sagittal: data[:, :, ix] -> shape (Z, Y) -> Width=Y, Height=Z -> aspect sy/sz
             slices = {
-                "axial":    (ct_napari[iz, :, :], pet_napari[iz, :, :], lesion_mask(np.s_[iz, :, :]), sx, sy),
-                "coronal":  (ct_napari[:, iy, :], pet_napari[:, iy, :], lesion_mask(np.s_[:, iy, :]), sx, sz),
-                "sagittal": (ct_napari[:, :, ix], pet_napari[:, :, ix], lesion_mask(np.s_[:, :, ix]), sy, sz),
+                "axial":    (ct_zyx[iz, :, :], pet_zyx[iz, :, :], lesion_mask(0, iz), sx, sy),
+                "coronal":  (ct_zyx[:, iy, :], pet_zyx[:, iy, :], lesion_mask(1, iy), sx, sz),
+                "sagittal": (ct_zyx[:, :, ix], pet_zyx[:, :, ix], lesion_mask(2, ix), sy, sz),
             }
 
             for plane, (ct_sl, pet_sl, mask_sl, step_w, step_h) in slices.items():
@@ -557,7 +541,7 @@ class ReportEngine:
                 pet_img = ReportEngine._render_slice(
                     pet_sl, mask_sl, pet_w, pet_l, pet_colormap, mask_opacity,
                 )
-                
+
                 # Apply aspect ratio scaling
                 base_w, base_h = ct_img.size
                 min_step = min(step_w, step_h)
@@ -576,24 +560,18 @@ class ReportEngine:
         if lesion_a and lesion_b:
             dmax_dir = images_dir / "dmax"
             dmax_dir.mkdir(exist_ok=True)
-            
-            label_a = label_map.get(lesion_a["id"])
-            label_b = label_map.get(lesion_b["id"])
-            
-            if label_a is not None and label_b is not None:
-                dmax_mask_napari = ((labeled_napari == label_a) | (labeled_napari == label_b)).astype(np.uint8)
-            else:
-                dmax_mask_napari = (labeled_napari > 0).astype(np.uint8)
-            
-            # Map coordinates to Napari indices
-            vza, vya, vxa = lesion_a["center_voxel"][2], lesion_a["center_voxel"][1], lesion_a["center_voxel"][0]
-            vzb, vyb, vxb = lesion_b["center_voxel"][2], lesion_b["center_voxel"][1], lesion_b["center_voxel"][0]
-            
-            z1, y1, x1 = shape_z - 1 - vza, shape_y - 1 - vya, vxa
-            z2, y2, x2 = shape_z - 1 - vzb, shape_y - 1 - vyb, vxb
+
+            dmax_mask_napari = np.zeros(shape_zyx, dtype=np.uint8)
+            for les in (lesion_a, lesion_b):
+                (z0, y0, x0), crop = crops[les["id"]]
+                dz, dy, dx = crop.shape
+                dmax_mask_napari[z0:z0 + dz, y0:y0 + dy, x0:x0 + dx][crop] = 1
+
+            p1 = app_coords(lesion_a["center_voxel"])
+            p2 = app_coords(lesion_b["center_voxel"])
 
             ReportEngine.export_line_images(
-                dmax_dir, ct_napari, pet_napari, dmax_mask_napari,
-                (z1, y1, x1), (z2, y2, x2), (sx, sy, sz),
+                dmax_dir, ct_zyx, pet_zyx, dmax_mask_napari,
+                p1, p2, (sx, sy, sz),
                 (ct_w, ct_l), (pet_w, pet_l), ct_colormap, pet_colormap, mask_opacity,
             )

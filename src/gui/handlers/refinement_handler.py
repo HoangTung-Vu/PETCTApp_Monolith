@@ -535,9 +535,6 @@ class RefinementHandlerMixin:
 
             self._update_refine_button_states()
 
-            # Clear report UI when entering interactive mode
-            self._clear_all_report_ui()
-
         self._last_tab_index = index
 
     def _on_roi_ready(self, roi_data, tumor_data, roi_zyx, tumor_zyx, created_new_tumor: bool):
@@ -557,11 +554,6 @@ class RefinementHandlerMixin:
         self._set_ui_busy(False)
         self.control_panel.hide_refine_progress()
         self._update_refine_button_states()
-
-        # Auto-save zeros mask to disk if it was just created
-        if created_new_tumor:
-            print("[RefineHandler] New zeros tumor mask created — auto-saving to disk...")
-            self.save_session()
 
 
     def _update_crosshair_suspend_state(self):
@@ -668,9 +660,8 @@ class RefinementHandlerMixin:
             self._update_refine_button_states()
             
         elif layer_type == "tumor":
-            self.session_manager.clear_lesion_data()
-            self.layout_manager.hide_lesion_ids()
-            self.control_panel.chk_show_lesion_ids.setChecked(False)
+            # Values update when the edited mask is saved (red button)
+            self._mark_lesion_stats_stale()
 
         print(f"[AutoSync] Handled {layer_type} paint event (delayed full sync until action).")
 
@@ -688,9 +679,6 @@ class RefinementHandlerMixin:
             self._sync_roi_from_viewer()
             
         self._sync_tumor_from_viewer()
-
-        # Clear stale report data
-        self._clear_all_report_ui()
 
         self.control_panel.show_progress()
 
@@ -715,6 +703,7 @@ class RefinementHandlerMixin:
     def _on_merge_save_finished(self):
         self._set_ui_busy(False)
         self.control_panel.hide_progress()
+        self._refresh_lesion_ui()       # the worker recomputed the lesion values
         print("[MainWindow] Session saved asynchronously.")
 
     def _on_merge_save_error(self, error_msg):

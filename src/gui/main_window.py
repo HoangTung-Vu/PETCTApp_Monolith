@@ -222,6 +222,7 @@ class MainWindow(
         # Report
         cp.sig_report_clicked.connect(self._on_report_clicked)
         cp.sig_toggle_lesion_ids.connect(self._on_toggle_lesion_ids)
+        lm.sig_lesion_double_clicked.connect(self._on_lesion_double_clicked)
 
         # DICOM Import
         cp.sig_load_from_dicom.connect(self._on_load_from_dicom)
@@ -391,13 +392,6 @@ class MainWindow(
 
     # ──── Shared helpers ────
 
-    def _clear_all_report_ui(self):
-        """Clear report data and all related UI elements."""
-        self.session_manager.clear_lesion_data()
-        self.control_panel.clear_report_results()
-        self.layout_manager.hide_lesion_ids()
-        self.control_panel.chk_show_lesion_ids.setChecked(False)
-
     def _show_worker_error(self, msg: str, title: str = "Operation Failed"):
         """Unified worker error handler: reset busy state and show dialog."""
         self._set_ui_busy(False)
@@ -429,12 +423,10 @@ class MainWindow(
         self._eraser_undo_stack.clear()
         self.session_manager.roi_mask = None
 
-        # Clear report display
+        # Clear report display (the lesion-ID checkbox stays as the user set it;
+        # IDs come back with the next session's lesion values)
         self.control_panel.clear_report_results()
         self.layout_manager.hide_lesion_ids()
-
-        # Uncheck lesion IDs checkbox
-        self.control_panel.chk_show_lesion_ids.setChecked(False)
 
         # Reset session label
         self.control_panel.set_current_session_label("None")
@@ -475,7 +467,7 @@ class MainWindow(
         busy = [
             getattr(self, name, None)
             for name in ("loader_worker", "worker", "_merge_save_worker", "save_worker",
-                         "report_save_worker", "report_worker", "ensure_roi_worker")
+                         "report_worker", "ensure_roi_worker")
         ]
         if any(w is not None and w.isRunning() for w in busy):
             QMessageBox.information(
@@ -547,6 +539,7 @@ class MainWindow(
 
     def _do_refresh_after_load(self):
         self._refresh_viewers()
+        self._refresh_lesion_ui()
         self._refresh_session_list()
         self.control_panel._emit_ct_wl()
         self.control_panel._emit_pet_wl()
@@ -630,6 +623,7 @@ class MainWindow(
     def _on_save_finished(self):
         self._set_ui_busy(False)
         self.control_panel.hide_progress()
+        self._refresh_lesion_ui()       # the save worker recomputed the lesion values
         print("[MainWindow] Session saved asynchronously.")
 
     def _on_save_error(self, error_msg):
@@ -699,6 +693,7 @@ class MainWindow(
         """
         if layer_type == "tumor" and self.session_manager.current_session_id is not None:
             self.session_manager.tumor_dirty = True
+            self.session_manager.invalidate_lesion_stats()
 
     def _has_unsaved_segmentation(self) -> bool:
         """O(1) dirty-flag check — no disk I/O, no viewer touch.

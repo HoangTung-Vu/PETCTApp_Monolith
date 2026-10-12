@@ -116,3 +116,48 @@ def test_dicom_session_roundtrip(sm, study):  # noqa: F811
     # Re-importing the same series reuses the saved segmentation.
     sm.create_session_from_dicom(ct, pet, "ct", "SMITH ANNA", "DOE JOHN")
     np.testing.assert_array_equal(sm.get_tumor_mask_data(), mask)
+
+
+def test_lesion_stats_follow_load_edit_save(sm, tmp_path):
+    base = las_phantom()
+    ct_path = tmp_path / "les_ct.nii.gz"
+    pet_path = tmp_path / "les_pet.nii.gz"
+    nib.save(base, ct_path)
+    nib.save(base, pet_path)
+    seg = np.zeros(base.shape, dtype=np.uint8)
+    seg[2:5, 3:6, 4:7] = 1
+    seg_path = tmp_path / "les_seg.nii.gz"
+    nib.save(nib.Nifti1Image(seg, base.affine), seg_path)
+
+    # Load (what DataLoaderWorker does): values for the loaded mask.
+    sm.create_session("", "", ct_path=ct_path, pet_path=pet_path, tumor_seg_path=seg_path)
+    sm.update_lesion_stats()
+    assert len(sm.lesion_stats["lesions"]) == 1 and not sm.lesion_stats_stale
+
+    # Edit: old values kept but flagged; save + recompute (SaveWorker) refreshes them.
+    mask = sm.get_tumor_mask_data()
+    mask[10:12, 10:12, 1:3] = 1
+    sm.invalidate_lesion_stats()
+    assert sm.lesion_stats_stale and len(sm.lesion_stats["lesions"]) == 1
+    sm.save_session()
+    sm.update_lesion_stats()
+    assert len(sm.lesion_stats["lesions"]) == 2 and not sm.lesion_stats_stale
+
+    # A newly loaded segmentation replaces the values (seg_path now holds the
+    # saved 2-lesion edit, so load a fresh 1-lesion file).
+    seg2_path = tmp_path / "les_seg2.nii.gz"
+    nib.save(nib.Nifti1Image(seg, base.affine), seg2_path)
+    sm.update_current_session(tumor_seg_path=seg2_path)
+    assert sm.lesion_stats is None
+    sm.update_lesion_stats()
+    assert len(sm.lesion_stats["lesions"]) == 1
+
+
+def test_new_empty_mask_is_not_dirty_and_not_saved(sm, tmp_path):
+    base = las_phantom()
+    ct_path = tmp_path / "e_ct.nii.gz"
+    nib.save(base, ct_path)
+    sm.create_session("", "", ct_path=ct_path)
+    sm.ensure_roi_mask()
+    assert sm.tumor_mask is not None and not sm.tumor_dirty
+    assert not (tmp_path / "e_ct_Segmentation.nii.gz").exists()
