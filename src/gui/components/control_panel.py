@@ -31,6 +31,7 @@ class ControlPanel(QWidget):
     sig_delete_session_clicked = pyqtSignal(int)
     sig_report_clicked = pyqtSignal()
     sig_toggle_lesion_ids = pyqtSignal(bool)
+    sig_lesion_selected = pyqtSignal(int)   # lesion id
     sig_tab_changed = pyqtSignal(int) # index
 
     # View & Display
@@ -122,6 +123,7 @@ class ControlPanel(QWidget):
         w.sig_report_clicked.connect(self.sig_report_clicked)
         w.sig_load_from_dicom.connect(self.sig_load_from_dicom)
         w.sig_toggle_lesion_ids.connect(self.sig_toggle_lesion_ids)
+        w.sig_lesion_selected.connect(self.sig_lesion_selected)
 
         # View & Display
         vd = self.view_display_tab

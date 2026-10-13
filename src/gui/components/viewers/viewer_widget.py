@@ -661,6 +661,25 @@ class ViewerWidget(QWidget):
         except Exception:
             return None, None
 
+    def center_on_if_offscreen(self, data_pos_zyx):
+        """Pan the camera onto ``data_pos_zyx`` when it lies outside the canvas.
+
+        Zoom is kept; an on-screen position leaves the camera untouched.
+        """
+        px, py = self._compute_canvas_pos(data_pos_zyx)
+        if px is None:
+            return
+        canvas_native = self.qt_viewer.canvas.native
+        if 0 <= px < canvas_native.width() and 0 <= py < canvas_native.height():
+            return
+        dims_d = list(self.viewer.dims.displayed)
+        scale = self._scale_zyx
+        center = list(self.viewer.camera.center)
+        # Same world mapping as _compute_canvas_pos: [-2] vertical, [-1] horizontal
+        center[-2] = float(data_pos_zyx[dims_d[0]]) * float(scale[dims_d[0]])
+        center[-1] = float(data_pos_zyx[dims_d[1]]) * float(scale[dims_d[1]])
+        self.viewer.camera.center = tuple(center)
+
     def update_crosshair(self, data_pos_zyx):
         """Push a new crosshair position to the overlay."""
         self._crosshair_overlay.set_pos_data(data_pos_zyx)

@@ -223,6 +223,7 @@ class MainWindow(
         cp.sig_report_clicked.connect(self._on_report_clicked)
         cp.sig_toggle_lesion_ids.connect(self._on_toggle_lesion_ids)
         lm.sig_lesion_double_clicked.connect(self._on_lesion_double_clicked)
+        cp.sig_lesion_selected.connect(self._on_lesion_selected)
 
         # DICOM Import
         cp.sig_load_from_dicom.connect(self._on_load_from_dicom)

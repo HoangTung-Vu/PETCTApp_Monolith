@@ -90,6 +90,30 @@ class LesionInfoMixin:
         self._push_lesion_infos()
         return entry["id"], shown
 
+    def show_only_lesion(self, lesion_id: int) -> bool:
+        """Show the box of lesion ``lesion_id`` alone (other boxes are hidden)
+        and move every 2D view to it. Returns False when there is no such lesion.
+
+        The views go to the lesion's SUVmax voxel: it lies inside the lesion, so
+        all three planes cut through it (the bbox centre may not, e.g. for a
+        curved lesion).
+        """
+        entry = next((e for e in self._lesion_entries if e["id"] == lesion_id), None)
+        if entry is None:
+            return False
+        pos = [float(c) for c in entry["key"]]
+        self._shown_lesion_keys = [entry["key"]]
+        self.jump_to_position(*pos)
+        self._center_views_on(pos)
+        self._push_lesion_infos()
+        return True
+
+    def _center_views_on(self, pos_zyx):
+        """Pan the 2D views where ``pos_zyx`` is off-screen (zoomed in) onto it."""
+        for vw in self._get_visible_viewers():
+            if not vw.is_3d:
+                vw.center_on_if_offscreen(pos_zyx)
+
     def clear_lesion_info(self):
         self._lesion_entries = []
         self._shown_lesion_keys = []

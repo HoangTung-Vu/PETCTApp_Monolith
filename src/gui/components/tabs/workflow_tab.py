@@ -21,6 +21,7 @@ class WorkflowTab(QWidget):
     sig_delete_session_clicked = pyqtSignal(int)      # session_id
     sig_report_clicked = pyqtSignal()
     sig_toggle_lesion_ids = pyqtSignal(bool)
+    sig_lesion_selected = pyqtSignal(int)             # lesion id (table row clicked)
     sig_load_from_dicom = pyqtSignal(str, str, str)   # dcm_folder, fallback doctor, fallback patient
 
     def __init__(self, parent=None):
@@ -184,10 +185,14 @@ class WorkflowTab(QWidget):
         self.tbl_lesions.verticalHeader().setVisible(False)
         self.tbl_lesions.horizontalHeader().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         self.tbl_lesions.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.tbl_lesions.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.tbl_lesions.setSelectionMode(QTableWidget.SelectionMode.SingleSelection)
         self.tbl_lesions.setMaximumHeight(220)
+        self.tbl_lesions.cellClicked.connect(self._emit_lesion_selected)
         report_layout.addWidget(self.tbl_lesions)
 
-        hint = QLabel("Double-click a lesion in a 2D view to show its values there.")
+        hint = QLabel("Click a lesion in the table, or double-click it in a 2D view, "
+                      "to show its values there.")
         hint.setWordWrap(True)
         hint.setStyleSheet("color: gray; font-style: italic;")
         report_layout.addWidget(hint)
@@ -257,6 +262,11 @@ class WorkflowTab(QWidget):
         if data is not None:
             self.sig_delete_session_clicked.emit(int(data))
 
+    def _emit_lesion_selected(self, row: int, _col: int):
+        item = self.tbl_lesions.item(row, 0)     # the ID column
+        if item is not None:
+            self.sig_lesion_selected.emit(int(item.text()))
+
     def show_progress(self):
         self.progress_bar.setVisible(True)
 
@@ -292,6 +302,10 @@ class WorkflowTab(QWidget):
             return
         lesions = stats["lesions"]
         self.lbl_ttlg.setText(f"{stats['tTLG']:.2f}")
+        # A recompute (after a save) may renumber the lesions: drop the selection.
+        # The current cell must go too, or removing its row selects a neighbour.
+        self.tbl_lesions.setCurrentCell(-1, -1)
+        self.tbl_lesions.clearSelection()
         self.tbl_lesions.setRowCount(len(lesions))
         for row, lesion in enumerate(lesions):
             for col, (_, key) in enumerate(self._LESION_COLUMNS):

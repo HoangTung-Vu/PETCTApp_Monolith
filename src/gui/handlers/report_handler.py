@@ -58,6 +58,18 @@ class ReportHandlerMixin:
         lesion_id, shown = result
         print(f"[Lesion] Lesion {lesion_id} info {'shown' if shown else 'hidden'}.")
 
+    def _on_lesion_selected(self, lesion_id: int):
+        """Lesion table click: jump to the lesion and show only its box.
+
+        No mode checks as in ``_on_lesion_double_clicked``: the table is on the
+        Workflow tab, and entering a tab already turns the eraser, the ruler and
+        the drawing tools off (``ControlPanel._on_tab_changed``).
+        """
+        if self.layout_manager.show_only_lesion(lesion_id):
+            print(f"[Lesion] Lesion {lesion_id} info shown.")
+        else:
+            print(f"[Lesion] Lesion {lesion_id} not found.")
+
     def _show_lesion_ids(self):
         stats = self.session_manager.lesion_stats
         lesions = stats["lesions"] if stats else []
