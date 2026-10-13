@@ -7,8 +7,8 @@
   #define AppVersion "0.0.0"
 #endif
 ; No "/" here: the name is also used for shortcut file names.
-#define AppName "PET-CT App"
-#define AppExeName "PETCTApp.exe"
+#define AppName "MetLesPET"
+#define AppExeName "MetLesPET.exe"
 
 [Setup]
 ; Never change AppId: upgrades and the uninstaller find the install through it.
