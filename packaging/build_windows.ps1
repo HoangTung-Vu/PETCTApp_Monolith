@@ -4,7 +4,7 @@ Build the Windows installer: PyInstaller bundle -> self-check -> Inno Setup.
     pwsh packaging/build_windows.ps1 -Version 1.0.0
 
 Needs uv on PATH. Inno Setup 6 is installed through Chocolatey if missing.
-Output: dist\installer\PETCTApp-Setup-<Version>.exe
+Output: dist\installer\MetLesPET-Setup-<Version>.exe
 #>
 param(
     [string]$Version = "0.0.0-dev"
@@ -24,9 +24,9 @@ if ($LASTEXITCODE) { throw "PyInstaller failed" }
 
 Write-Host "== Self-check of the bundle"
 # The exe is windowed, so its output goes to the app log rather than this console.
-$exe = Join-Path $Root "dist\PETCTApp\PETCTApp.exe"
+$exe = Join-Path $Root "dist\MetLesPET\MetLesPET.exe"
 $proc = Start-Process -FilePath $exe -ArgumentList "--selfcheck" -Wait -PassThru
-$log = Join-Path $env:LOCALAPPDATA "PETCTApp\logs\app.log"
+$log = Join-Path $env:LOCALAPPDATA "MetLesPET\logs\app.log"
 if (Test-Path $log) { Get-Content $log }
 if ($proc.ExitCode -ne 0) { throw "Self-check failed (exit code $($proc.ExitCode))" }
 

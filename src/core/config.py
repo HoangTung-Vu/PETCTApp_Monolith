@@ -5,9 +5,9 @@ from pathlib import Path
 from PyQt6.QtCore import QSettings
 
 # QSettings location shared by everything the app persists (engine endpoint,
-# data folder). On Windows this is HKCU\Software\PETCTApp\PETCTApp.
-SETTINGS_ORG = "PETCTApp"
-SETTINGS_APP = "PETCTApp"
+# data folder). On Windows this is HKCU\Software\MetLesPET\MetLesPET.
+SETTINGS_ORG = "MetLesPET"
+SETTINGS_APP = "MetLesPET"
 _STORAGE_DIR_KEY = "storage/dir"
 
 DB_FILENAME = "petct.db"
@@ -28,7 +28,7 @@ def user_app_dir() -> Path:
         base = Path(os.getenv("LOCALAPPDATA") or Path.home() / "AppData" / "Local")
     else:
         base = Path(os.getenv("XDG_DATA_HOME") or Path.home() / ".local" / "share")
-    return base / "PETCTApp"
+    return base / "MetLesPET"
 
 
 def default_storage_dir() -> Path:

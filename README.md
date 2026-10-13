@@ -104,11 +104,11 @@ After applying the patch, rebuild the Docker image: `./start.sh` will detect the
 
 ## Install on Windows (no Python or git needed)
 
-1. Download `PETCTApp-Setup-<version>.exe` from the [Releases](https://github.com/HoangTung-Vu/PETCTApp_Monolith/releases) page and run it. It installs for the current user without admin rights; Windows SmartScreen may warn because the installer is unsigned. Click **More info → Run anyway**.
-2. On first launch, choose the **data folder** where the session database (`petct.db`) is kept. The default is `%LOCALAPPDATA%\PETCTApp`. Pick a local disk, not a network share or a OneDrive folder. To move it later, use **Workflow tab → Data Folder → Change…**, which can copy the existing database across.
+1. Download `MetLesPET-Setup-<version>.exe` from the [Releases](https://github.com/HoangTung-Vu/PETCTApp_Monolith/releases) page and run it. It installs for the current user without admin rights; Windows SmartScreen may warn because the installer is unsigned. Click **More info → Run anyway**.
+2. On first launch, choose the **data folder** where the session database (`petct.db`) is kept. The default is `%LOCALAPPDATA%\MetLesPET`. Pick a local disk, not a network share or a OneDrive folder. To move it later, use **Workflow tab → Data Folder → Change…**, which can copy the existing database across.
 3. In **Workflow tab → AI Engine**, enter the IP and port of the machine running the nnU-Net engine (`localhost` / `8104` if it runs on the same PC; see below for starting it).
 
-Uninstalling or upgrading never deletes the data folder. Logs are written to `%LOCALAPPDATA%\PETCTApp\logs\app.log`.
+Uninstalling or upgrading never deletes the data folder. Logs are written to `%LOCALAPPDATA%\MetLesPET\logs\app.log`.
 
 ### Building a release
 
