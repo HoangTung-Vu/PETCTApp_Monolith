@@ -90,7 +90,7 @@ def _make_splash_pixmap() -> QPixmap:
     p.drawText(
         pix.rect(),
         Qt.AlignmentFlag.AlignCenter,
-        "MetLesPET : Metabolic Lesion Quantification\nLoading…",
+        "MetLePET : Metabolic Lesion Quantification\nLoading…",
     )
     p.end()
     return pix

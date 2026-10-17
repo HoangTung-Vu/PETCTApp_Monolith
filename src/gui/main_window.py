@@ -30,7 +30,7 @@ class MainWindow(
 ):
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("MetLesPET : Metabolic Lesion Quantification on PET/CT")
+        self.setWindowTitle("MetLePET : Metabolic Lesion Quantification on PET/CT")
         self.setGeometry(100, 100, 1600, 900)
 
         # Core Logic

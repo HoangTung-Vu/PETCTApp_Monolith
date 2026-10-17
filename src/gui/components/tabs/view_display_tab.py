@@ -383,7 +383,7 @@ class ViewDisplayTab(QWidget):
         self.spin_mask_width.setEnabled(False)
         zm_lay.addRow("Contour width:", self.spin_mask_width)
 
-        self.combo_mask_style.currentIndexChanged.connect(self._emit_mask_display)
+        self.combo_mask_style.currentIndexChanged.connect(self._on_mask_style_changed)
         self.chk_mask_smooth.toggled.connect(self._emit_mask_display)
         self.spin_mask_width.valueChanged.connect(self._emit_mask_display)
 
@@ -487,6 +487,13 @@ class ViewDisplayTab(QWidget):
     def _on_crosshair_toggled(self, checked: bool):
         self.btn_crosshair.setText("Crosshair: ON" if checked else "Crosshair: OFF")
         self.sig_crosshair_toggled.emit(checked)
+
+    def _on_mask_style_changed(self, index: int):
+        # A thin outline at partial opacity is hard to see over PET, so
+        # switching to contour starts fully opaque (the slider can lower it).
+        if index == 1:
+            self.slider_tumor_opacity.setValue(100)
+        self._emit_mask_display()
 
     def _emit_mask_display(self, *_):
         contour = self.combo_mask_style.currentIndex() == 1

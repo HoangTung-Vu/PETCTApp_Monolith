@@ -96,12 +96,12 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
         self.stack = QStackedWidget()
         main_layout.addWidget(self.stack)
 
-        # Info overlay (top-right of viewer area)
+        # Info overlay (top-right of viewer area); background alpha 26/255 ≈ 0.1
         self._info_label = QLabel(self)
         self._info_label.setStyleSheet(
-            "QLabel { color: #ffff88; background: rgba(0,0,0,170);"
-            " font-size: 12px; font-family: monospace;"
-            " padding: 6px 10px; border: 1px solid #555; }"
+            "QLabel { color: #ffff88; background: rgba(0,0,0,20);"
+            " font-size: 18px; font-family: monospace;"
+            " padding: 9px 15px; border: 1px solid #555; }"
         )
         self._info_label.setAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
         self._info_label.setWordWrap(False)

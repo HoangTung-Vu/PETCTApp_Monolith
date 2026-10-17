@@ -38,7 +38,7 @@ jobs:
 
       - uses: actions/upload-artifact@v4
         with:
-          name: MetLesPET-Setup-${{ steps.ver.outputs.version }}
+          name: MetLePET-Setup-${{ steps.ver.outputs.version }}
           path: dist/installer/*.exe
           if-no-files-found: error
 

@@ -3,7 +3,7 @@
 #   uv sync --group build
 #   uv run pyinstaller packaging/petct_app.spec --noconfirm --clean
 #
-# Output: dist/MetLesPET/MetLesPET(.exe). One-folder rather than one-file: the
+# Output: dist/MetLePET/MetLePET(.exe). One-folder rather than one-file: the
 # napari/Qt bundle is several hundred MB and would be unpacked on every launch.
 # The spec is platform-neutral so it can be tried on Linux before CI builds it
 # on Windows.
@@ -67,7 +67,7 @@ exe = EXE(
     a.scripts,
     [],
     exclude_binaries=True,
-    name="MetLesPET",
+    name="MetLePET",
     console=False,
     upx=False,          # UPX breaks Qt DLLs and trips antivirus scanners
     icon=str(ICON) if ICON.exists() else None,
@@ -77,5 +77,5 @@ coll = COLLECT(
     a.binaries,
     a.datas,
     upx=False,
-    name="MetLesPET",
+    name="MetLePET",
 )
