@@ -7,7 +7,7 @@ import nibabel as nib
 import numpy as np
 import os
 from concurrent.futures import ThreadPoolExecutor
-from nibabel.orientations import axcodes2ornt, io_orientation, ornt_transform
+from nibabel.orientations import axcodes2ornt, inv_ornt_aff, io_orientation, ornt_transform
 
 
 # ── App orientation ───────────────────────────────────────────────────────────
@@ -65,6 +65,32 @@ def from_app_orientation(img_las: nib.Nifti1Image, back_ornt: Optional[np.ndarra
     if back_ornt is None:
         return img_las
     return img_las.as_reoriented(back_ornt)
+
+
+# ── Voxel grids ───────────────────────────────────────────────────────────────
+
+def las_grid(path) -> tuple[tuple, np.ndarray]:
+    """``(shape, affine)`` the file will have once loaded in LAS — header only.
+
+    ``nib.load`` does not read the voxels, so this is cheap enough for the GUI
+    thread. Matches ``load_nifti_volume``/``to_app_orientation``.
+    """
+    img = nib.load(path)
+    shape = tuple(int(n) for n in img.shape[:3])
+    ornt = ornt_transform(io_orientation(img.affine), _APP_ORNT)
+    affine = img.affine @ inv_ornt_aff(ornt, shape)
+    return tuple(shape[i] for i in np.argsort(ornt[:, 0])), affine
+
+
+def grids_match(shape_a, affine_a, shape_b, affine_b) -> bool:
+    """True when two voxel grids coincide (same shape, corners within 0.1 voxel)."""
+    if tuple(shape_a) != tuple(shape_b):
+        return False
+    a = np.asarray(affine_a, dtype=float)
+    b = np.asarray(affine_b, dtype=float)
+    corners = np.array(np.meshgrid(*[[0, n - 1] for n in shape_a], [1], indexing="ij")).reshape(4, -1)
+    tol = 0.1 * float(np.linalg.norm(a[:3, :3], axis=0).min())
+    return float(np.abs((a - b)[:3] @ corners).max()) <= tol
 
 
 def _squeeze_3d(data: np.ndarray, path) -> np.ndarray:

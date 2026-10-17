@@ -1,5 +1,6 @@
 from PyQt6.QtWidgets import QWidget, QVBoxLayout, QLabel
 from PyQt6.QtCore import QObject, QEvent, Qt, pyqtSignal
+from PyQt6.QtGui import QTransform
 import napari
 import numpy as np
 from typing import Optional, Tuple
@@ -11,6 +12,7 @@ from .colorbar_overlay import ColorBarOverlay
 from .ruler_overlay import RulerOverlay
 from .orientation_overlay import OrientationOverlay
 from .lesion_info_overlay import LesionInfoOverlay
+from .mask_overlay import MaskOverlay
 
 
 class ViewerWidget(QWidget):
@@ -74,6 +76,12 @@ class ViewerWidget(QWidget):
         }
         self.is_3d = False
         self._scale_zyx = None   # physical spacing (sz, sy, sx) in mm
+
+        # ── Tumor mask display (smoothed fill / contour) ────────────────
+        # Created first so crosshair, lesion boxes and ruler paint above it.
+        self._tumor_opacity = 0.7
+        self._mask_display = ("filled", False, 2)   # (style, smooth, width px)
+        self._mask_overlay = MaskOverlay(self, self.qt_viewer.canvas.native)
 
         # ── Crosshair overlay ───────────────────────────────────────────
         self._crosshair_enabled = False   # managed by LayoutManager
@@ -268,7 +276,7 @@ class ViewerWidget(QWidget):
             layer.visible = was_visible
             layer.refresh()
         else:
-            kwargs = dict(name=name, opacity=0.7, multiscale=False)
+            kwargs = dict(name=name, opacity=self._tumor_opacity, multiscale=False)
             if mask_type == "roi":
                 kwargs["opacity"] = 0.9
             if self._scale_zyx is not None:
@@ -289,13 +297,44 @@ class ViewerWidget(QWidget):
         if self.is_3d:
             layer.editable = False
 
+        if mask_type == "tumor":
+            self._mask_overlay.attach_layer(layer)
+            self._apply_mask_display()
+
         self._enforce_layer_order()
 
     def remove_layer(self, layer_type: str):
         """Remove the layer for ``layer_type`` if present."""
         name = self.LAYER_NAMES.get(layer_type, layer_type)
+        if layer_type == "tumor":
+            self._mask_overlay.detach()
         if name in self.viewer.layers:
             self.viewer.layers.remove(name)
+
+    # ── Tumor mask display style ─────────────────────────────────────────
+
+    def set_mask_display(self, style: str, smooth: bool, width: int):
+        """Tumor mask as "filled" or "contour", optionally smoothed (2D only)."""
+        self._mask_display = (style, bool(smooth), int(width))
+        self._apply_mask_display()
+
+    def set_tumor_opacity(self, value: float):
+        self._tumor_opacity = float(value)
+        self._apply_mask_display()
+
+    def _apply_mask_display(self):
+        """Show the tumor mask either through its Labels layer or the overlay.
+
+        Smoothed / contour styles draw the overlay and keep the Labels layer at
+        opacity 0: still visible and editable, so painting works and its
+        events keep the overlay up to date.
+        """
+        style, smooth, width = self._mask_display
+        use_overlay = not self.is_3d and (style == "contour" or smooth)
+        self._mask_overlay.configure(style, smooth, width, self._tumor_opacity, use_overlay)
+        name = self.LAYER_NAMES["tumor"]
+        if name in self.viewer.layers:
+            self.viewer.layers[name].opacity = 0.0 if use_overlay else self._tumor_opacity
 
     def release_data(self):
         """Swap image/mask data for a 1-voxel placeholder, keeping the layers.
@@ -434,6 +473,7 @@ class ViewerWidget(QWidget):
     def set_3d_view(self):
         self.viewer.dims.ndisplay = 3
         self.is_3d = True
+        self._apply_mask_display()
         # Anatomical edge letters + numeric camera orientation readout.
         if getattr(self, "_orientation_overlay", None) is None:
             self._orientation_overlay = OrientationOverlay(self, self.qt_viewer.canvas.native)
@@ -611,6 +651,7 @@ class ViewerWidget(QWidget):
             self._ruler_overlay.update()
         if self._lesion_overlay.has_infos():
             self._lesion_overlay.update()
+        self._mask_overlay.update()
         self.sig_camera_changed.emit(self)
 
     def _on_slice_changed(self, event=None):
@@ -620,6 +661,26 @@ class ViewerWidget(QWidget):
         self.sig_slice_changed.emit(tuple(self.viewer.dims.current_step))
 
     # ── Crosshair canvas coordinate computation ─────────────────────────
+
+    def _canvas_transform(self) -> Optional[QTransform]:
+        """Affine map from (horizontal, vertical) voxel indices of the displayed
+        plane to canvas pixels — the matrix form of ``_compute_canvas_pos``."""
+        if self._scale_zyx is None:
+            return None
+        dims_d = list(self.viewer.dims.displayed)
+        if len(dims_d) < 2:
+            return None
+        canvas_native = self.qt_viewer.canvas.native
+        cw, ch = canvas_native.width(), canvas_native.height()
+        if cw == 0 or ch == 0:
+            return None
+        zoom = float(self.viewer.camera.zoom)
+        center = self.viewer.camera.center
+        sx = float(self._scale_zyx[dims_d[1]]) * zoom
+        sy = float(self._scale_zyx[dims_d[0]]) * zoom
+        dx = cw / 2.0 - float(center[-1]) * zoom
+        dy = ch / 2.0 - float(center[-2]) * zoom
+        return QTransform(sx, 0.0, 0.0, sy, dx, dy)
 
     def _compute_canvas_pos(self, data_pos_zyx):
         """Convert ZYX data-space position to canvas pixel (px, py).

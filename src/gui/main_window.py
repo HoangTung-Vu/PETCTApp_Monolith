@@ -176,6 +176,7 @@ class MainWindow(
         # Display
         cp.sig_overlay_pet_opacity_changed.connect(lm.set_overlay_pet_opacity)
         cp.sig_tumor_opacity_changed.connect(lm.set_tumor_opacity)
+        cp.sig_mask_display_changed.connect(lm.set_mask_display)
         cp.sig_roi_opacity_changed.connect(lm.set_roi_opacity)
         cp.sig_ct_window_level_changed.connect(lm.set_ct_window_level)
         cp.sig_pet_window_level_changed.connect(lm.set_pet_window_level)
@@ -524,11 +525,38 @@ class MainWindow(
 
     def _update_session_files(self, ct_path=None, pet_path=None, tumor_seg_path=None):
         """Spawns worker to load CT/PET/Seg to prevent UI block."""
+        resample_mode = None
+        if ct_path or pet_path:
+            resample_mode = self._ask_grid_resolution(ct_path, pet_path)
+            if resample_mode is False:
+                return
         from .workers import DataLoaderWorker
         self.loader_worker = DataLoaderWorker(
-            self.session_manager, ct_path=ct_path, pet_path=pet_path, tumor_seg_path=tumor_seg_path, action="update"
+            self.session_manager, ct_path=ct_path, pet_path=pet_path, tumor_seg_path=tumor_seg_path,
+            action="update", resample_mode=resample_mode,
         )
         self._spawn_worker(self.loader_worker, self._on_data_loaded, self._on_data_error)
+
+    def _ask_grid_resolution(self, ct_path, pet_path):
+        """Resample mode for a CT/PET load whose grid differs from the other image.
+
+        Returns "ct" / "pet", None (nothing to resample) or False (cancelled).
+        Only file headers are read here; the resampling runs in the loader worker.
+        """
+        try:
+            mismatch = self.session_manager.check_grid_mismatch(ct_path=ct_path, pet_path=pet_path)
+        except Exception as e:
+            print(f"[MainWindow] Grid check skipped ({e}); the loader reports the file.")
+            return None
+        if mismatch is None:
+            return None
+        from .components.grid_mismatch_dialog import ask_resample_mode
+        choice = ask_resample_mode(self, mismatch)
+        if choice is None:
+            return False
+        if mismatch.closes_mask.get(choice) and not self._prompt_unsaved_segmentation("switch"):
+            return False
+        return None if choice == "none" else choice
 
     def _on_data_loaded(self, success):
         self._set_ui_busy(False)
@@ -560,14 +588,15 @@ class MainWindow(
         self._warn_about_import()
 
     def _warn_about_import(self):
-        """Surface DICOM import caveats (estimated SUV, geometry warnings)."""
+        """Surface import caveats (estimated SUV, geometry, segmentation not loaded)."""
         sm = self.session_manager
         lines = list(sm.load_warnings)
         if sm.suv_info is not None and sm.suv_info.estimated:
             lines = ["SUV was computed with estimated values — check before reporting:"] + \
                     [f"  • {note}" for note in sm.suv_info.notes] + lines
         if lines:
-            QMessageBox.warning(self, "DICOM Import Warnings", "\n".join(lines))
+            title = "DICOM Import Warnings" if sm.suv_info is not None else "Import Warnings"
+            QMessageBox.warning(self, title, "\n".join(lines))
 
     def _on_data_error(self, error_msg):
         print(f"Data Loading Error: {error_msg}")

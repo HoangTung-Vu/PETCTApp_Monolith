@@ -468,10 +468,11 @@ def load_study(ct: Optional[SeriesInfo], pet: Optional[SeriesInfo], resample_mod
     """Load the chosen series, put them on one grid and convert PET to SUV.
 
     ``resample_mode`` "ct" resamples PET onto the CT grid (BSpline, negatives
-    clamped to 0); "pet" resamples CT onto the PET grid (BSpline, −1024 HU
-    outside). No clipping or integer casting is applied.
+    clamped to 0); "pet" resamples CT onto the PET grid (anti-aliased linear,
+    −1024 HU outside) — see ``resample.resample_to_grid``. No clipping or
+    integer casting is applied.
     """
-    import SimpleITK as sitk
+    from .resample import grid_of, resample_to_grid
 
     log = log or (lambda msg: None)
     if ct is None and pet is None:
@@ -492,12 +493,10 @@ def load_study(ct: Optional[SeriesInfo], pet: Optional[SeriesInfo], resample_mod
             warnings.append("CT and PET have different FrameOfReferenceUID — check the alignment.")
         if resample_mode == "pet":
             log("Resampling CT onto the PET grid…")
-            ct_img = sitk.Resample(ct_img, pet_img, sitk.Transform(), sitk.sitkBSpline,
-                                   -1024.0, sitk.sitkFloat32)
+            ct_img = resample_to_grid(ct_img, grid_of(pet_img), -1024.0, "antialias")
         else:
             log("Resampling PET onto the CT grid…")
-            pet_img = sitk.Resample(pet_img, ct_img, sitk.Transform(), sitk.sitkBSpline,
-                                    0.0, sitk.sitkFloat32)
+            pet_img = resample_to_grid(pet_img, grid_of(ct_img), 0.0)
             resampled_pet = True
 
     suv = None

@@ -81,9 +81,10 @@ class SessionRepository:
         organ_seg_path: Optional[str] = None,
         status: Optional[str] = None,
         doctor_name: Optional[str] = None,
-        patient_name: Optional[str] = None
+        patient_name: Optional[str] = None,
+        resample_mode: Optional[str] = None,
     ) -> Optional[Session]:
-        """Update session fields."""
+        """Update session fields (None = unchanged; ``resample_mode=""`` clears it)."""
         session = self.get_by_id(session_id)
         if not session:
             return None
@@ -102,6 +103,8 @@ class SessionRepository:
             session.doctor_name = doctor_name
         if patient_name is not None:
             session.patient_name = patient_name
+        if resample_mode is not None:
+            session.resample_mode = resample_mode or None
         
         self.db.commit()
         self.db.refresh(session)

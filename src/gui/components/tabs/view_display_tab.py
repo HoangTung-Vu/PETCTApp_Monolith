@@ -3,7 +3,7 @@
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFormLayout, QGroupBox,
     QDoubleSpinBox, QSlider, QHBoxLayout, QLabel, QScrollArea, QCheckBox,
-    QComboBox, QSizePolicy
+    QComboBox, QSizePolicy, QSpinBox
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 
@@ -98,6 +98,8 @@ class ViewDisplayTab(QWidget):
 
     sig_overlay_pet_opacity_changed = pyqtSignal(float)
     sig_tumor_opacity_changed    = pyqtSignal(float)
+    # Tumor mask style: ("filled" | "contour", smooth edges, contour width in px)
+    sig_mask_display_changed     = pyqtSignal(str, bool, int)
     sig_roi_opacity_changed      = pyqtSignal(float)
     sig_ct_window_level_changed  = pyqtSignal(float, float)
     sig_pet_window_level_changed = pyqtSignal(float, float)
@@ -363,6 +365,28 @@ class ViewDisplayTab(QWidget):
         )
         zm_lay.addRow("Mask opacity:", self.slider_tumor_opacity)
 
+        self.combo_mask_style = QComboBox()
+        self.combo_mask_style.addItems(["Filled", "Contour"])
+        self.combo_mask_style.setToolTip("Tumor mask as a filled area or as an outline (2D views)")
+        zm_lay.addRow("Mask style:", self.combo_mask_style)
+
+        self.chk_mask_smooth = QCheckBox("Smooth edges")
+        self.chk_mask_smooth.setToolTip(
+            "Draw the tumor mask with rounded edges instead of voxel steps.\n"
+            "Display only — the segmentation and its values are unchanged.")
+        zm_lay.addRow(self.chk_mask_smooth)
+
+        self.spin_mask_width = QSpinBox()
+        self.spin_mask_width.setRange(1, 5)
+        self.spin_mask_width.setValue(2)
+        self.spin_mask_width.setSuffix(" px")
+        self.spin_mask_width.setEnabled(False)
+        zm_lay.addRow("Contour width:", self.spin_mask_width)
+
+        self.combo_mask_style.currentIndexChanged.connect(self._emit_mask_display)
+        self.chk_mask_smooth.toggled.connect(self._emit_mask_display)
+        self.spin_mask_width.valueChanged.connect(self._emit_mask_display)
+
         self.chk_tumor = QCheckBox("Show Tumor Mask")
         self.chk_tumor.setChecked(True)
         self.chk_tumor.toggled.connect(lambda c: self.sig_toggle_mask.emit("tumor", c))
@@ -463,6 +487,15 @@ class ViewDisplayTab(QWidget):
     def _on_crosshair_toggled(self, checked: bool):
         self.btn_crosshair.setText("Crosshair: ON" if checked else "Crosshair: OFF")
         self.sig_crosshair_toggled.emit(checked)
+
+    def _emit_mask_display(self, *_):
+        contour = self.combo_mask_style.currentIndex() == 1
+        self.spin_mask_width.setEnabled(contour)
+        self.sig_mask_display_changed.emit(
+            "contour" if contour else "filled",
+            self.chk_mask_smooth.isChecked(),
+            self.spin_mask_width.value(),
+        )
 
     def _on_interpolation_toggled(self, *_):
         # Shared by the on/off button and the kernel combo box; read live state.

@@ -9,10 +9,12 @@ class DataLoaderWorker(QThread):
     error = pyqtSignal(str)
 
     def __init__(self, session_manager, current_session_id=None, ct_path=None, pet_path=None, tumor_seg_path=None, action="update", new_doctor=None, new_patient=None,
-                 dicom_ct=None, dicom_pet=None, resample_mode="ct"):
+                 dicom_ct=None, dicom_pet=None, resample_mode=None):
         """
         action: "update" (existing session), "create" (new session), "load" (load existing by ID),
                 "create_dicom" (new session from the DICOM series ``dicom_ct`` / ``dicom_pet``)
+        resample_mode: "ct" / "pet" grid when CT and PET grids differ (DICOM default "ct";
+                NIfTI: None = no resampling, a shape mismatch is an error)
         """
         super().__init__()
         self.session_manager = session_manager
@@ -37,13 +39,14 @@ class DataLoaderWorker(QThread):
                     self.new_patient,
                     ct_path=self.ct_path,
                     pet_path=self.pet_path,
-                    tumor_seg_path=self.tumor_seg_path
+                    tumor_seg_path=self.tumor_seg_path,
+                    resample_mode=self.resample_mode,
                 )
             elif self.action == "create_dicom":
                 self.session_manager.create_session_from_dicom(
                     self.dicom_ct,
                     self.dicom_pet,
-                    self.resample_mode,
+                    self.resample_mode or "ct",
                     self.new_doctor,
                     self.new_patient,
                     log=lambda msg: print(f"[DICOM] {msg}"),
@@ -56,13 +59,15 @@ class DataLoaderWorker(QThread):
                         "Anonymous",
                         ct_path=self.ct_path,
                         pet_path=self.pet_path,
-                        tumor_seg_path=self.tumor_seg_path
+                        tumor_seg_path=self.tumor_seg_path,
+                        resample_mode=self.resample_mode,
                     )
                 else:
                     self.session_manager.update_current_session(
                         ct_path=self.ct_path,
                         pet_path=self.pet_path,
-                        tumor_seg_path=self.tumor_seg_path
+                        tumor_seg_path=self.tumor_seg_path,
+                        resample_mode=self.resample_mode,
                     )
             elif self.action == "load":
                 if self.current_session_id is not None:

@@ -708,11 +708,18 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
                     vw.viewer.layers[name].opacity = value
 
     def set_tumor_opacity(self, value: float):
+        # Every viewer keeps the value, so views opened later use it too.
         self._tumor_opacity = value
-        for vw in self._get_all_loaded_viewers():
-            name = vw.LAYER_NAMES.get("tumor", "Tumor Mask")
-            if name in vw.viewer.layers:
-                vw.viewer.layers[name].opacity = value
+        for vw in self._viewer_pool + [self.viewer_3d]:
+            vw.set_tumor_opacity(value)
+
+    def set_mask_display(self, style: str, smooth: bool, width: int):
+        """Tumor mask as a filled area or a contour, optionally smoothed (2D views).
+
+        Every pool viewer keeps the style, so views opened later use it too.
+        """
+        for vw in self._viewer_pool:
+            vw.set_mask_display(style, smooth, width)
 
     def set_roi_opacity(self, value: float):
         for vw in self._get_all_loaded_viewers():
