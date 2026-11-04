@@ -41,7 +41,7 @@ PET_PRESET_TIPS = {
     "Low":       "W 5 / L 2.5",
 }
 
-CT_COLORMAPS  = ["gray", "gray_r", "green", "cyan", "blue", "twilight"]
+CT_COLORMAPS  = ["gray", "gray_r", "green", "cyan", "blue", "twilight", "jet"]
 PET_COLORMAPS = ["jet", "gray", "gray_r", "hot", "inferno", "magma", "plasma", "viridis"]
 
 # View definitions: (view_id, display_label, checked_by_default)
