@@ -1,0 +1,9 @@
+# torch comes from the base image (pytorch/pytorch:2.7.1-cuda12.6-cudnn9-runtime).
+# Pinned here as a guard: pip fails instead of swapping in a different CUDA build.
+torch==2.7.1
+TotalSegmentator==2.18.0
+nnunetv2==2.8.1
+nibabel==5.3.3
+fastapi==0.134.0
+uvicorn==0.41.0
+python-multipart==0.0.22
