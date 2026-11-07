@@ -20,6 +20,7 @@ GPU host:
 
 import logging
 import os
+import signal
 import threading
 import traceback
 import uuid
@@ -32,6 +33,16 @@ from fastapi.responses import Response
 
 from src import TASK
 from src.engine import TotalSegEngine
+
+# nnU-Net (inside TotalSegmentator) opens multiprocessing Pools with the default start
+# method (fork), e.g. a 12-worker Pool just to list the input files of every part model.
+# A forked worker inherits uvicorn's SIGTERM handler, which only sets a flag, so
+# Pool.terminate() cannot kill a worker that was still starting up (slow when this
+# process holds GBs and a CUDA context) and the inference thread waits in join()
+# forever: the job stays at "part 2/5" with an idle GPU. Forked children get the
+# default SIGTERM action back. (Making spawn the default start method also ends the
+# hang, but then clients polling /progress got "connection reset" after every part.)
+os.register_at_fork(after_in_child=lambda: signal.signal(signal.SIGTERM, signal.SIG_DFL))
 
 # ──── Logging (all levels via ENGINE_LOG_LEVEL, default INFO) ────
 logging.basicConfig(
