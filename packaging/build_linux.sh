@@ -69,8 +69,9 @@ echo "== Working out Depends"
 # numba falls back to its own — and Qt's TIFF image plugin) are not required.
 OPTIONAL_LIBS="libtbb.so.12 libgomp.so.1 libgomp.so.1.0.0 libtiff.so.5 libtiff.so.6"
 # Opened at runtime (dlopen) rather than linked, so readelf can't see them:
-# OpenGL for napari's canvases (PyOpenGL), D-Bus for Qt's desktop integration.
-RUNTIME_PKGS="libgl1 libegl1 libdbus-1-3"
+# OpenGL for napari's canvases (PyOpenGL: libOpenGL.so.0 first, else libGL.so.1,
+# plus libEGL.so.1 on Wayland), D-Bus for Qt's desktop integration.
+RUNTIME_PKGS="libgl1 libegl1 libopengl0 libdbus-1-3"
 
 LDCONFIG="$(command -v ldconfig || echo /sbin/ldconfig)"   # /sbin is not on every PATH
 APP_DIR="$PKG/opt/MetLePET"

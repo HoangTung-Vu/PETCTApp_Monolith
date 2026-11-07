@@ -42,6 +42,15 @@ for pkg in ("napari", "napari_builtins", "napari_svg", "npe2", "vispy",
 datas += [d for d in copy_metadata("napari", recursive=True)
           if "napari_console" not in Path(d[0]).name]
 
+if sys.platform.startswith("linux"):
+    # PyOpenGL imports its platform module when napari first draws, picked from the
+    # session: EGL under Wayland (XDG_SESSION_TYPE=wayland, WAYLAND_DISPLAY), GLX
+    # under X11. PyInstaller's OpenGL hook only adds the GLX one on Linux, so in a
+    # Wayland session the 1.2.2 bundle logged "No module named
+    # 'OpenGL.platform.egl'" and the 3D view failed (a source run has both).
+    # run_petct.py --selfcheck loads both.
+    hiddenimports += ["OpenGL.platform.egl", "OpenGL.platform.glx"]
+
 # Not used by the app; dropping them saves a lot of space. If the self-check or
 # a launch fails with ModuleNotFoundError for one of these, remove it here.
 excludes = [

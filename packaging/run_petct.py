@@ -10,6 +10,35 @@ import multiprocessing
 import sys
 
 
+def _check_pyopengl_platforms() -> str:
+    """Load PyOpenGL's Wayland (EGL) and X11 (GLX) platforms and the system GL
+    libraries each one opens; raise if one is missing.
+
+    PyOpenGL picks one from the session when napari first draws, so a check run
+    without a display (CI) would otherwise test neither. The bundle must carry both
+    modules (petct_app.spec) and the .deb must pull in the libraries (Depends).
+    """
+    from OpenGL.plugins import PlatformPlugin
+
+    found = []
+    for session, needs in (("wayland", ("GL", "EGL")), ("x11", ("GL",))):
+        cls = PlatformPlugin.by_name(session).load()  # None if the module is missing
+        if cls is None:
+            raise RuntimeError(f"PyOpenGL platform for {session} sessions is not in the bundle")
+        platform = cls()
+        libs = []
+        for name in needs:
+            lib = getattr(platform, name)  # loads it (raises ImportError if absent)
+            path = getattr(lib, "_name", "") or ""
+            # Without libOpenGL/libGL the EGL platform silently falls back to GLES,
+            # which vispy can't draw with.
+            if lib is None or "GLES" in path:
+                raise RuntimeError(f"{cls.__name__}: no {name} library (got {path or lib})")
+            libs.append(path)
+        found.append(f"{session}={cls.__name__}({', '.join(libs)})")
+    return "; ".join(found)
+
+
 def _selfcheck() -> int:
     import tempfile
     import traceback
@@ -38,7 +67,10 @@ def _selfcheck() -> int:
             import src.database.db as dbm
             dbm.engine.dispose()
 
-        print(f"[selfcheck] OK — napari {napari.__version__}, plugins: {sorted(pm._manifests)}")
+        opengl = _check_pyopengl_platforms() if sys.platform.startswith("linux") else "n/a"
+
+        print(f"[selfcheck] OK — napari {napari.__version__}, plugins: {sorted(pm._manifests)}, "
+              f"OpenGL: {opengl}")
         app.quit()
         return 0
     except Exception:
