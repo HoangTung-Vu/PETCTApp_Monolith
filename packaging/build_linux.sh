@@ -59,10 +59,57 @@ chmod -R u+rwX,go+rX,go-w "$PKG"
 chmod 755 "$PKG/usr/bin/metlepet"
 INSTALLED_KB="$(du -sk "$PKG/opt" "$PKG/usr" | awk '{s += $1} END {print s}')"
 
-# System libraries the bundle needs but does not ship: the GPU driver stack
-# (OpenGL/EGL/libdrm, for napari's canvases), libxcb and the Wayland client
-# libraries. PyQt6 ships X11/xcb-util/xkbcommon/fontconfig/GLib/D-Bus itself.
-# Found with readelf on the bundle; check again after a Qt/PyQt6 upgrade.
+echo "== Working out Depends"
+# The bundle ships no system libraries (petct_app.spec leaves them out, so the
+# app uses the desktop's own GTK/GLib/X11/fonts like a source run). Depends is
+# the package of every library the bundle links to but does not contain, looked
+# up on this build machine. CI builds on Ubuntu 22.04: its package names also
+# resolve on newer releases, where the renamed "t64" packages Provide them.
+# Libraries needed only by optional parts (numba's TBB / OpenMP thread pools —
+# numba falls back to its own — and Qt's TIFF image plugin) are not required.
+OPTIONAL_LIBS="libtbb.so.12 libgomp.so.1 libgomp.so.1.0.0 libtiff.so.5 libtiff.so.6"
+# Opened at runtime (dlopen) rather than linked, so readelf can't see them:
+# OpenGL for napari's canvases (PyOpenGL), D-Bus for Qt's desktop integration.
+RUNTIME_PKGS="libgl1 libegl1 libdbus-1-3"
+
+LDCONFIG="$(command -v ldconfig || echo /sbin/ldconfig)"   # /sbin is not on every PATH
+APP_DIR="$PKG/opt/MetLePET"
+mapfile -t EXTERNAL < <(LC_ALL=C comm -23 \
+    <(find "$APP_DIR" -type f \( -name '*.so*' -o -name MetLePET \) -exec readelf -d {} + 2>/dev/null \
+        | sed -n 's/.*Shared library: \[\(.*\)\]$/\1/p' | LC_ALL=C sort -u) \
+    <(find "$APP_DIR" \( -type f -o -type l \) -name '*.so*' -printf '%f\n' | LC_ALL=C sort -u))
+
+PKGS=() UNRESOLVED=()
+for lib in "${EXTERNAL[@]}"; do
+    case " $OPTIONAL_LIBS " in *" $lib "*) echo "  optional: $lib"; continue ;; esac
+    path="$("$LDCONFIG" -p | awk -v l="$lib" '$1 == l && /x86-64/ {print $NF; exit}')"
+    pkg=""
+    if [ -n "$path" ]; then
+        real="$(readlink -f "$path")"
+        # dpkg records /lib or /usr/lib depending on the package (merged /usr).
+        for p in "$real" "$path" "${real#/usr}"; do
+            pkg="$(dpkg -S "$p" 2>/dev/null | grep -v '^diversion' | head -1 | cut -d: -f1 || true)"
+            [ -n "$pkg" ] && break
+        done
+    fi
+    if [ -n "$pkg" ]; then
+        echo "  $lib -> $pkg"
+        PKGS+=("$pkg")
+    else
+        UNRESOLVED+=("$lib")
+    fi
+done
+if [ "${#UNRESOLVED[@]}" -gt 0 ]; then
+    echo "No package found on this machine for: ${UNRESOLVED[*]}" >&2
+    echo "Install the package that provides them (CI: the apt step of build-linux)," >&2
+    echo "or add them to OPTIONAL_LIBS if the app works without them." >&2
+    exit 1
+fi
+# libc6 gets the floor of the oldest supported release (Ubuntu 22.04).
+DEPENDS="$(printf '%s\n' "${PKGS[@]}" $RUNTIME_PKGS | grep -vx libc6 | LC_ALL=C sort -u | paste -sd, - | sed 's/,/, /g')"
+DEPENDS="libc6 (>= 2.35), $DEPENDS"
+echo "  Depends: $DEPENDS"
+
 cat > "$PKG/DEBIAN/control" <<EOF
 Package: metlepet
 Version: $VERSION
@@ -71,7 +118,7 @@ Priority: optional
 Architecture: amd64
 Maintainer: HoangTung-Vu <minhhoangtungvu04@gmail.com>
 Installed-Size: $INSTALLED_KB
-Depends: libc6 (>= 2.35), libgl1, libegl1, libopengl0, libdrm2, libxcb1, libwayland-client0, libwayland-cursor0, libwayland-egl1
+Depends: $DEPENDS
 Description: MetLePET - PET/CT lesion segmentation and quantification
  Desktop viewer for PET/CT studies (NIfTI or DICOM) with AI segmentation
  through a remote engine, manual refinement and per-lesion SUV, MTV and

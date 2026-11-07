@@ -8,6 +8,8 @@
 # The spec is platform-neutral so it can be tried on Linux before CI builds it
 # on Windows.
 
+import re
+import sys
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all, copy_metadata
@@ -60,6 +62,16 @@ a = Analysis(
     excludes=excludes,
     noarchive=False,
 )
+if sys.platform.startswith("linux"):
+    # System libraries (GTK/GLib/GIO, X11/xcb, fonts, D-Bus, libstdc++, ...) come
+    # from the machine the app runs on, as in a source run; the .deb declares
+    # them in Depends (packaging/build_linux.sh). Copies taken from the build
+    # machine break desktop integration on newer Ubuntu: GLib 2.72 from the
+    # 22.04 runner can't load the system's dconf GIO module, so GTK falls back
+    # to its light default theme and the app ignores the dark desktop setting.
+    _system_lib = re.compile(r"^/(usr/)?lib(32|64)?/")
+    a.binaries = [b for b in a.binaries if not _system_lib.match(b[1])]
+
 pyz = PYZ(a.pure)
 
 exe = EXE(

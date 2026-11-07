@@ -63,12 +63,12 @@ jobs:
           fi
           echo "version=$v" >> "$GITHUB_OUTPUT"
 
-      - name: Install system libraries (the .deb's Depends, for the self-check)
+      - name: Install the desktop libraries Qt links to
+        # Not bundled (petct_app.spec); they must be installed here for the
+        # self-check and so build_linux.sh can find their packages for Depends.
         run: |
           sudo apt-get update
-          sudo apt-get install -y --no-install-recommends \
-            libgl1 libegl1 libopengl0 libdrm2 libxcb1 \
-            libwayland-client0 libwayland-cursor0 libwayland-egl1
+          sudo apt-get install -y --no-install-recommends $(grep -v '^#' packaging/linux_build_libs.txt)
 
       - name: Build .deb
         run: bash packaging/build_linux.sh "${{ steps.ver.outputs.version }}"
@@ -79,9 +79,34 @@ jobs:
           path: dist/installer/*.deb
           if-no-files-found: error
 
+  test-deb:
+    # Install the .deb on a clean newer Ubuntu: checks that Depends (worked out
+    # on 22.04) resolves there and that the app starts on that system's libraries.
+    needs: build-linux
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: MetLePET-deb-*
+          path: dist
+          merge-multiple: true
+
+      - name: Install the .deb
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y ./dist/*.deb
+
+      - name: Self-check of the installed app
+        run: |
+          export XDG_DATA_HOME="$RUNNER_TEMP/data" XDG_CONFIG_HOME="$RUNNER_TEMP/config" QT_QPA_PLATFORM=offscreen
+          status=0
+          metlepet --selfcheck || status=$?
+          cat "$XDG_DATA_HOME/MetLePET/logs/app.log" || true
+          exit $status
+
   release:
     if: github.ref_type == 'tag'
-    needs: [build-windows, build-linux]
+    needs: [build-windows, build-linux, test-deb]
     runs-on: ubuntu-latest
     steps:
       - uses: actions/download-artifact@v4
