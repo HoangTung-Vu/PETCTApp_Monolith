@@ -1,4 +1,4 @@
-"""Non-modal progress dialog for tumor segmentation (upload → inference → done)."""
+"""Non-modal progress dialog for an AI segmentation (upload → inference → done)."""
 
 from PyQt6.QtCore import Qt
 from PyQt6.QtWidgets import QDialog, QVBoxLayout, QLabel, QProgressBar
@@ -13,9 +13,9 @@ class SegmentationProgressDialog(QDialog):
     ``complete()`` when the job finishes or errors.
     """
 
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, title: str = "Tumor Segmentation"):
         super().__init__(parent)
-        self.setWindowTitle("Tumor Segmentation")
+        self.setWindowTitle(title)
         self.setModal(False)
         # Title bar only (no close/help/min buttons), kept above the main window.
         self.setWindowFlags(
@@ -46,7 +46,7 @@ class SegmentationProgressDialog(QDialog):
         """Update the dialog from an upload or server progress update."""
         if stage == "preparing":
             self._bar.setRange(0, 0)  # indeterminate — serializing CT/PET to bytes
-            self._label.setText("Preparing CT/PET data…")
+            self._label.setText("Preparing image data…")
         elif stage == "upload":
             self._bar.setRange(0, 100)
             self._bar.setValue(percent)

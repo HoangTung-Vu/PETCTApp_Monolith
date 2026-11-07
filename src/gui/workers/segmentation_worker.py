@@ -5,7 +5,7 @@ import httpx
 from PyQt6.QtCore import QThread, pyqtSignal
 
 from ...utils.nifti_utils import bytes_to_nifti, nifti_to_gzip_bytes
-from .core import HTTP_TIMEOUT, _inference_lock, get_engine_url
+from .core import HTTP_TIMEOUT, _inference_lock, get_engine_model, get_engine_url
 
 # How often to poll the server for job progress (ms).
 _POLL_INTERVAL_MS = 750
@@ -70,7 +70,7 @@ def _build_multipart(files):
 
 
 class SegmentationWorker(QThread):
-    """Run tumor segmentation via the nnUNet engine's polling API.
+    """Run a segmentation via an AI engine's polling API (nnU-Net or TotalSegmentator).
 
     Flow: upload images (POST /jobs) → poll /progress → download /result.
     Emits granular signals so the UI can show upload/progress/done states and
@@ -78,15 +78,19 @@ class SegmentationWorker(QThread):
     """
     uploaded = pyqtSignal()             # upload accepted, job queued on the server
     progress = pyqtSignal(int, str)     # percent (0-100), stage label
-    finished = pyqtSignal(object)       # (mask_nib_image, None, "tumor")
+    finished = pyqtSignal(object)       # (mask_nib_image, model, kind) — kind "tumor" / "organ"
     error = pyqtSignal(str)
 
-    def __init__(self, images, stream_paths=None):
+    def __init__(self, images, stream_paths=None, model=None, kind="tumor"):
         """``images``: nibabel image(s) to segment; ``stream_paths``: matching
-        source files that may be streamed unchanged (None entries → serialize)."""
+        source files that may be streamed unchanged (None entries → serialize).
+        ``model``: engine model to call (default: the configured one); ``kind``
+        is passed back with the result so the caller knows what the mask holds."""
         super().__init__()
         self.images = images
         self.stream_paths = stream_paths
+        self.model = model or get_engine_model()
+        self.kind = kind
 
     def run(self):
         try:
@@ -96,7 +100,7 @@ class SegmentationWorker(QThread):
                 self.progress.emit(0, "preparing")
                 # Resolve the endpoint once per job so a GUI host change mid-run
                 # doesn't split a single job across two servers.
-                engine_url = get_engine_url()
+                engine_url = get_engine_url(self.model)
                 images = self.images if isinstance(self.images, list) else [self.images]
                 paths = self.stream_paths or [None] * len(images)
                 files = [(f"image_{i}.nii.gz", _resolve_source(img, path))
@@ -158,7 +162,7 @@ class SegmentationWorker(QThread):
                     res = client.get(f"{engine_url}/jobs/{job_id}/result")
                     res.raise_for_status()
                     mask_nib = bytes_to_nifti(res.content)
-                    self.finished.emit((mask_nib, None, "tumor"))
+                    self.finished.emit((mask_nib, self.model, self.kind))
 
         except Exception as e:
             import traceback

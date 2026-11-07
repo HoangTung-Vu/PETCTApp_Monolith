@@ -5,7 +5,7 @@ import nibabel as nib
 import numpy as np
 from pathlib import Path
 
-from .file_manager import FileManager
+from .file_manager import FileManager, safe_filename_part
 from ..database.session_repository import SessionRepository
 from .engine.report_engine import ReportEngine
 from ..utils.nifti_utils import (
@@ -89,6 +89,11 @@ class SessionManager:
         self.ct_image: Optional[nib.Nifti1Image] = None
         self.pet_image: Optional[nib.Nifti1Image] = None
         self.tumor_mask: Optional[nib.Nifti1Image] = None
+        # TotalSegmentator organ labels, display only. Found by file name next to
+        # the image (<CT>_organ.nii.gz, see ``refresh_organ_mask``), not stored in
+        # the database. Only a TotalSegmentator run writes that file.
+        self.organ_mask: Optional[nib.Nifti1Image] = None
+        self._organ_key = None   # (path, mtime, grid) the loaded organ_mask came from
 
         # ROI mask for interactive refinement (raw uint8 XYZ array, never saved to disk)
         self.roi_mask: Optional[np.ndarray] = None
@@ -188,16 +193,23 @@ class SessionManager:
 
         ref = ct_series or pet_series
         # A segmentation saved by an earlier import of the same series is reused
-        # instead of being silently overwritten by a fresh empty mask.
+        # instead of being silently overwritten by a fresh empty mask: the plain
+        # <folder>_Segmentation.nii.gz, else the newest AI result
+        # <folder>_Segmentation_<model>.nii.gz.
         seg_path = FileManager.get_segmentation_path(Path(ref.directory))
+        ai_results = sorted(seg_path.parent.glob(f"{seg_path.name[:-len('.nii.gz')]}_*.nii.gz"),
+                            key=lambda p: p.stat().st_mtime, reverse=True)
         abs_seg = None
-        if seg_path.exists():
+        for candidate in [seg_path] + ai_results:
+            if not candidate.exists():
+                continue
             try:
-                self.tumor_mask = load_mask_volume(seg_path, self._ref_image().shape)
-                abs_seg = str(seg_path)
-                print(f"[SessionManager] Reusing existing segmentation {seg_path}")
+                self.tumor_mask = load_mask_volume(candidate, self._ref_image().shape)
+                abs_seg = str(candidate)
+                print(f"[SessionManager] Reusing existing segmentation {candidate}")
+                break
             except Exception as e:
-                print(f"[SessionManager] Ignoring existing segmentation {seg_path}: {e}")
+                print(f"[SessionManager] Ignoring existing segmentation {candidate}: {e}")
 
         session = self.repository.create(
             patient_name=patient_name,
@@ -341,6 +353,7 @@ class SessionManager:
 
     def _reset_images(self):
         self.ct_image = self.pet_image = self.tumor_mask = None
+        self.organ_mask = self._organ_key = None
         self.roi_mask = None
         self._ct_back_ornt = self._pet_back_ornt = None
         self.ct_stream_path = self.pet_stream_path = None
@@ -529,8 +542,12 @@ class SessionManager:
         print(f"[SessionManager] Deleted session {session_id}")
         return deleted
 
-    def save_session(self):
-        """Persist the in-memory tumor mask to disk next to the CT file."""
+    def save_session(self, seg_path: Optional[Path] = None):
+        """Persist the in-memory tumor mask to disk next to the CT file.
+
+        ``seg_path`` (an AI run: ``model_segmentation_path``) is written and becomes
+        the session's file; otherwise the session's current file is overwritten.
+        """
         if self.current_session_id is None:
             print("[SessionManager] No active session to save.")
             return
@@ -539,9 +556,11 @@ class SessionManager:
             return
 
         session = self.repository.get_by_id(self.current_session_id)
+        if seg_path is not None:
+            seg_path = Path(seg_path)
         # Use existing path only if the file actually exists on disk.
         # If DB has a stale path (file was deleted/moved), regenerate next to CT.
-        if session.tumor_seg_path and Path(session.tumor_seg_path).parent.exists():
+        elif session.tumor_seg_path and Path(session.tumor_seg_path).parent.exists():
             seg_path = Path(session.tumor_seg_path)
         else:
             seg_path = self._default_seg_path(session)
@@ -566,18 +585,122 @@ class SessionManager:
         self.tumor_dirty = False
         print(f"[SessionManager] Resampled segmentation from {source_path} saved → {target}")
 
-    def _default_seg_path(self, session) -> Path:
-        """Where a new segmentation file goes: next to the image whose grid it is on."""
+    def _default_seg_path(self, session, suffix: str = "Segmentation",
+                          fallback: str = "tumor_seg") -> Path:
+        """Where a new segmentation file goes: next to the image whose grid it is on.
+
+        Named ``<image>_<suffix>.nii.gz``; ``fallback`` names the file in the
+        session storage dir when there is no image file to put it next to.
+        """
+        ref_path = self._seg_ref_path(session)
+        if ref_path:
+            return FileManager.get_segmentation_path(ref_path, suffix)
+        # Fallback: write to the old session storage dir
+        return FileManager.get_file_path(self.current_session_id, fallback)
+
+    def _seg_ref_path(self, session) -> Optional[Path]:
+        """The image file (or DICOM folder) a mask on the session grid is named after."""
         is_dicom = bool(session.ct_series_uid or session.pet_series_uid)
         ref_path = session.ct_path or (session.pet_path if is_dicom else None)
         if not is_dicom and self.resample_mode == "pet" and session.pet_path:
             # CT was resampled onto the PET grid: the mask lives on the PET grid,
             # so it is written next to the PET file it lines up with.
             ref_path = session.pet_path
-        if ref_path and Path(ref_path).exists():
-            return FileManager.get_segmentation_path(Path(ref_path))
-        # Fallback: write to the old session storage dir
-        return FileManager.get_file_path(self.current_session_id, "tumor_seg")
+        return Path(ref_path) if ref_path and Path(ref_path).exists() else None
+
+    def model_segmentation_path(self, model: str) -> Path:
+        """File for an AI tumor segmentation: ``<CT>_Segmentation_<model>.nii.gz``."""
+        session = self.repository.get_by_id(self.current_session_id)
+        return self._default_seg_path(session, f"Segmentation_{safe_filename_part(model)}")
+
+    def save_organ_mask(self, organ_img: nib.Nifti1Image) -> Path:
+        """Write a TotalSegmentator organ mask to ``<CT>_organ.nii.gz`` (overwriting it).
+
+        ``organ_img`` is on the session grid in LAS (the engine segments the CT it
+        was sent). It is written in the source grid's voxel order, like the tumor
+        mask, and keeps the engine's header — the label names are stored there.
+        It becomes the displayed ``organ_mask``; the tumor mask and the lesion
+        values are not touched. The file is found again by name on the next load.
+        """
+        ref = self._ref_image()
+        if self.current_session_id is None or ref is None:
+            raise ValueError("No session with an image to attach the organ mask to.")
+        data = np.asarray(organ_img.dataobj, dtype=np.uint8)
+        if tuple(data.shape) != tuple(ref.shape):
+            raise ValueError(f"Organ mask shape {tuple(data.shape)} does not match "
+                             f"the image grid {tuple(ref.shape)}.")
+        mask = nib.Nifti1Image(data, ref.affine, organ_img.header)
+        mask = from_app_orientation(mask, self.ref_back_ornt)
+        mask.set_data_dtype(np.uint8)
+
+        session = self.repository.get_by_id(self.current_session_id)
+        path = self._default_seg_path(session, "organ", fallback="organ_seg")
+        try:
+            nib.save(mask, path)
+        except OSError as e:
+            # Read-only source folder (DICOM CD / network share) → app storage.
+            fallback = FileManager.get_file_path(self.current_session_id, "organ_seg")
+            print(f"[SessionManager] Cannot write {path} ({e}); saving to {fallback}")
+            path = fallback
+            nib.save(mask, path)
+        path = Path(path)
+        self.organ_mask = nib.Nifti1Image(data, ref.affine)
+        self._organ_key = self._organ_cache_key(path, ref)
+        print(f"[SessionManager] Organ mask saved → {path}")
+        return path
+
+    # ── Organ mask (display only) ─────────────────────────────────────────
+
+    def _organ_candidates(self, session) -> list:
+        """Where the organ file may be, in order: next to the session-grid image
+        (where a TotalSegmentator run writes it), next to the CT, the storage dir."""
+        paths = []
+        ref_path = self._seg_ref_path(session)
+        if ref_path:
+            paths.append(FileManager.get_segmentation_path(ref_path, "organ"))
+        if session.ct_path:
+            paths.append(FileManager.get_segmentation_path(Path(session.ct_path), "organ"))
+        paths.append(FileManager.get_file_path(self.current_session_id, "organ_seg", create=False))
+        return list(dict.fromkeys(paths))
+
+    @staticmethod
+    def _organ_cache_key(path: Path, ref: nib.Nifti1Image) -> tuple:
+        return (str(path), path.stat().st_mtime_ns, tuple(ref.shape), np.asarray(ref.affine).tobytes())
+
+    def refresh_organ_mask(self):
+        """Pick up ``<CT>_organ.nii.gz`` for display (called after every load).
+
+        A file on another grid (e.g. the CT grid while the session is on the PET
+        grid) is resampled nearest-neighbour in memory only; the file is never
+        rewritten. Missing or unusable → no organ mask. Re-reads only when the
+        file or the session grid changed.
+        """
+        ref = self._ref_image()
+        session = (self.repository.get_by_id(self.current_session_id)
+                   if self.current_session_id is not None else None)
+        path = None
+        if session is not None and ref is not None:
+            path = next((p for p in self._organ_candidates(session) if p.exists()), None)
+        if path is None:
+            self.organ_mask = self._organ_key = None
+            return
+        key = self._organ_cache_key(path, ref)
+        if key == self._organ_key and self.organ_mask is not None:
+            return
+        try:
+            organ = load_mask_volume(path)
+            if tuple(organ.shape) != tuple(ref.shape):   # same rule as the tumor mask
+                organ = self._resample_segmentation(organ, ref)
+            self.organ_mask, self._organ_key = organ, key
+            print(f"[SessionManager] Organ mask {path.name} loaded for display")
+        except Exception as e:
+            print(f"[SessionManager] Organ mask {path} not shown: {e}")
+            self.organ_mask = self._organ_key = None
+
+    def get_organ_mask_data(self) -> Optional[np.ndarray]:
+        if self.organ_mask is not None:
+            return np.asarray(self.organ_mask.dataobj, dtype=np.uint8)
+        return None
 
     def _write_tumor_mask(self, seg_path: Path) -> Path:
         """Write the tumor mask in the source grid's voxel order; returns the path used."""

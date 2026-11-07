@@ -10,30 +10,39 @@ class SegmentationHandlerMixin:
     """Handles segmentation launch, progress dialog, and result processing."""
 
     def run_segmentation_dialog(self):
-        """Entry point wired to the Segment button — runs the custom nnUNet model."""
+        """Entry point wired to the Segment button — runs the model chosen under AI Engine."""
         self._run_segmentation()
 
     def _run_segmentation(self):
-        ct_img = self.session_manager.ct_image
-        pet_img = self.session_manager.pet_image
-
         from ..workers import SegmentationWorker
+        from ..workers.core import get_engine_model, is_totalseg_model
 
-        if not ct_img or not pet_img:
-            QMessageBox.warning(
-                self, "Missing Data",
-                "Tumor segmentation requires both CT and PET images."
-            )
-            return
+        sm = self.session_manager
+        model = get_engine_model()
+        organ = is_totalseg_model(model)
 
         # LAS volumes (the training orientation); unchanged LAS files are streamed.
-        input_data = [ct_img, pet_img]
-        sm = self.session_manager
-        self.worker = SegmentationWorker(input_data, [sm.ct_stream_path, sm.pet_stream_path])
+        if organ:
+            # TotalSegmentator segments the CT alone; the organ mask comes back on its grid.
+            if sm.ct_image is None:
+                QMessageBox.warning(self, "Missing Data", "TotalSegmentator requires a CT image.")
+                return
+            images, paths = [sm.ct_image], [sm.ct_stream_path]
+        else:
+            if not sm.ct_image or not sm.pet_image:
+                QMessageBox.warning(
+                    self, "Missing Data",
+                    "Tumor segmentation requires both CT and PET images."
+                )
+                return
+            images, paths = [sm.ct_image, sm.pet_image], [sm.ct_stream_path, sm.pet_stream_path]
+        self.worker = SegmentationWorker(images, paths, model=model,
+                                         kind="organ" if organ else "tumor")
 
         # Non-modal status dialog: upload → inference % → done. The user can keep
         # viewing/panning/zooming while it runs.
-        self._seg_progress_dialog = SegmentationProgressDialog(self)
+        self._seg_progress_dialog = SegmentationProgressDialog(
+            self, title="Organ Segmentation (TotalSegmentator)" if organ else "Tumor Segmentation")
         self.worker.uploaded.connect(self._seg_progress_dialog.set_uploaded)
         self.worker.progress.connect(self._seg_progress_dialog.set_progress)
         self.worker.finished.connect(self._on_segmentation_finished)
@@ -46,7 +55,7 @@ class SegmentationHandlerMixin:
         self.worker.start()
 
     def _on_segmentation_finished(self, result_tuple):
-        mask_img, _prob_array, seg_type = result_tuple
+        mask_img, model, kind = result_tuple
         data = np.asarray(mask_img.dataobj, dtype=np.uint8)
 
         ct_img = self.session_manager.ct_image
@@ -57,16 +66,29 @@ class SegmentationHandlerMixin:
             )
             return
 
-        self.session_manager.set_tumor_mask(data)
-        self._push_mask_to_all("tumor", data)
-
-        # Save immediately (the save worker also computes the lesion values)
-        self.save_session()
-        print(f"Segmentation {seg_type} finished and saved.")
+        if kind == "organ":
+            # Organ labels are not lesions: written to <CT>_organ.nii.gz only,
+            # the tumor mask and the lesion values stay as they are.
+            from ..workers import OrganSaveWorker
+            self._organ_save_worker = OrganSaveWorker(self.session_manager, mask_img)
+            self._spawn_worker(self._organ_save_worker, self._on_organ_saved, self._on_save_error)
+        else:
+            self.session_manager.set_tumor_mask(data)
+            self._push_mask_to_all("tumor", data)
+            # Save immediately to this model's own file, <CT>_Segmentation_<model>.nii.gz
+            # (the save worker also computes the lesion values).
+            self.save_session(seg_path=self.session_manager.model_segmentation_path(model))
+        print(f"Segmentation {kind} ({model}) finished.")
 
         self._close_seg_progress_dialog()
         self._lock_seg_eraser_tabs(False)
         self.control_panel.workflow_tab.btn_segment.setEnabled(True)
+
+    def _on_organ_saved(self, path: str):
+        self._set_ui_busy(False)
+        self.control_panel.hide_progress()
+        self.layout_manager.set_organ_mask(self.session_manager.get_organ_mask_data())
+        QMessageBox.information(self, "Organ Segmentation", f"TotalSegmentator organ mask saved to:\n{path}")
 
     def _push_mask_to_all(self, layer_type, data, data_zyx=None):
         self.layout_manager.update_mask(data, layer_type, data_zyx)

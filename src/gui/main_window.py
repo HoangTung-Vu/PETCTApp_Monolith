@@ -178,6 +178,7 @@ class MainWindow(
         cp.sig_tumor_opacity_changed.connect(lm.set_tumor_opacity)
         cp.sig_mask_display_changed.connect(lm.set_mask_display)
         cp.sig_roi_opacity_changed.connect(lm.set_roi_opacity)
+        cp.sig_organ_opacity_changed.connect(lm.set_organ_opacity)
         cp.sig_ct_window_level_changed.connect(lm.set_ct_window_level)
         cp.sig_pet_window_level_changed.connect(lm.set_pet_window_level)
         cp.sig_zoom_changed.connect(lm.set_zoom)
@@ -210,7 +211,7 @@ class MainWindow(
         # Eraser
         cp.sig_eraser_mode_toggled.connect(self._on_eraser_mode_toggled)
         cp.sig_eraser_undo_clicked.connect(self._on_eraser_undo)
-        cp.sig_eraser_save_clicked.connect(self.save_session)
+        cp.sig_eraser_save_clicked.connect(lambda: self.save_session())
         lm.sig_eraser_region_removed.connect(self._on_eraser_region_removed)
         lm.sig_eraser_background_click.connect(self._on_eraser_background_click)
 
@@ -469,7 +470,7 @@ class MainWindow(
         busy = [
             getattr(self, name, None)
             for name in ("loader_worker", "worker", "_merge_save_worker", "save_worker",
-                         "report_worker", "ensure_roi_worker")
+                         "_organ_save_worker", "report_worker", "ensure_roi_worker")
         ]
         if any(w is not None and w.isRunning() for w in busy):
             QMessageBox.information(
@@ -638,16 +639,18 @@ class MainWindow(
                 pet_data=pet_data, 
                 ct_affine=ct_affine, 
                 pet_affine=pet_affine, 
-                tumor_mask=tumor_mask, 
-                ct_filename=ct_filename, 
-                pet_filename=pet_filename
+                tumor_mask=tumor_mask,
+                ct_filename=ct_filename,
+                pet_filename=pet_filename,
+                organ_mask=self.session_manager.get_organ_mask_data(),
             )
         else:
             print("No affine available (no images loaded?)")
 
-    def save_session(self):
+    def save_session(self, seg_path=None):
+        """Save the tumor mask in the background (``seg_path``: AI run's own file)."""
         from .workers import SaveWorker
-        self.save_worker = SaveWorker(self.session_manager)
+        self.save_worker = SaveWorker(self.session_manager, seg_path)
         self._spawn_worker(self.save_worker, self._on_save_finished, self._on_save_error)
 
     def _on_save_finished(self):

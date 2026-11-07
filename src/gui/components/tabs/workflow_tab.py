@@ -121,8 +121,13 @@ class WorkflowTab(QWidget):
         grp_engine = QGroupBox("AI Engine")
         engine_layout = QFormLayout()
 
-        from ...workers.core import get_engine_ip, get_engine_port, set_engine_endpoint
+        from ...workers.core import (
+            MODEL_PRESETS, get_engine_ip, get_engine_model, get_engine_port,
+            set_engine_endpoint, set_engine_model,
+        )
         self._set_engine_endpoint = set_engine_endpoint
+        self._set_engine_model = set_engine_model
+        self._engine_layout = engine_layout
 
         self.input_engine_host = QLineEdit(get_engine_ip())
         self.input_engine_host.setPlaceholderText("localhost or 202.122.49.242")
@@ -133,6 +138,26 @@ class WorkflowTab(QWidget):
         self.input_engine_port.setPlaceholderText("8104")
         self.input_engine_port.returnPressed.connect(self._apply_engine_host)
         engine_layout.addRow("Port:", self.input_engine_port)
+
+        # Model = last part of the engine URL. Picking a preset also fills in that
+        # engine's default port; "Other…" takes any model name typed below.
+        self.combo_engine_model = QComboBox()
+        self.combo_engine_model.setSizeAdjustPolicy(QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon)
+        self.combo_engine_model.setMinimumContentsLength(8)
+        for name, label, port in MODEL_PRESETS:
+            self.combo_engine_model.addItem(label, userData=(name, port))
+            self.combo_engine_model.setItemData(self.combo_engine_model.count() - 1,
+                                                f"{name} (port {port})", Qt.ItemDataRole.ToolTipRole)
+        self.combo_engine_model.addItem("Other…", userData=None)
+        engine_layout.addRow("Model:", self.combo_engine_model)
+
+        self.input_engine_model = QLineEdit()
+        self.input_engine_model.setPlaceholderText("Model name")
+        self.input_engine_model.returnPressed.connect(self._apply_engine_host)
+        engine_layout.addRow("Name:", self.input_engine_model)
+
+        self._select_engine_model(get_engine_model())
+        self.combo_engine_model.currentIndexChanged.connect(self._on_engine_model_changed)
 
         self.btn_apply_engine = QPushButton("Apply")
         self.btn_apply_engine.clicked.connect(self._apply_engine_host)
@@ -237,13 +262,38 @@ class WorkflowTab(QWidget):
         self.sig_load_from_dicom.emit(folder, doc, pat)
 
     def _apply_engine_host(self):
-        # Persist + clean via the config setter, then reflect the cleaned
-        # IP/port back into the fields.
+        # Persist + clean via the config setters, then reflect the cleaned
+        # IP/port/model back into the fields.
         ip, port = self._set_engine_endpoint(
             self.input_engine_host.text(), self.input_engine_port.text()
         )
         self.input_engine_host.setText(ip)
         self.input_engine_port.setText(port)
+        preset = self.combo_engine_model.currentData()
+        model = self._set_engine_model(preset[0] if preset else self.input_engine_model.text())
+        self._select_engine_model(model)
+
+    def _select_engine_model(self, model: str):
+        """Show ``model`` in the dropdown: its preset, else "Other…" with the name typed in."""
+        combo = self.combo_engine_model
+        index = next((i for i in range(combo.count())
+                      if combo.itemData(i) and combo.itemData(i)[0] == model), combo.count() - 1)
+        combo.blockSignals(True)
+        combo.setCurrentIndex(index)
+        combo.blockSignals(False)
+        other = combo.itemData(index) is None
+        self.input_engine_model.setText(model if other else "")
+        self._engine_layout.setRowVisible(self.input_engine_model, other)
+
+    def _on_engine_model_changed(self, index: int):
+        preset = self.combo_engine_model.itemData(index)
+        if preset is None:
+            # "Other…": applied once a name is typed (Enter / Apply).
+            self._engine_layout.setRowVisible(self.input_engine_model, True)
+            self.input_engine_model.setFocus()
+            return
+        self.input_engine_port.setText(preset[1])     # that engine's default port
+        self._apply_engine_host()
 
     def _change_data_folder(self):
         from ..storage_location import change_location

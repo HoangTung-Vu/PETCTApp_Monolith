@@ -101,6 +101,7 @@ class ViewDisplayTab(QWidget):
     # Tumor mask style: ("filled" | "contour", smooth edges, contour width in px)
     sig_mask_display_changed     = pyqtSignal(str, bool, int)
     sig_roi_opacity_changed      = pyqtSignal(float)
+    sig_organ_opacity_changed    = pyqtSignal(float)
     sig_ct_window_level_changed  = pyqtSignal(float, float)
     sig_pet_window_level_changed = pyqtSignal(float, float)
     sig_zoom_changed             = pyqtSignal(int)
@@ -404,6 +405,21 @@ class ViewDisplayTab(QWidget):
             lambda v: self.sig_roi_opacity_changed.emit(v / 100.0)
         )
         zm_lay.addRow("ROI opacity:", self.slider_roi_opacity)
+
+        # TotalSegmentator organ labels (<CT>_organ.nii.gz), shown under the tumor mask.
+        self.chk_organ = QCheckBox("Show Organ Mask")
+        self.chk_organ.setChecked(True)
+        self.chk_organ.setToolTip("TotalSegmentator organs, read from <CT>_organ.nii.gz when it exists")
+        self.chk_organ.toggled.connect(lambda c: self.sig_toggle_mask.emit("organ", c))
+        zm_lay.addRow(self.chk_organ)
+
+        self.slider_organ_opacity = QSlider(Qt.Orientation.Horizontal)
+        self.slider_organ_opacity.setRange(0, 100)
+        self.slider_organ_opacity.setValue(40)
+        self.slider_organ_opacity.valueChanged.connect(
+            lambda v: self.sig_organ_opacity_changed.emit(v / 100.0)
+        )
+        zm_lay.addRow("Organ opacity:", self.slider_organ_opacity)
 
         layout.addWidget(_make_collapsible("Zoom & Mask", zm_content))
 

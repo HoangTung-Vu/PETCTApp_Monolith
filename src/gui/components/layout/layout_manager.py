@@ -126,8 +126,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
         self._init_lesion_info()
 
         # Data cache
-        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None, "ct_filename": "", "pet_filename": ""}
-        self._cached_data_zyx = {"tumor": None, "roi": None}
+        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None, "organ": None, "ct_filename": "", "pet_filename": ""}
+        self._cached_data_zyx = {"tumor": None, "roi": None, "organ": None}
         self._is_3d_loaded = False
         self._cached_lesion_data = None
 
@@ -141,6 +141,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
         self._overlay_pet_colormap = "jet"
         self._overlay_pet_opacity = 0.5
         self._tumor_opacity = 0.7
+        # Organ mask (TotalSegmentator, display only): its "Show" checkbox state,
+        # re-applied whenever the layer is created again.
+        self._organ_visible = True
 
         # Crosshair state
         self._crosshair_enabled = False
@@ -262,7 +265,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
 
     # ── Data loading ──────────────────────────────────────────────────────────
 
-    def load_data(self, ct_data=None, pet_data=None, ct_affine=None, pet_affine=None, tumor_mask=None, roi_mask=None, ct_filename: str = "", pet_filename: str = "", affine=None):
+    def load_data(self, ct_data=None, pet_data=None, ct_affine=None, pet_affine=None, tumor_mask=None, roi_mask=None, ct_filename: str = "", pet_filename: str = "", affine=None, organ_mask=None):
         if ct_affine is None and affine is not None:
             ct_affine = affine
         if pet_affine is None and affine is not None:
@@ -288,6 +291,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
             self._cached_data_zyx["roi"] = to_napari(roi_mask.astype(np.uint8, copy=False))
         else:
             self._cached_data_zyx["roi"] = None
+        self._cached_data["organ"] = organ_mask
+        self._cached_data_zyx["organ"] = (
+            to_napari(organ_mask.astype(np.uint8, copy=False)) if organ_mask is not None else None)
 
         if ct_data is not None:
             self._cached_data_zyx["ct"] = to_napari(ct_data)
@@ -412,12 +418,29 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
 
     def _load_masks_into(self, vw):
         """Push cached masks into ``vw``; remove mask layers that have no data."""
-        for mask_type in ("tumor", "roi"):
-            data = self._cached_data_zyx.get(mask_type)
-            if data is not None:
-                vw.load_mask_zyx(data, mask_type)
-            else:
-                vw.remove_layer(mask_type)
+        for mask_type in ("organ", "tumor", "roi"):
+            self._load_mask_into(vw, mask_type)
+
+    def _load_mask_into(self, vw, mask_type: str):
+        data = self._cached_data_zyx.get(mask_type)
+        if data is None:
+            vw.remove_layer(mask_type)
+            return
+        vw.load_mask_zyx(data, mask_type)
+        if mask_type == "organ":
+            vw.viewer.layers[vw.LAYER_NAMES["organ"]].visible = self._organ_visible
+
+    def set_organ_mask(self, organ_mask):
+        """Show a new organ mask (XYZ, session grid) in every loaded view, or remove it (None).
+
+        Only the organ layer is touched — the tumor layers may hold unsynced paint.
+        """
+        from ....utils.nifti_utils import to_napari
+        self._cached_data["organ"] = organ_mask
+        self._cached_data_zyx["organ"] = (
+            to_napari(organ_mask.astype(np.uint8, copy=False)) if organ_mask is not None else None)
+        for vw in self._get_all_loaded_viewers():
+            self._load_mask_into(vw, "organ")
 
     # ── 3D data loading ───────────────────────────────────────────────────────
 
@@ -713,6 +736,11 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
         for vw in self._viewer_pool + [self.viewer_3d]:
             vw.set_tumor_opacity(value)
 
+    def set_organ_opacity(self, value: float):
+        # Every viewer keeps the value, so views opened later use it too.
+        for vw in self._viewer_pool + [self.viewer_3d]:
+            vw.set_organ_opacity(value)
+
     def set_mask_display(self, style: str, smooth: bool, width: int):
         """Tumor mask as a filled area or a contour, optionally smoothed (2D views).
 
@@ -751,7 +779,9 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
                 vw.viewer.camera.zoom = zoom_factor
 
     def toggle_mask(self, mask_type: str, visible: bool):
-        name_map = {"tumor": "Tumor Mask", "roi": "ROI Mask"}
+        name_map = {"tumor": "Tumor Mask", "roi": "ROI Mask", "organ": "Organ Mask"}
+        if mask_type == "organ":
+            self._organ_visible = visible
         target_name = name_map.get(mask_type, mask_type)
         for vw in self._get_all_loaded_viewers():
             if target_name in vw.viewer.layers:
@@ -916,8 +946,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
         self._disconnect_mask_events()
         for vw in list(self._viewer_pool) + [self.viewer_3d]:
             vw.release_data()
-        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None, "ct_filename": "", "pet_filename": ""}
-        self._cached_data_zyx = {"tumor": None, "roi": None}
+        self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None, "organ": None, "ct_filename": "", "pet_filename": ""}
+        self._cached_data_zyx = {"tumor": None, "roi": None, "organ": None}
         self._is_3d_loaded = False
         # Do not clear active views so layout persists between sessions
         # self._active_views = []

@@ -71,9 +71,11 @@ class ViewerWidget(QWidget):
         self.LAYER_NAMES = {
             "ct": "CT Image",
             "pet": "PET Image",
+            "organ": "Organ Mask",     # TotalSegmentator labels, display only
             "tumor": "Tumor Mask",
             "roi": "ROI Mask",
         }
+        self._organ_opacity = 0.4
         self.is_3d = False
         self._scale_zyx = None   # physical spacing (sz, sy, sx) in mm
 
@@ -279,6 +281,8 @@ class ViewerWidget(QWidget):
             kwargs = dict(name=name, opacity=self._tumor_opacity, multiscale=False)
             if mask_type == "roi":
                 kwargs["opacity"] = 0.9
+            elif mask_type == "organ":
+                kwargs["opacity"] = self._organ_opacity
             if self._scale_zyx is not None:
                 kwargs['scale'] = self._scale_zyx
             layer = self.viewer.add_labels(mask_data, **kwargs)
@@ -294,8 +298,8 @@ class ViewerWidget(QWidget):
         if not self.is_3d:
             layer.blending = "translucent_no_depth"
 
-        if self.is_3d:
-            layer.editable = False
+        if self.is_3d or mask_type == "organ":
+            layer.editable = False      # the organ labels are never painted on
 
         if mask_type == "tumor":
             self._mask_overlay.attach_layer(layer)
@@ -321,6 +325,12 @@ class ViewerWidget(QWidget):
     def set_tumor_opacity(self, value: float):
         self._tumor_opacity = float(value)
         self._apply_mask_display()
+
+    def set_organ_opacity(self, value: float):
+        self._organ_opacity = float(value)
+        name = self.LAYER_NAMES["organ"]
+        if name in self.viewer.layers:
+            self.viewer.layers[name].opacity = self._organ_opacity
 
     def _apply_mask_display(self):
         """Show the tumor mask either through its Labels layer or the overlay.
@@ -351,10 +361,11 @@ class ViewerWidget(QWidget):
                 layer.visible = False      # LayoutManager sets visibility again on load
 
     def _enforce_layer_order(self):
-        """Ensure rendering order: CT < PET < Tumor < ROI < Preview < Lesion"""
+        """Ensure rendering order: CT < PET < Organ < Tumor < ROI < Preview < Lesion"""
         desired_order = [
             self.LAYER_NAMES.get("ct", "CT Image"),
             self.LAYER_NAMES.get("pet", "PET Image"),
+            self.LAYER_NAMES.get("organ", "Organ Mask"),
             self.LAYER_NAMES.get("tumor", "Tumor Mask"),
             self.LAYER_NAMES.get("roi", "ROI Mask"),
             self.SHAPE_PREVIEW_LAYER,
