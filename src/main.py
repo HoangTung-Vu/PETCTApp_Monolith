@@ -77,7 +77,6 @@ from PyQt6.QtWidgets import QApplication, QSplashScreen
 from PyQt6.QtGui import QPixmap, QColor, QPainter, QFont
 from PyQt6.QtCore import Qt
 from .gui.main_window import MainWindow
-from .gui.components.storage_location import prompt_first_run
 from .database.db import init_db
 
 
@@ -100,9 +99,7 @@ def main():
     # Initialize Application
     app = QApplication(sys.argv)
 
-    # First launch: ask where the database lives, then open it
-    if not prompt_first_run():
-        sys.exit(0)
+    # Open (or, on first launch, create) the database in the fixed data folder
     init_db()
 
     # Show splash + spinning cursor while napari viewers initialise (~5 s)

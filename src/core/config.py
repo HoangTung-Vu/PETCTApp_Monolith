@@ -4,8 +4,9 @@ from pathlib import Path
 
 from PyQt6.QtCore import QSettings
 
-# QSettings location shared by everything the app persists (engine endpoint,
-# data folder). On Windows this is HKCU\Software\MetLePET\MetLePET.
+# QSettings location shared by everything the app persists (engine endpoint;
+# the data folder only for pre-1.2.1 Windows installs). On Windows this is
+# HKCU\Software\MetLePET\MetLePET.
 SETTINGS_ORG = "MetLePET"
 SETTINGS_APP = "MetLePET"
 _STORAGE_DIR_KEY = "storage/dir"
@@ -32,46 +33,38 @@ def user_app_dir() -> Path:
 
 
 def default_storage_dir() -> Path:
-    """Data folder proposed on first run.
+    """Folder of the session database (petct.db), fixed — never asked for.
 
-    From source this stays ``<repo>/storage`` so an existing dev database keeps
-    working; the installed app can't write next to itself, so it uses the
-    per-user app folder instead.
+    The installed app uses the per-user app folder (~/.local/share/MetLePET on
+    Linux, %LOCALAPPDATA%\\MetLePET on Windows): outside the install dir, so a
+    fresh install starts an empty database there and an update or reinstall
+    keeps it. From source it is ``<repo>/storage``, so a dev run never shares
+    the installed app's database.
     """
     if is_frozen():
         return user_app_dir()
     return Path(__file__).resolve().parent.parent.parent / "storage"
 
 
-def saved_storage_dir() -> Path | None:
+def _legacy_windows_storage_dir() -> Path | None:
+    """Data folder picked at first run by Windows installs up to v1.2.0.
+
+    Those versions asked for the folder and kept the answer in the registry.
+    It is still used while it holds a database, so updating such an install
+    opens the same sessions instead of an empty database.
+    """
+    if sys.platform != "win32" or not is_frozen():
+        return None
     value = app_settings().value(_STORAGE_DIR_KEY, "", type=str)
-    return Path(value) if value else None
-
-
-def save_storage_dir(path: Path) -> None:
-    app_settings().setValue(_STORAGE_DIR_KEY, str(Path(path)))
+    if value and (Path(value) / DB_FILENAME).is_file():
+        return Path(value)
+    return None
 
 
 def storage_dir_override() -> Path | None:
-    """``PETCT_STORAGE_DIR`` wins over the saved choice (tests, scripted setups)."""
+    """``PETCT_STORAGE_DIR`` wins over everything (tests, scripted setups)."""
     value = os.getenv("PETCT_STORAGE_DIR")
     return Path(value) if value else None
-
-
-def check_writable(path: Path) -> str | None:
-    """Return an error message if the app can't keep its database in ``path``.
-
-    SQLite needs to create journal files next to the database, so the folder
-    itself must be writable, not just the .db file.
-    """
-    probe = Path(path) / ".petct_write_test"
-    try:
-        Path(path).mkdir(parents=True, exist_ok=True)
-        probe.write_bytes(b"")
-        probe.unlink()
-    except OSError as e:
-        return f"Cannot write to {path}:\n{e.strerror or e}"
-    return None
 
 
 class Settings:
@@ -81,12 +74,13 @@ class Settings:
         self.reload()
 
     def reload(self):
-        """Resolve the data folder: env override > saved choice > default.
+        """Resolve the data folder: env override > (Windows) pre-1.2.1 choice > fixed default.
 
         Nothing is created here; ``init_db`` and ``FileManager`` make the
         folders when they first write into them.
         """
-        self.STORAGE_DIR = storage_dir_override() or saved_storage_dir() or default_storage_dir()
+        self.STORAGE_DIR = (storage_dir_override() or _legacy_windows_storage_dir()
+                            or default_storage_dir())
 
         # Subdirectories
         self.WEIGHTS_DIR = self.STORAGE_DIR / "weights"

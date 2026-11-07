@@ -106,10 +106,9 @@ After applying the patch, rebuild the Docker image: `./start.sh` will detect the
 ## Install on Windows (no Python or git needed)
 
 1. Download `MetLePET-Setup-<version>.exe` from the [Releases](https://github.com/HoangTung-Vu/PETCTApp_Monolith/releases) page and run it. It installs for the current user without admin rights; Windows SmartScreen may warn because the installer is unsigned. Click **More info → Run anyway**.
-2. On first launch, choose the **data folder** where the session database (`petct.db`) is kept. The default is `%LOCALAPPDATA%\MetLePET`. Pick a local disk, not a network share or a OneDrive folder. To move it later, use **Workflow tab → Data Folder → Change…**, which can copy the existing database across.
-3. In **Workflow tab → AI Engine**, enter the IP and port of the machine running the engine (`localhost` if it runs on the same PC; see below for starting it) and pick the **Model** (see [AI models and result files](#ai-models-and-result-files)).
+2. In **Workflow tab → AI Engine**, enter the IP and port of the machine running the engine (`localhost` if it runs on the same PC; see below for starting it) and pick the **Model** (see [AI models and result files](#ai-models-and-result-files)).
 
-Uninstalling or upgrading never deletes the data folder. Logs are written to `%LOCALAPPDATA%\MetLePET\logs\app.log`.
+The session database (`petct.db`) lives in `%LOCALAPPDATA%\MetLePET` — created empty on the first launch, kept by upgrades, reinstalls and uninstalling, so a new version opens the same sessions. (An install that was set to another data folder before v1.2.1 keeps using it while it holds the database.) Logs are written to `%LOCALAPPDATA%\MetLePET\logs\app.log`. **Workflow tab → Data Folder** shows the folder in use.
 
 ## Install on Ubuntu (22.04 or newer, x86_64)
 
@@ -118,7 +117,7 @@ sudo apt install ./metlepet_<version>_amd64.deb   # from the Releases page; pull
 metlepet                                           # or open MetLePET from the applications menu
 ```
 
-The app is installed to `/opt/MetLePET`. The data folder defaults to `~/.local/share/MetLePET`, logs go to `~/.local/share/MetLePET/logs/app.log`. Remove with `sudo apt remove metlepet` (the data folder is kept).
+The app is installed to `/opt/MetLePET` and uses the desktop's own GTK/Qt system libraries, so it follows the system light/dark theme. The session database is `~/.local/share/MetLePET/petct.db`: created empty on the first launch, kept by upgrades (`sudo apt install ./metlepet_<newer>_amd64.deb`) and by `sudo apt remove metlepet`. Logs go to `~/.local/share/MetLePET/logs/app.log`. A source checkout keeps its own database in `storage/`, never this one.
 
 ## AI models and result files
 
