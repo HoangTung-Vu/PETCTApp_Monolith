@@ -7,6 +7,9 @@
 and returns the exact bytes TotalSegmentator writes: a uint8 multilabel mask
 (0..117, ``class_map["total"]``) on the input CT grid, with the label names in the
 NIfTI header (CaretExtension XML). Nothing is re-encoded on the way out.
+
+Imported only by the worker process (src/worker.py, one per job): the API process
+never loads torch or TotalSegmentator (see src/runner.py).
 """
 
 import gc
@@ -115,8 +118,11 @@ class TotalSegEngine:
             try:
                 # Everything except input/output/ml/device/quiet stays at the
                 # TotalSegmentator default (fast=False, roi_subset=None, ...).
+                # nr_thr_saving only sizes nnU-Net's export pool here (ml=True): one
+                # CT is one export task, so 1 process gives the same file without
+                # spawning 5 more processes that each import torch, at every part.
                 totalsegmentator(input=in_path, output=out_path, ml=True, task=TASK,
-                                 device=self.device, quiet=True)
+                                 device=self.device, quiet=True, nr_thr_saving=1)
             finally:
                 _hook.on_part = None
                 gc.collect()

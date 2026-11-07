@@ -26,4 +26,15 @@ COPY main.py .
 
 EXPOSE 8105
 
+# The server process (main.py) only runs FastAPI. Each job runs TotalSegmentator in a
+# separate worker process (python -m src.worker, from /app), started and watched by
+# src/runner.py. ENGINE_STALL_TIMEOUT / ENGINE_MAX_ATTEMPTS tune the watchdog.
 CMD ["python", "-m", "uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8105"]
+
+# Code-only update (requirements and weights unchanged): add a thin layer on top of the
+# pushed image instead of rebuilding 14 GB, from the repo root:
+#   printf 'FROM hoangtungmvu/totalseg-engine:2.18.0\nCOPY src/ src/\nCOPY main.py .\n' \
+#     | docker build -t hoangtungmvu/totalseg-engine:2.18.0 -f - AI_engines/engine_totalseg
+#   docker tag hoangtungmvu/totalseg-engine:2.18.0 hoangtungmvu/totalseg-engine:latest
+#   docker push hoangtungmvu/totalseg-engine:2.18.0 && docker push hoangtungmvu/totalseg-engine:latest
+# A file deleted from src/ stays in the image that way: rebuild from this Dockerfile then.

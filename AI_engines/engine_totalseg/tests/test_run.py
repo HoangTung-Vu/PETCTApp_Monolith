@@ -9,7 +9,14 @@ Checks that the engine returns the same kind of file as ``TotalSegmentator --ml`
 (the reference ``*_organ.nii.gz``): uint8, on the input CT grid, labels within
 0..117, the same label table in the NIfTI header. Then reports per-label Dice
 against the reference. ``--crop-z N`` sends only the middle N slices (quick smoke test).
-Exit code 1 if any format check fails.
+
+While the job runs, a second connection asks for /health every 0.5 s: the API must
+keep answering (max latency < 3 s, no connection errors). The result is fetched
+twice and must be the same bytes (a client may retry after a dropped connection).
+
+``--expect-error`` (watchdog test, e.g. ENGINE_STALL_TIMEOUT=15 on a CPU): pass if
+the job ends in "error" (its detail is printed); the API checks still apply.
+Exit code 1 if any check fails.
 """
 
 import argparse
@@ -17,6 +24,7 @@ import gzip
 import io
 import re
 import sys
+import threading
 import time
 from pathlib import Path
 
@@ -53,6 +61,44 @@ def dice_per_label(pred: np.ndarray, ref: np.ndarray, n: int) -> dict:
     return out
 
 
+class HealthMonitor(threading.Thread):
+    """Asks for /health every ``interval`` s on its own connection until stopped."""
+
+    def __init__(self, url: str, interval: float = 0.5):
+        super().__init__(daemon=True)
+        self.url, self.interval = url, interval
+        self.latencies, self.errors = [], []
+        self._stop_event = threading.Event()
+
+    def run(self):
+        with httpx.Client(base_url=self.url, timeout=60) as c:
+            while not self._stop_event.is_set():
+                t = time.perf_counter()
+                try:
+                    c.get("/health").raise_for_status()
+                    self.latencies.append(time.perf_counter() - t)
+                except httpx.HTTPError as e:
+                    self.errors.append(f"{time.perf_counter() - t:.1f}s {type(e).__name__}: {e}")
+                self._stop_event.wait(self.interval)
+
+    def stop(self):
+        self._stop_event.set()
+        self.join()
+
+
+def get_with_retry(c: httpx.Client, path: str, errors: list, retry_s: float = 120) -> httpx.Response:
+    """GET, retrying dropped connections for ``retry_s`` (like the app); errors are recorded."""
+    t0 = time.time()
+    while True:
+        try:
+            return c.get(path)
+        except httpx.TransportError as e:
+            errors.append(f"GET {path}: {type(e).__name__}: {e}")
+            if time.time() - t0 > retry_s:
+                raise
+            time.sleep(2)
+
+
 def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("--url", default="http://localhost:8105")
@@ -60,6 +106,8 @@ def main() -> int:
     ap.add_argument("--ref", required=True, type=Path, help="reference TotalSegmentator --ml output")
     ap.add_argument("--out", required=True, type=Path)
     ap.add_argument("--crop-z", type=int, default=0, help="only send the middle N slices")
+    ap.add_argument("--expect-error", action="store_true",
+                    help="the job must fail (watchdog test); skip the mask checks")
     a = ap.parse_args()
 
     # Never overwrite an existing file (in particular the CT or the reference mask).
@@ -84,32 +132,60 @@ def main() -> int:
         payload = a.ct.read_bytes()  # stream the file as-is, like the app does
     print(f"CT {ct.shape} {len(payload) / 1e6:.1f} MB -> {a.url}")
 
+    poll_errors = []
     with httpx.Client(base_url=a.url, timeout=600) as c:
         print("info:", c.get("/health").json(), c.get("/models").json())
         labels = {int(k): v for k, v in c.get("/total/labels").json().items()}
 
+        health = HealthMonitor(a.url)
+        health.start()
         t0 = time.time()
         r = c.post("/total/jobs", files={"files": ("image_0.nii.gz", payload, "application/octet-stream")})
         r.raise_for_status()
         job = r.json()["job_id"]
-        last, parts = None, set()
+        last, parts, stages = None, set(), []
         while True:
-            st = c.get(f"/total/jobs/{job}/progress").json()
+            st = get_with_retry(c, f"/total/jobs/{job}/progress", poll_errors).json()
             if st.get("part"):
                 parts.add(st["part"])
-            key = (st["status"], st["stage"], st["progress"], st.get("part"))
+            if not stages or stages[-1] != st["stage"]:
+                stages.append(st["stage"])
+            key = (st["status"], st["stage"], st["progress"], st.get("part"), st.get("detail"))
             if key != last:
                 print(f"  {time.time() - t0:7.1f}s  {st}")
                 last = key
             if st["status"] in ("done", "error"):
                 break
             time.sleep(2)
-        if st["status"] == "error":
-            print("JOB ERROR:", st["detail"])
-            return 1
-        res = c.get(f"/total/jobs/{job}/result")
-        res.raise_for_status()
-        print(f"done in {time.time() - t0:.0f}s, {len(res.content) / 1e3:.0f} KB")
+        elapsed = time.time() - t0
+        res = [get_with_retry(c, f"/total/jobs/{job}/result", poll_errors) for _ in range(2)]
+        health.stop()
+
+    lat = np.array(health.latencies) if health.latencies else np.array([np.nan])
+    print(f"API during the job: {len(health.latencies)} /health answers, latency median "
+          f"{np.median(lat) * 1e3:.0f} ms, max {lat.max():.2f} s; {len(health.errors)} health "
+          f"error(s), {len(poll_errors)} progress/result connection error(s)")
+    for e in (health.errors + poll_errors)[:10]:
+        print("   ", e)
+    print("API checks:")
+    check(lat.max() < 3, f"/health max latency < 3 s (got {lat.max():.2f} s)")
+    check(not health.errors and not poll_errors, "no connection errors during the job")
+    check(res[0].status_code == res[1].status_code and res[0].content == res[1].content,
+          f"result GET is repeatable (status {res[0].status_code}, {res[1].status_code})")
+
+    if a.expect_error:
+        print(f"job ended '{st['status']}' after {elapsed:.0f}s, stages {stages}")
+        print("  detail:", st.get("detail"))
+        check(st["status"] == "error", "job failed as expected")
+        check(res[0].status_code == 500, f"result is 500 for a failed job (got {res[0].status_code})")
+        print("RESULT:", "OK" if not failures else f"{len(failures)} check(s) failed")
+        return 1 if failures else 0
+    if st["status"] == "error":
+        print("JOB ERROR:", st["detail"])
+        return 1
+    res = res[0]
+    res.raise_for_status()
+    print(f"done in {elapsed:.0f}s, {len(res.content) / 1e3:.0f} KB, stages {stages}")
 
     a.out.parent.mkdir(parents=True, exist_ok=True)
     a.out.write_bytes(res.content)
