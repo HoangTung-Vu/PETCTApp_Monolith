@@ -39,8 +39,9 @@ Key features:
 The application is structured as a monolith with two main components:
 
 1.  **GUI Application (Host):** The frontend desktop app handles user interaction, rendering, and logic synchronization.
-2.  **AI Engine (Docker):** The nnU-Net engine runs in an isolated Docker container to avoid dependency conflicts (PyTorch, CUDA).
-    *   `engine_nnunet_old_ver`: Tumor segmentation with patch-level inference progress streaming.
+2.  **AI Engines (Docker):** Each engine runs in an isolated Docker container to avoid dependency conflicts (PyTorch, CUDA).
+    *   `engine_nnunet_old_ver`: Tumor segmentation with patch-level inference progress streaming (port 8104).
+    *   `engine_totalseg`: TotalSegmentator task `total` at default settings — 117 organ labels on the CT grid (port 8105). Image: `hoangtungmvu/totalseg-engine:2.18.0`, weights included.
 3.  **Communication:** The GUI sends NIfTI volumes over HTTP and receives binary masks from the engine. A `/progress` endpoint streams per-patch inference progress to the GUI in real time.
 
 ---
@@ -106,19 +107,40 @@ After applying the patch, rebuild the Docker image: `./start.sh` will detect the
 
 1. Download `MetLePET-Setup-<version>.exe` from the [Releases](https://github.com/HoangTung-Vu/PETCTApp_Monolith/releases) page and run it. It installs for the current user without admin rights; Windows SmartScreen may warn because the installer is unsigned. Click **More info → Run anyway**.
 2. On first launch, choose the **data folder** where the session database (`petct.db`) is kept. The default is `%LOCALAPPDATA%\MetLePET`. Pick a local disk, not a network share or a OneDrive folder. To move it later, use **Workflow tab → Data Folder → Change…**, which can copy the existing database across.
-3. In **Workflow tab → AI Engine**, enter the IP and port of the machine running the nnU-Net engine (`localhost` / `8104` if it runs on the same PC; see below for starting it).
+3. In **Workflow tab → AI Engine**, enter the IP and port of the machine running the engine (`localhost` if it runs on the same PC; see below for starting it) and pick the **Model** (see [AI models and result files](#ai-models-and-result-files)).
 
 Uninstalling or upgrading never deletes the data folder. Logs are written to `%LOCALAPPDATA%\MetLePET\logs\app.log`.
 
-### Building a release
-
-The installer is built by GitHub Actions (`.github/workflows/build-windows.yml`) on a Windows runner:
+## Install on Ubuntu (22.04 or newer, x86_64)
 
 ```bash
-git tag v1.0.0 && git push origin v1.0.0   # builds and publishes a Release with the installer
+sudo apt install ./metlepet_<version>_amd64.deb   # from the Releases page; pulls in the Qt/OpenGL system libraries
+metlepet                                           # or open MetLePET from the applications menu
 ```
 
-**Actions → Build Windows installer → Run workflow** builds a test installer (downloadable from the run's artifacts) without publishing. To build on a Windows machine yourself: `pwsh packaging/build_windows.ps1 -Version 1.0.0` (needs `uv`; installs Inno Setup through Chocolatey if missing).
+The app is installed to `/opt/MetLePET`. The data folder defaults to `~/.local/share/MetLePET`, logs go to `~/.local/share/MetLePET/logs/app.log`. Remove with `sudo apt remove metlepet` (the data folder is kept).
+
+## AI models and result files
+
+**Workflow tab → AI Engine → Model** chooses what **Run Segmentation** calls:
+
+| Model | Sends | Result file (next to the CT) |
+|---|---|---|
+| nnU-Net tumor (custom), port 8104 | CT + PET | `<CT>_Segmentation_<model>.nii.gz` — becomes the session's lesion segmentation |
+| TotalSegmentator (organs), port 8105 | CT | `<CT>_organ.nii.gz` — organ labels, display only |
+| Other… | CT + PET | `<CT>_Segmentation_<typed name>.nii.gz` |
+
+Picking a preset fills in that engine's default port. Running a model overwrites its own result file. When `<CT>_organ.nii.gz` exists, the app shows it automatically as the **Organ Mask** layer (View tab → Zoom & Mask: show/hide, opacity); it is never edited and does not change the lesion values. Any other segmentation is opened with **Load Segmentation** and becomes the session's lesion segmentation.
+
+### Building a release
+
+GitHub Actions (`.github/workflows/build-installers.yml`) builds the Windows installer on a Windows runner and the `.deb` on Ubuntu 22.04, then publishes both in one Release:
+
+```bash
+git tag v1.0.0 && git push origin v1.0.0   # builds and publishes a Release with the .exe and the .deb
+```
+
+**Actions → Build installers → Run workflow** builds test packages (downloadable from the run's artifacts) without publishing. To build yourself: `pwsh packaging/build_windows.ps1 -Version 1.0.0` on Windows (needs `uv`; installs Inno Setup through Chocolatey if missing), or `bash packaging/build_linux.sh 1.0.0` on Ubuntu (needs `uv` and `dpkg-deb`).
 
 ---
 
@@ -152,12 +174,13 @@ The script will automatically:
 PETCTApp_Monolith/
 ├── src/                          # Main PyQt app (GUI, core logic, database)
 ├── AI_engines/
-│   └── engine_nnunet_old_ver/    # Dockerized nnU-Net backend (FastAPI, port 8104)
-│       ├── weights/              # Model weights (not tracked in git — see above)
-│       ├── src/                  # Engine source code
-│       ├── main.py               # FastAPI app
-│       └── Dockerfile
-├── packaging/                    # Windows installer: PyInstaller spec, Inno Setup script, build script
+│   ├── engine_nnunet_old_ver/    # Dockerized nnU-Net backend (FastAPI, port 8104)
+│   │   ├── weights/              # Model weights (not tracked in git — see above)
+│   │   ├── src/                  # Engine source code
+│   │   ├── main.py               # FastAPI app
+│   │   └── Dockerfile
+│   └── engine_totalseg/          # Dockerized TotalSegmentator backend (FastAPI, port 8105)
+├── packaging/                    # Installers: PyInstaller spec, Inno Setup script, Windows + Linux build scripts
 ├── storage/                      # Default data folder when run from source (petct.db)
 ├── tests/                        # Test suite
 ├── start.sh / start.bat          # Launchers (build Docker + run GUI)

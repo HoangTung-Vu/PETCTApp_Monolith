@@ -1,0 +1,97 @@
+name: Build installers
+
+# Push a tag like v1.0.0 to build the Windows installer and the Ubuntu .deb and
+# publish both in one GitHub Release. "Run workflow" on the Actions tab builds
+# test packages (downloadable from the run's artifacts) without releasing anything.
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Pick version
+        id: ver
+        shell: pwsh
+        run: |
+          if ("${{ github.ref_type }}" -eq "tag") {
+            $v = "${{ github.ref_name }}".TrimStart("v")
+          } else {
+            $v = "0.0.0-dev.${{ github.run_number }}"
+          }
+          "version=$v" >> $env:GITHUB_OUTPUT
+
+      - name: Build installer
+        shell: pwsh
+        run: ./packaging/build_windows.ps1 -Version "${{ steps.ver.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MetLePET-Setup-${{ steps.ver.outputs.version }}
+          path: dist/installer/*.exe
+          if-no-files-found: error
+
+  build-linux:
+    # Oldest supported Ubuntu runner: a bundle built against its glibc (2.35)
+    # also runs on newer Ubuntu releases.
+    runs-on: ubuntu-22.04
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: astral-sh/setup-uv@v6
+        with:
+          enable-cache: true
+
+      - name: Pick version
+        id: ver
+        run: |
+          if [ "${{ github.ref_type }}" = "tag" ]; then
+            v="${GITHUB_REF_NAME#v}"
+          else
+            v="0.0.0-dev.${{ github.run_number }}"
+          fi
+          echo "version=$v" >> "$GITHUB_OUTPUT"
+
+      - name: Install system libraries (the .deb's Depends, for the self-check)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            libgl1 libegl1 libopengl0 libdrm2 libxcb1 \
+            libwayland-client0 libwayland-cursor0 libwayland-egl1
+
+      - name: Build .deb
+        run: bash packaging/build_linux.sh "${{ steps.ver.outputs.version }}"
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: MetLePET-deb-${{ steps.ver.outputs.version }}
+          path: dist/installer/*.deb
+          if-no-files-found: error
+
+  release:
+    if: github.ref_type == 'tag'
+    needs: [build-windows, build-linux]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Publish release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            dist/*.exe
+            dist/*.deb
