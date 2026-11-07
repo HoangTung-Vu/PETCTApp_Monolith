@@ -1,4 +1,5 @@
 import secrets
+import time
 from pathlib import Path
 
 import httpx
@@ -9,6 +10,12 @@ from .core import HTTP_TIMEOUT, _inference_lock, get_engine_model, get_engine_ur
 
 # How often to poll the server for job progress (ms).
 _POLL_INTERVAL_MS = 750
+# A GET that fails at the connection level (reset, dropped, timed out) is retried
+# for up to this long before the run is abandoned. The job keeps running on the
+# server meanwhile: a busy engine (TotalSegmentator between part models) can stop
+# answering for ~20 s and reset kept-alive connections.
+_RETRY_WINDOW_S = 120
+_RETRY_DELAY_MS = 2000
 # Upload chunk size — smaller = smoother upload %, more signal emissions.
 _UPLOAD_CHUNK = 1 << 20  # 1 MiB
 
@@ -92,6 +99,22 @@ class SegmentationWorker(QThread):
         self.model = model or get_engine_model()
         self.kind = kind
 
+    def _get(self, client, url):
+        """GET ``url``, retrying connection-level failures for ``_RETRY_WINDOW_S``.
+
+        Only GETs are retried: re-sending the upload POST would queue a second job.
+        After a failed request httpx drops that connection, so a retry opens a new one.
+        """
+        deadline = time.monotonic() + _RETRY_WINDOW_S
+        while True:
+            try:
+                return client.get(url)
+            except httpx.TransportError as e:
+                if time.monotonic() >= deadline:
+                    raise
+                print(f"[SegmentationWorker] {url}: {type(e).__name__}: {e} — retrying")
+                self.msleep(_RETRY_DELAY_MS)
+
     def run(self):
         try:
             with _inference_lock:
@@ -145,7 +168,7 @@ class SegmentationWorker(QThread):
 
                     # 2. Poll progress until the job is done or errors out.
                     while True:
-                        pr = client.get(f"{engine_url}/jobs/{job_id}/progress")
+                        pr = self._get(client, f"{engine_url}/jobs/{job_id}/progress")
                         pr.raise_for_status()
                         state = pr.json()
                         status = state.get("status")
@@ -159,7 +182,7 @@ class SegmentationWorker(QThread):
                         self.msleep(_POLL_INTERVAL_MS)
 
                     # 3. Download the finished mask.
-                    res = client.get(f"{engine_url}/jobs/{job_id}/result")
+                    res = self._get(client, f"{engine_url}/jobs/{job_id}/result")
                     res.raise_for_status()
                     mask_nib = bytes_to_nifti(res.content)
                     self.finished.emit((mask_nib, self.model, self.kind))
