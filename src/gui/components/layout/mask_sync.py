@@ -109,10 +109,11 @@ class MaskSyncMixin:
         stroke's history atoms; erase strokes (new value 0) never ask. Binary
         masks hold only id 1, so this only matters for labelled masks.
         """
-        if not getattr(self, "_tumor_labeled", False):
-            return
         atoms = list(event.value or [])
         if not atoms:
+            return
+        self._record_tumor_stroke(event.source, atoms)      # Undo / island erase
+        if not getattr(self, "_tumor_labeled", False):
             return
         new_value = int(np.asarray(atoms[0][2]).flat[0])
         if new_value == 0:

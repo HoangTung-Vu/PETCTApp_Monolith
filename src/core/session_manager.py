@@ -116,7 +116,7 @@ class SessionManager:
         # True when the in-memory tumor mask differs from what's on disk.
         # Cleared on fresh load_session/create_session/update_current_session
         # (tumor file path), and on successful save_session.
-        # Set by set_tumor_mask, the eraser, and by viewer paint events via
+        # Set by set_tumor_mask, and by viewer paint / island-erase events via
         # MainWindow's sig_mask_modified handler.
         self.tumor_dirty: bool = False
 

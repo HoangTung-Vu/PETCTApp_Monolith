@@ -264,7 +264,6 @@ class RefinementHandlerMixin:
         for tab in [
             self.control_panel.refine_tab,
             self.control_panel.workflow_tab,
-            self.control_panel.eraser_tab
         ]:
             tab.setEnabled(False)
 
@@ -381,7 +380,6 @@ class RefinementHandlerMixin:
         for tab in [
             self.control_panel.refine_tab,
             self.control_panel.workflow_tab,
-            self.control_panel.eraser_tab
         ]:
             tab.setEnabled(True)
 
@@ -447,7 +445,6 @@ class RefinementHandlerMixin:
         for tab in [
             self.control_panel.refine_tab,
             self.control_panel.workflow_tab,
-            self.control_panel.eraser_tab
         ]:
             tab.setEnabled(True)
         self._current_preview_dialog = None

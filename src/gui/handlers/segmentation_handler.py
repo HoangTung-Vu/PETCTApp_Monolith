@@ -52,8 +52,8 @@ class SegmentationHandlerMixin:
         self.worker.finished.connect(self._on_segmentation_finished)
         self.worker.error.connect(self._on_segmentation_error)
 
-        # Lock only the Segmentation (Refine) + Eraser tabs; all viewing stays open.
-        self._lock_seg_eraser_tabs(True)
+        # Lock only the Segmentation tab; all viewing stays open.
+        self._lock_seg_tab(True)
         self.control_panel.workflow_tab.btn_segment.setEnabled(False)
         self._seg_progress_dialog.show()
         self.worker.start()
@@ -96,7 +96,7 @@ class SegmentationHandlerMixin:
         print(f"Segmentation {kind} ({model}) finished.")
 
         self._close_seg_progress_dialog()
-        self._lock_seg_eraser_tabs(False)
+        self._lock_seg_tab(False)
         self.control_panel.workflow_tab.btn_segment.setEnabled(True)
 
     def _on_organ_saved(self, path: str):
@@ -118,7 +118,7 @@ class SegmentationHandlerMixin:
 
     def _on_segmentation_error(self, error_msg):
         self._close_seg_progress_dialog()
-        self._lock_seg_eraser_tabs(False)
+        self._lock_seg_tab(False)
         self.control_panel.workflow_tab.btn_segment.setEnabled(True)
         print(f"Segmentation Error: {error_msg}")
         QMessageBox.critical(self, "Segmentation Failed", error_msg)

@@ -2,7 +2,7 @@
 
 Runs a real ``MainWindow`` (needs a display) against a throw-away SQLite DB and
 times the interactions reported as slow: session load / switch, slice
-scrolling, crosshair moves, brush painting, eraser + undo, threshold-preview
+scrolling, crosshair moves, brush painting, island erase + undo, threshold-preview
 slider ticks and confirm-and-save — plus the lesion quantification paths
 (values after load / save, double-click info box toggle, report export). With ``--with-3d`` the edit paths are timed
 a second time after the 3D view has been opened once.
@@ -150,7 +150,7 @@ CHECK_FAILURES = []
 
 def lesion_id_paths(b, win, shape):
     """v1.3.0: Give lesion ids, the "same lesion?" prompt (no / yes), ROI merge
-    into a selected id, eraser undo of an id, and the organ layer shown after
+    into a selected id, island erase + undo of an id, and the organ layer shown after
     the tumor layer exists (the post-TotalSegmentator "Not Responding" hang)."""
     from src.core.lesion_labels import has_lesion_ids_marker
 
@@ -169,12 +169,19 @@ def lesion_id_paths(b, win, shape):
           "binary mask: Give lesion ids enabled, single toggle")
     binary = [(l["id"], l["bbox"]) for l in sm.lesion_stats["lesions"]]
 
-    # ── 10. Give lesion ids (relabel + save int16 + recompute) ──
+    # ── 10. "+ Another" on a binary mask → Give lesion ids, then a new id ──
+    import src.gui.handlers.lesion_label_handler as llh
+    from PyQt6.QtWidgets import QMessageBox
+    asked_give = []
+    llh.QMessageBox.question = staticmethod(
+        lambda *a, **k: asked_give.append(a[1]) or QMessageBox.StandardButton.Yes)
     t0 = b.start("give_lesion_ids")
-    win._on_give_lesion_ids()
-    b.wait(lambda: not win._give_ids_worker.isRunning())
+    rt._another_btn.click()
+    b.wait(lambda: getattr(win, "_give_ids_worker", None) is not None
+           and not win._give_ids_worker.isRunning())
     b.pump(100)
     b.record("give_lesion_ids", time.perf_counter() - t0)
+    check(asked_give == ["New lesion id"], "binary + Another asked to give ids first")
     labelled = [(l["id"], l["bbox"]) for l in sm.lesion_stats["lesions"]]
     check(sm.tumor_labeled and sm.lesion_stats["labeled"] and labelled == binary,
           f"Give ids = the binary report's ids and lesions ({len(labelled)})")
@@ -182,8 +189,9 @@ def lesion_id_paths(b, win, shape):
     saved = nib.load(seg_path)
     check(saved.get_data_dtype() == np.int16 and has_lesion_ids_marker(saved.header),
           "saved as int16 with the lesion-id marker")
-    check(sorted(rt._label_buttons) == [i for i, _ in labelled] and rt._another_btn is not None,
-          "one toggle per id + Another")
+    n_ids = len(labelled)
+    check(sorted(rt._label_buttons) == list(range(1, n_ids + 2)) and rt.selected_label() == n_ids + 1,
+          f"one toggle per id + the new id {n_ids + 1}, selected")
 
     # ── 11. Brush of lesion 1 over lesion 2 → "same lesion?" ──
     answers = {"merge": False, "asked": []}
@@ -195,7 +203,7 @@ def lesion_id_paths(b, win, shape):
 
     les = {l["id"]: l for l in sm.lesion_stats["lesions"]}
     target = to_nap(les[2]["suvmax_voxel"])
-    rt._select_label(1, False)
+    rt._select_label(1)
     win._on_manual_edit_tool("paint")
     vw = lm._fixed_view_map["axial_ct"]
     layer = vw.viewer.layers[vw.LAYER_NAMES["tumor"]]
@@ -226,10 +234,15 @@ def lesion_id_paths(b, win, shape):
     check(2 not in ids_after and 1 in ids_after and len(ids_after) == len(labelled) - 1,
           f"merged lesion is one lesion in the values ({ids_after})")
 
-    # ── 12. ROI thresholded into "Another" (new id), lesion under it kept ──
+    # ── 12. ROI thresholded into a new id from "+ Another", lesion under it kept ──
+    check(n_ids + 1 not in rt._label_buttons, "an id never drawn is dropped at the next save")
     rt._another_btn.click()
     new_id = rt.selected_label()
-    check(new_id == max(ids_after) + 1, f"Another = new id {new_id}")
+    rt._another_btn.click()
+    check(new_id == max(ids_after) + 1 and rt.selected_label() == new_id + 1
+          and {new_id, new_id + 1} <= set(rt._label_buttons),
+          f"each + Another creates a new id ({new_id}, {new_id + 1})")
+    rt._label_buttons[new_id].click()
     les3 = to_nap(les[3]["suvmax_voxel"])
     roi_zyx = lm.get_active_mask_data_zyx("roi")
     r = _LESION_R + 4
@@ -248,21 +261,27 @@ def lesion_id_paths(b, win, shape):
           "ROI filled background as the new id, lesion 3 kept")
     check(new_id in [l["id"] for l in sm.lesion_stats["lesions"]], "new id in the values")
 
-    # ── 13. Eraser + undo restores the lesion's own id ──
-    win.control_panel.tabs.setCurrentIndex(win._TAB_ERASER)
+    # ── 13. Island erase removes only the selected lesion; Undo restores its id ──
+    win.control_panel.tabs.setCurrentIndex(win._TAB_REFINE)
     b.pump(200)
-    win.control_panel.eraser_tab.btn_eraser_toggle.setChecked(True)
-    b.pump(100)
+    rt.btn_manual_erase.click()
+    rt._label_buttons[1].click()
+    b.pump(50)
     scale = vw._scale_zyx
-    before = len(win._eraser_undo_stack)
-    vw._eraser_callback(vw.viewer, FakeMouseEvent(tuple(c * s for c, s in zip(les3, scale))))
-    b.wait(lambda: len(win._eraser_undo_stack) > before)
+    pos3 = tuple(c * s_ for c, s_ in zip(les3, scale))
+    vw._lesion_dblclick_cb(vw.viewer, FakeMouseEvent(pos3))
+    b.pump(100)
+    check(zyx[les3] == 3 and "lesion 3" in rt.lbl_manual_hint.text(),
+          "double-click on lesion 3 while lesion 1 is selected erases nothing")
+    rt._label_buttons[3].click()
+    vw._lesion_dblclick_cb(vw.viewer, FakeMouseEvent(pos3))
+    b.wait(lambda: zyx[les3] == 0)
     b.pump()
-    check(zyx[les3] == 0, "eraser removed lesion 3")
-    win._on_eraser_undo()
+    check((zyx == new_id).any(), "island erase of lesion 3 left the new lesion next to it")
+    rt.btn_manual_undo.click()
     b.pump()
-    check(zyx[les3] == 3, "eraser undo put id 3 back (not 1)")
-    win.control_panel.eraser_tab.btn_eraser_toggle.setChecked(False)
+    check(zyx[les3] == 3, "Undo put id 3 back (not 1)")
+    rt.btn_manual_pan.click()
     win.control_panel.tabs.setCurrentIndex(win._TAB_WORKFLOW)
     b.pump(200)
 
@@ -456,45 +475,51 @@ def run(args):
               f"({len(sm.lesion_stats['lesions'])} lesions)")
         check(len(lm._shown_lesion_keys) == 1, "lesion box survives the recompute")
 
-        # ── 8. Eraser double-click on a lesion, then undo ──
-        win.control_panel.tabs.setCurrentIndex(win._TAB_ERASER)
-        b.pump(200)
-        win.control_panel.eraser_tab.btn_eraser_toggle.setChecked(True)
+        # ── 8. Island erase: Erase tool + double-click on a lesion, then Undo ──
+        rt = win.control_panel.refine_tab
+        rt.btn_manual_erase.click()
         b.pump(100)
         ex, ey, ez = lesion_centres(shape)[0]
+        voxel = (Zn - 1 - ez, Yn - 1 - ey, ex)
         scale = vw._scale_zyx
-        pos = ((Zn - 1 - ez) * scale[0], (Yn - 1 - ey) * scale[1], ex * scale[2])
-        before = len(win._eraser_undo_stack)
+        pos = tuple(c * s_ for c, s_ in zip(voxel, scale))
+        zyx = lm.get_active_mask_data_zyx("tumor")
         shown_before = list(lm._shown_lesion_keys)
-        win._on_lesion_double_clicked([Zn - 1 - ez, Yn - 1 - ey, ex])
-        check(lm._shown_lesion_keys == shown_before, "eraser-mode double-click doesn't toggle boxes")
-        t0 = b.start(f"eraser_click{suffix}")
-        vw._eraser_callback(vw.viewer, FakeMouseEvent(pos))
-        b.wait(lambda: len(win._eraser_undo_stack) > before)
+        t0 = b.start(f"island_erase{suffix}")
+        vw._lesion_dblclick_cb(vw.viewer, FakeMouseEvent(pos))
+        b.wait(lambda: zyx[voxel] == 0)
         b.pump()
-        b.record(f"eraser_click{suffix}", time.perf_counter() - t0)
+        b.record(f"island_erase{suffix}", time.perf_counter() - t0)
+        check(lm._shown_lesion_keys == shown_before, "erase-mode double-click doesn't toggle boxes")
+        check(sm.lesion_stats_stale, "island erase marks lesion values stale")
 
-        t0 = b.start(f"eraser_undo{suffix}")
-        win._on_eraser_undo()
+        t0 = b.start(f"manual_undo{suffix}")
+        rt.btn_manual_undo.click()
         b.pump()
-        b.record(f"eraser_undo{suffix}", time.perf_counter() - t0)
+        b.record(f"manual_undo{suffix}", time.perf_counter() - t0)
+        check(zyx[voxel] == 1, "Undo restored the island")
 
-        # Erase again and save from the Eraser tab → values recomputed.
-        before = len(win._eraser_undo_stack)
-        vw._eraser_callback(vw.viewer, FakeMouseEvent(pos))
-        b.wait(lambda: len(win._eraser_undo_stack) > before)
+        # Erase again and save with the red button → values recomputed.
+        vw._lesion_dblclick_cb(vw.viewer, FakeMouseEvent(pos))
+        b.wait(lambda: zyx[voxel] == 0)
+        b.pump()
+        erased_atoms = lm._last_tumor_stroke[2]      # to put lesion 0 back after the save
         n_before = len(sm.lesion_stats["lesions"])
-        t0 = b.start(f"eraser_save_recompute{suffix}")
-        win.save_session()
-        b.wait(lambda: not win.save_worker.isRunning())
+        t0 = b.start(f"island_erase_save_recompute{suffix}")
+        win._on_confirm_and_save()
+        b.wait(lambda: not win._merge_save_worker.isRunning())
         b.pump(50)
-        b.record(f"eraser_save_recompute{suffix}", time.perf_counter() - t0)
+        b.record(f"island_erase_save_recompute{suffix}", time.perf_counter() - t0)
         check(len(sm.lesion_stats["lesions"]) == n_before - 1 and not sm.lesion_stats_stale,
-              "eraser save recomputed the values (one lesion fewer)")
-        win._on_eraser_undo()                         # restore lesion 0 for later passes
-        win.save_session()
-        b.wait(lambda: not win.save_worker.isRunning())
-        win.control_panel.eraser_tab.btn_eraser_toggle.setChecked(False)
+              "island erase + save recomputed the values (one lesion fewer)")
+        zyx = lm.get_active_mask_data_zyx("tumor")
+        for idx, old_vals, _ in erased_atoms:         # put lesion 0 back for later passes
+            zyx[idx] = old_vals
+        lm.refresh_mask("tumor")
+        sm.tumor_dirty = True
+        win._on_confirm_and_save()
+        b.wait(lambda: not win._merge_save_worker.isRunning())
+        rt.btn_manual_pan.click()
         win.control_panel.tabs.setCurrentIndex(win._TAB_WORKFLOW)
         b.pump(200)
 

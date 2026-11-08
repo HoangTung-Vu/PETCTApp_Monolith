@@ -11,13 +11,12 @@ from PyQt6.QtCore import pyqtSignal
 from .tabs.workflow_tab import WorkflowTab
 from .tabs.view_display_tab import ViewDisplayTab
 from .tabs.refine_tab import RefineTab
-from .tabs.eraser_tab import EraserTab
 from .tabs.ruler_tab import RulerTab
 from .tabs.logs_tab import LogsTab
 
 
 class ControlPanel(QWidget):
-    """Control Panel with Workflow, View & Display, Refine, and Eraser tabs."""
+    """Control Panel with Workflow, View & Display, Segmentation, Ruler and Logs tabs."""
 
     # ── Re-exported Signals (flat surface for MainWindow) ──
 
@@ -58,6 +57,8 @@ class ControlPanel(QWidget):
     # Refine — Lesion label
     sig_label_selected = pyqtSignal(int)
     sig_give_ids_clicked = pyqtSignal()
+    sig_another_clicked = pyqtSignal()
+    sig_manual_undo_clicked = pyqtSignal()
 
     # Refine — Manual Edit (tumor mask)
     sig_manual_edit_tool = pyqtSignal(str)
@@ -72,10 +73,6 @@ class ControlPanel(QWidget):
     sig_confirm_roi_clicked = pyqtSignal()
     sig_save_refine_clicked = pyqtSignal()
 
-    # Eraser
-    sig_eraser_mode_toggled = pyqtSignal(bool)
-    sig_eraser_undo_clicked = pyqtSignal()
-    sig_eraser_save_clicked = pyqtSignal()
 
     # Ruler
     sig_ruler_toggled = pyqtSignal(bool)
@@ -93,14 +90,12 @@ class ControlPanel(QWidget):
         self.workflow_tab = WorkflowTab()
         self.view_display_tab = ViewDisplayTab()
         self.refine_tab = RefineTab()
-        self.eraser_tab = EraserTab()
         self.ruler_tab = RulerTab()
         self.logs_tab = LogsTab()
 
         self.tabs.addTab(self.workflow_tab, "Workflow")
         self.tabs.addTab(self.view_display_tab, "View & Display")
         self.tabs.addTab(self.refine_tab, "Segmentation")
-        self.tabs.addTab(self.eraser_tab, "Eraser")
         self.tabs.addTab(self.ruler_tab, "Ruler")
         self.tabs.addTab(self.logs_tab, "Logs")
 
@@ -157,6 +152,8 @@ class ControlPanel(QWidget):
         r = self.refine_tab
         r.sig_label_selected.connect(self.sig_label_selected)
         r.sig_give_ids_clicked.connect(self.sig_give_ids_clicked)
+        r.sig_another_clicked.connect(self.sig_another_clicked)
+        r.sig_manual_undo_clicked.connect(self.sig_manual_undo_clicked)
         r.sig_manual_edit_tool.connect(self.sig_manual_edit_tool)
         r.sig_manual_edit_brush_changed.connect(self.sig_manual_edit_brush_changed)
 
@@ -169,11 +166,6 @@ class ControlPanel(QWidget):
         r.sig_confirm_roi_clicked.connect(self.sig_confirm_roi_clicked)
         r.sig_save_refine_clicked.connect(self.sig_save_refine_clicked)
 
-        # Eraser
-        e = self.eraser_tab
-        e.sig_eraser_mode_toggled.connect(self.sig_eraser_mode_toggled)
-        e.sig_eraser_undo_clicked.connect(self.sig_eraser_undo_clicked)
-        e.sig_eraser_save_clicked.connect(self.sig_eraser_save_clicked)
 
         # Ruler
         ru = self.ruler_tab
@@ -195,10 +187,6 @@ class ControlPanel(QWidget):
     @property
     def btn_pan(self):
         return self.refine_tab.btn_pan
-
-    @property
-    def btn_eraser_toggle(self):
-        return self.eraser_tab.btn_eraser_toggle
 
     def set_ruler_distance(self, payload):
         """Update the Ruler tab readout.
@@ -251,17 +239,13 @@ class ControlPanel(QWidget):
 
     def _on_tab_changed(self, index: int):
         """Reset mouse tool to pan/zoom on EVERY tab switch (except View & Display).
-        Also disable eraser mode when leaving their tabs."""
+        Also turn the ruler off when leaving its tab."""
         # Always reset tool to pan/zoom (except View & Display tab)
         if index != self._view_display_tab_index:
             self.refine_tab.btn_pan.setChecked(True)
             self.sig_set_tool.emit("pan_zoom")
             # Also reset manual edit tools
             self.refine_tab.reset_manual_edit()
-
-        # Always disable eraser if it was enabled
-        if self.eraser_tab.btn_eraser_toggle.isChecked():
-            self.eraser_tab.btn_eraser_toggle.setChecked(False)
 
         # Always disable ruler if it was enabled (auto-off on leaving the tab)
         if self.ruler_tab.btn_ruler_toggle.isChecked():

@@ -6,7 +6,7 @@ and this widget redraws the current slice from ``layer.data`` whenever the
 layer reports a change:
 
 * ``events.set_data``      — slice change and every ``refresh()`` (view sync,
-  eraser, load, confirm & save)
+  island erase, load, confirm & save)
 * ``events.labels_update`` — each mouse move of a brush / fill stroke
 * ``events.paint``         — end of a stroke, undo / redo
 

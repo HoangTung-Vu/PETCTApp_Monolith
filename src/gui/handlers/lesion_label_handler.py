@@ -1,9 +1,11 @@
 """Lesion label handler mixin for MainWindow — the Segmentation tab's
-"Lesion Label" section, "Give lesion ids", and the "same lesion?" prompt.
+"Lesion Label" section ("+ Another", "Give lesion ids"), the "same lesion?"
+prompt and the manual-edit Undo.
 
 The selected id rules the whole Segmentation tab: the brush paints it, the
-erase brush removes only it, ROI thresholding merges into it and the
-iterative threshold treats the other ids as background.
+erase brush (and a double-click island erase) removes only it, ROI
+thresholding merges into it and the iterative threshold treats the other ids
+as background.
 """
 
 from PyQt6.QtCore import QTimer
@@ -16,6 +18,10 @@ class LesionLabelHandlerMixin:
 
     def _init_lesion_label_state(self):
         self._tumor_label = 1
+        # Ids made with "+ Another" that are not in the saved mask yet. Kept in
+        # the toggles until the next load / save shows what was really drawn.
+        self._pending_label_ids = set()
+        self._another_after_give_ids = False
 
     def _active_tumor_label(self) -> int:
         """Lesion id the tools write: the selected one; always 1 on a binary mask."""
@@ -23,14 +29,55 @@ class LesionLabelHandlerMixin:
 
     # ── Selector ──
 
-    def _refresh_label_selector(self):
-        """Rebuild the toggles from the session's ids (after load / save / merge)."""
+    def _refresh_label_selector(self, fresh: bool = False):
+        """Rebuild the toggles from the session's ids.
+
+        ``fresh``: the ids were just read from the mask (load / save / Give
+        ids), so new ids that were never drawn are dropped.
+        """
         sm = self.session_manager
+        if fresh or not sm.tumor_labeled:
+            self._pending_label_ids.clear()
         self.layout_manager.set_tumor_labeled(sm.tumor_labeled)
         self.control_panel.refine_tab.set_label_choices(
             sm.tumor_label_ids, sm.tumor_labeled, self._tumor_label,
-            has_mask=sm.tumor_mask is not None,
+            has_mask=sm.tumor_mask is not None, pending=self._pending_label_ids,
         )
+
+    def _on_another_clicked(self):
+        """"+ Another": create the next free lesion id and select it."""
+        sm = self.session_manager
+        if sm.tumor_mask is None:
+            return
+        if not sm.tumor_labeled:
+            if sm.tumor_label_ids:
+                reply = QMessageBox.question(
+                    self, "New lesion id",
+                    "This mask is binary: every lesion is id 1.\n\n"
+                    "Give lesion ids first (each lesion gets its own id, the file is "
+                    "saved), then create the new id?",
+                    QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                    QMessageBox.StandardButton.Yes,
+                )
+                if reply == QMessageBox.StandardButton.Yes:
+                    self._another_after_give_ids = True
+                    self._on_give_lesion_ids(confirm=False)
+                return
+            # Empty mask: nothing to renumber, it simply starts holding ids.
+            sm.tumor_labeled = True
+        self._create_new_label()
+
+    def _create_new_label(self):
+        sm = self.session_manager
+        known = set(sm.tumor_label_ids) | self._pending_label_ids
+        new_id = max(known, default=0) + 1
+        if new_id > lesion_labels.MAX_LABEL:
+            QMessageBox.warning(self, "New lesion id", "No free lesion id left.")
+            return
+        self._pending_label_ids.add(new_id)
+        self._tumor_label = new_id
+        self._refresh_label_selector()
+        print(f"[LesionLabel] New lesion id {new_id}.")
 
     def _on_tumor_label_selected(self, label_id: int):
         self._tumor_label = int(label_id)
@@ -70,6 +117,7 @@ class LesionLabelHandlerMixin:
         self._mark_lesion_stats_stale()
         if merge:
             sm.tumor_label_ids = [i for i in sm.tumor_label_ids if i not in covered]
+            self._pending_label_ids.difference_update(covered)
             self._refresh_label_selector()
         print(f"[LesionLabel] Stroke of lesion {label_id} over {covered}: "
               f"{'merged' if merge else 'kept'}")
@@ -87,13 +135,13 @@ class LesionLabelHandlerMixin:
 
     # ── Give lesion ids ──
 
-    def _on_give_lesion_ids(self):
+    def _on_give_lesion_ids(self, confirm: bool = True):
         sm = self.session_manager
         if sm.tumor_mask is None:
             QMessageBox.information(self, "Give lesion ids", "No segmentation loaded.")
             return
         self._sync_tumor_from_viewer()
-        if sm.tumor_labeled:
+        if confirm and sm.tumor_labeled:
             reply = QMessageBox.question(
                 self, "Give lesion ids",
                 "Lesion ids are given again from scratch: every lesion voxel counts, each "
@@ -117,6 +165,21 @@ class LesionLabelHandlerMixin:
         self._refresh_lesion_ui()      # values, table and the new toggles
         n = len(self.session_manager.tumor_label_ids)
         print(f"[LesionLabel] Lesion ids given: {n} lesion(s).")
+        if self._another_after_give_ids:
+            self._another_after_give_ids = False
+            self._create_new_label()
 
     def _on_give_ids_error(self, msg: str):
+        self._another_after_give_ids = False
         self._show_worker_error(msg, "Give Lesion Ids Failed")
+
+    # ── Manual-edit Undo ──
+
+    def _on_manual_undo(self):
+        """Undo the last brush stroke or double-click island erase."""
+        if self.layout_manager.undo_tumor_edit():
+            self.session_manager.tumor_dirty = True
+            self._mark_lesion_stats_stale()
+            self.control_panel.refine_tab.set_manual_hint("Last edit undone.")
+        else:
+            self.control_panel.refine_tab.set_manual_hint("Nothing to undo.")

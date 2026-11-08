@@ -15,7 +15,6 @@ from .components.layout import LayoutManager
 
 from .handlers.segmentation_handler import SegmentationHandlerMixin
 from .handlers.refinement_handler import RefinementHandlerMixin
-from .handlers.eraser_handler import EraserHandlerMixin
 from .handlers.report_handler import ReportHandlerMixin
 from .handlers.dicom_import_handler import DicomImportHandlerMixin
 from .handlers.lesion_label_handler import LesionLabelHandlerMixin
@@ -25,7 +24,6 @@ class MainWindow(
     SegmentationHandlerMixin,
     RefinementHandlerMixin,
     LesionLabelHandlerMixin,
-    EraserHandlerMixin,
     ReportHandlerMixin,
     DicomImportHandlerMixin,
     QMainWindow,
@@ -55,9 +53,6 @@ class MainWindow(
         self._last_tab_index = 0
         self._init_refinement_state()
         self._init_lesion_label_state()
-
-        # Eraser State
-        self._eraser_undo_stack = []
 
         # DICOM Import State
         self._init_dicom_import_handler()
@@ -201,6 +196,9 @@ class MainWindow(
         # Refinement — Lesion label (the id every Segmentation-tab tool edits)
         cp.sig_label_selected.connect(self._on_tumor_label_selected)
         cp.sig_give_ids_clicked.connect(self._on_give_lesion_ids)
+        cp.sig_another_clicked.connect(self._on_another_clicked)
+        cp.sig_manual_undo_clicked.connect(self._on_manual_undo)
+        lm.sig_island_erase_info.connect(self.control_panel.refine_tab.set_manual_hint)
         lm.sig_tumor_overwrite.connect(self._on_tumor_overwrite)
 
         # Refinement — Manual Edit (tumor mask)
@@ -215,13 +213,6 @@ class MainWindow(
         cp.sig_refine_iterative_clicked.connect(self._on_refine_iterative)
         cp.sig_confirm_roi_clicked.connect(self._on_confirm_roi)
         cp.sig_save_refine_clicked.connect(self._on_confirm_and_save)
-
-        # Eraser
-        cp.sig_eraser_mode_toggled.connect(self._on_eraser_mode_toggled)
-        cp.sig_eraser_undo_clicked.connect(self._on_eraser_undo)
-        cp.sig_eraser_save_clicked.connect(lambda: self.save_session())
-        lm.sig_eraser_region_removed.connect(self._on_eraser_region_removed)
-        lm.sig_eraser_background_click.connect(self._on_eraser_background_click)
 
         # Ruler
         cp.sig_ruler_toggled.connect(self._on_ruler_toggled)
@@ -310,16 +301,6 @@ class MainWindow(
             return
         enabled = self.layout_manager.toggle_ruler_hover_sync()
         print(f"[MainWindow] Ruler hover sync {'ON' if enabled else 'OFF'}")
-
-    def _on_eraser_background_click(self):
-        """Notify the user they clicked on background (no tumor voxel there)."""
-        from PyQt6.QtWidgets import QMessageBox
-        QMessageBox.warning(
-            self,
-            "Eraser — Background Clicked",
-            "No tumor voxel found at the clicked position.\n\n"
-            "Double-click directly on a highlighted lesion region to erase it.",
-        )
 
     def _on_crosshair_toggled(self, enabled: bool):
         """Toggle the full crosshair overlay (mutually exclusive with the ruler)."""
@@ -431,7 +412,6 @@ class MainWindow(
         self.layout_manager.clear_all_viewers()
 
         # Clear application state
-        self._eraser_undo_stack.clear()
         self.session_manager.roi_mask = None
 
         # Clear report display (the lesion-ID checkbox stays as the user set it;
@@ -675,8 +655,7 @@ class MainWindow(
     _TAB_WORKFLOW = 0
     _TAB_VIEW     = 1
     _TAB_REFINE   = 2
-    _TAB_ERASER   = 3
-    _TAB_RULER    = 4
+    _TAB_RULER    = 3
 
     def _on_tab_changed(self, index: int):
         """Delegate tab change events to specialized handlers."""
@@ -685,12 +664,7 @@ class MainWindow(
         xhair_btn = self.control_panel.view_display_tab.btn_crosshair
         crosshair_was_on = xhair_btn.isChecked()
 
-        if index == self._TAB_ERASER:
-            # Eraser tab: suppress crosshair (click-to-erase conflicts with crosshair LMB)
-            if self.layout_manager._crosshair_enabled:
-                self.layout_manager.disable_crosshair_mode()
-                self._crosshair_suppressed_by_tab = True
-        elif index == self._TAB_REFINE:
+        if index == self._TAB_REFINE:
             # Refine tab: crosshair + info box as navigation default
             # Paint/erase tools suspend crosshair click (handled in refinement_handler)
             self._crosshair_suppressed_by_tab = False
@@ -712,20 +686,19 @@ class MainWindow(
         # but disabling the whole tab widget is safer.
         print(f"[MainWindow] UI Busy: {busy}")
 
-    def _lock_seg_eraser_tabs(self, locked: bool):
-        """Lock only the Segmentation (Refine) + Eraser tabs during inference.
+    def _lock_seg_tab(self, locked: bool):
+        """Lock only the Segmentation tab during inference.
 
         Unlike ``_set_ui_busy`` (which disables the whole control panel), this
         keeps every viewing feature usable while a segmentation job runs — only
-        the two editing tabs that would conflict with an in-flight mask are
-        disabled. If one of them is currently shown, fall back to the Workflow
-        tab so the user isn't left on a disabled page.
+        the editing tab that would conflict with an in-flight mask is disabled.
+        If it is currently shown, fall back to the Workflow tab so the user
+        isn't left on a disabled page.
         """
         tabs = self.control_panel.tabs
-        if locked and tabs.currentIndex() in (self._TAB_REFINE, self._TAB_ERASER):
+        if locked and tabs.currentIndex() == self._TAB_REFINE:
             tabs.setCurrentIndex(self._TAB_WORKFLOW)
         tabs.setTabEnabled(self._TAB_REFINE, not locked)
-        tabs.setTabEnabled(self._TAB_ERASER, not locked)
 
     def _on_mask_modified_immediate(self, layer_type: str):
         """Fire on every user paint/erase event — mark tumor dirty O(1).

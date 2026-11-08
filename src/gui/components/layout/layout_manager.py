@@ -22,7 +22,7 @@ import napari
 
 from ..viewers.viewer_widget import ViewerWidget
 from .mask_sync import MaskSyncMixin
-from .eraser_manager import EraserMixin
+from .island_erase import IslandEraseMixin
 from .lesion_info_manager import LesionInfoMixin
 from ....utils.dimension_utils import get_spacing_from_affine
 from ....utils.nifti_utils import MASK_DTYPE
@@ -71,11 +71,10 @@ def _view_sort_key(view_id: str):
 
 # ── Main class ───────────────────────────────────────────────────────────────
 
-class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
+class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
     """Dynamic multi-view layout manager with a pool of 9 ViewerWidgets."""
 
-    sig_eraser_region_removed   = pyqtSignal(object, object, int)   # (indices_zyx, mask_zyx, erased id)
-    sig_eraser_background_click = pyqtSignal()
+    sig_island_erase_info       = pyqtSignal(str)   # status line for a double-click island erase
     sig_mask_painted            = pyqtSignal(str)
     sig_mask_modified           = pyqtSignal(str)
     # A tumor brush stroke of lesion id A covered other ids: (napari history
@@ -133,6 +132,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
 
         self._init_mask_sync()
         self._init_lesion_info()
+        self._init_island_erase()
 
         # Data cache
         self._cached_data = {"ct": None, "pet": None, "affine": None, "tumor": None, "roi": None, "organ": None, "ct_filename": "", "pet_filename": ""}
@@ -182,6 +182,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
             vw = ViewerWidget()
             vw.hide()
             vw.sig_lesion_double_click.connect(self._on_viewer_lesion_double_click)
+            vw.sig_island_erase.connect(lambda pos, v=vw: self._on_island_erase(v, pos))
             vw.set_lesion_infos(self._shown_lesion_infos(), self._lesion_stale)
             self._viewer_pool.append(vw)
             self._fixed_view_map[view_id] = vw
@@ -330,6 +331,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
 
         self._load_active_views()
         self._connect_mask_events()
+        self.reset_tumor_history()
 
     def _load_active_views(self):
         """Push cached data into all currently assigned pool viewers.
@@ -947,6 +949,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
 
         self._cached_data_zyx[mask_type] = data_zyx
         self._push_mask_to_viewers(data_zyx, mask_type)
+        if mask_type == "tumor":
+            self.reset_tumor_history()
 
     def update_mask_region(self, mask_data, mask_type, region_xyz):
         """Copy only ``region_xyz`` (3 slices, XYZ) of ``mask_data`` into the ZYX cache.

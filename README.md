@@ -12,7 +12,7 @@ Key features:
 *   **Direct DICOM Import:** CT/PET series are read straight into memory (no NIfTI conversion), PET is converted to SUV (body weight), and patient/physician names come from the DICOM tags.
 *   **Multi-Modal Visualization:** Interactive orthogonal (grid) views, fusion (overlay) layouts, and 3D volume rendering powered by Napari.
 *   **Automated AI Segmentation:** Dockerized nnU-Net backend for rapid tumor segmentation with real-time inference progress.
-*   **Precision Refinement Tools:** Paint/Eraser 3D brushes, SUV-based thresholding, and Iterative Thresholding.
+*   **Precision Refinement Tools:** Paint/Erase 3D brushes per lesion id, double-click island erase, SUV-based thresholding, and Iterative Thresholding.
 *   **Clinical Quantification:** Automatic calculation of lesion metrics and global Total Lesion Glycolysis (gTLG) with precise voxel volume formulation.
 *   **Persistent Storage:** Local SQLite database integrated with SQLAlchemy for robust session management.
 
@@ -139,7 +139,8 @@ A lesion segmentation is either **binary** (0/1, what the AI models return) or *
 - **Labelled:** a lesion is every voxel with one id, and its id is the mask value (gaps allowed).
 - **Give lesion ids** (Segmentation tab) numbers the mask from scratch: binarise, connected regions, 1..N head → feet, the same numbers a binary mask is reported with. The file is saved at once as int16.
 - **Lesion Label** (Segmentation tab) selects the id that every tool below it edits: the brush paints it, the erase brush removes only it, ROI thresholding merges into it.
-  - **Another** paints a new id for lesions the current ids miss; press Give lesion ids afterwards to separate them.
+  - **+ Another** creates a new id (one more than the largest) and selects it, to draw a lesion the current ids miss. On a binary mask it first offers to give the lesion ids. An id that is never drawn disappears at the next save.
+  - With **Erase** selected, a **double-click** removes the whole island (connected region) of the selected lesion under the cursor. **Undo** takes back the last stroke or island. This replaces the old Eraser tab.
   - Painting over another lesion asks whether it is the same lesion: **Yes** merges it into the selected id, **No** keeps it and paints only background.
 - A new AI run writes a binary mask again; give the ids again if needed.
 

@@ -79,6 +79,9 @@ class ViewerWidget(QWidget):
 
     # Double-click in a 2D view (outside ruler / drawing tools): [z, y, x] voxel
     sig_lesion_double_click = pyqtSignal(list)
+    # Double-click while the tumor Erase brush is active: [z, y, x] of the
+    # island (connected region of the selected lesion) to remove.
+    sig_island_erase = pyqtSignal(list)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -967,17 +970,24 @@ class ViewerWidget(QWidget):
         return on_dblclick
 
     def _make_lesion_dblclick_cb(self):
-        """Double-click callback: report the voxel under the cursor (lesion info toggle).
+        """Double-click callback: report the voxel under the cursor.
 
-        Skipped in 3D, in ruler mode and while a drawing tool is active (the
-        active layer is not in pan_zoom mode). Eraser mode is filtered by the
-        MainWindow handler.
+        With the tumor Erase brush active it asks to erase the island there
+        (``sig_island_erase``); otherwise it toggles the lesion info box
+        (``sig_lesion_double_click``). Skipped in 3D, in ruler mode and while
+        any other drawing tool is active (the active layer is not in pan_zoom).
         """
         def on_dblclick(viewer, event):
             if self.is_3d or self._ruler_enabled or event.button != 1:
                 return
             active = viewer.layers.selection.active
-            if active is not None and getattr(active, "mode", "pan_zoom") != "pan_zoom":
+            mode = getattr(active, "mode", "pan_zoom") if active is not None else "pan_zoom"
+            if mode == "erase" and active.name == self.LAYER_NAMES["tumor"]:
+                pos = self._event_data_pos(viewer, event)
+                if pos is not None:
+                    self.sig_island_erase.emit([int(round(c)) for c in pos])
+                return
+            if mode != "pan_zoom":
                 return
             pos = self._event_data_pos(viewer, event)
             if pos is not None:

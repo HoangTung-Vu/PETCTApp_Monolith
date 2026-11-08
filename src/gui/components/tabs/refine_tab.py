@@ -22,6 +22,8 @@ class RefineTab(QWidget):
     # Signals — Lesion label: every tool below edits only the selected id
     sig_label_selected = pyqtSignal(int)
     sig_give_ids_clicked = pyqtSignal()
+    sig_another_clicked = pyqtSignal()       # create a new lesion id
+    sig_manual_undo_clicked = pyqtSignal()   # undo the last stroke / island erase
 
     # Signals — Manual Edit (tumor mask)
     sig_manual_edit_tool = pyqtSignal(str)       # 'pan_zoom', 'paint', 'erase'
@@ -38,9 +40,9 @@ class RefineTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
-        self._label_buttons = {}      # id → QToolButton (the "Another" one excluded)
-        self._another_btn = None
-        self._another_id = 1
+        self._label_buttons = {}      # id → QToolButton
+        self._another_btn = None      # "+ Another": creates a new id (not a toggle)
+        self._pending = set()         # ids made with "+ Another", not saved yet
         self._selected_label = 1
         self._labeled = False
         self._init_ui()
@@ -86,9 +88,11 @@ class RefineTab(QWidget):
         self.manual_tool_group.addButton(self.btn_manual_erase)
         self.btn_manual_pan.setChecked(True)
 
-        self.btn_manual_pan.clicked.connect(lambda: self.sig_manual_edit_tool.emit("pan_zoom"))
-        self.btn_manual_paint.clicked.connect(lambda: self.sig_manual_edit_tool.emit("paint"))
-        self.btn_manual_erase.clicked.connect(lambda: self.sig_manual_edit_tool.emit("erase"))
+        self.btn_manual_pan.clicked.connect(lambda: self._emit_manual_tool("pan_zoom"))
+        self.btn_manual_paint.clicked.connect(lambda: self._emit_manual_tool("paint"))
+        self.btn_manual_erase.clicked.connect(lambda: self._emit_manual_tool("erase"))
+        self.btn_manual_erase.setToolTip(
+            "Drag to erase the selected lesion.\nDouble-click to erase a whole island of it.")
 
         manual_btn_layout.addWidget(self.btn_manual_pan)
         manual_btn_layout.addWidget(self.btn_manual_paint)
@@ -110,6 +114,16 @@ class RefineTab(QWidget):
         manual_brush_layout.addWidget(self.slider_manual_brush)
         manual_brush_layout.addWidget(self.lbl_manual_brush)
         manual_layout.addLayout(manual_brush_layout)
+
+        self.btn_manual_undo = QPushButton("Undo")
+        self.btn_manual_undo.setToolTip("Undo the last brush stroke or island erase.")
+        self.btn_manual_undo.clicked.connect(self.sig_manual_undo_clicked.emit)
+        manual_layout.addWidget(self.btn_manual_undo)
+
+        self.lbl_manual_hint = QLabel("")
+        self.lbl_manual_hint.setWordWrap(True)
+        self.lbl_manual_hint.setStyleSheet("color: #888; font-style: italic; padding: 2px;")
+        manual_layout.addWidget(self.lbl_manual_hint)
 
         grp_manual.setLayout(manual_layout)
         layout.addWidget(grp_manual)
@@ -366,7 +380,7 @@ class RefineTab(QWidget):
         return btn
 
     def _clear_label_buttons(self):
-        for btn in list(self._label_group.buttons()):
+        for btn in list(self._label_group.buttons()) + ([self._another_btn] if self._another_btn else []):
             self._label_group.removeButton(btn)
             self._label_grid.removeWidget(btn)
             btn.hide()                 # gone now, not when deleteLater runs
@@ -375,26 +389,33 @@ class RefineTab(QWidget):
         self._label_buttons = {}
         self._another_btn = None
 
-    def set_label_choices(self, ids, labeled: bool, selected=None, has_mask: bool = True):
+    def set_label_choices(self, ids, labeled: bool, selected=None, has_mask: bool = True,
+                          pending=()):
         """Rebuild the lesion toggles and select one; emits ``sig_label_selected``.
 
-        ``ids``: lesion ids present in the mask. A binary mask has only id 1
-        (every connected region is a lesion, numbered by position). The last
-        toggle, "Another", paints a new id (``max(ids) + 1``; 1 on a binary
-        mask) for lesions the current ids miss — "Give lesion ids" then
-        separates them. ``selected`` is kept when it is still offered.
+        ``ids``: lesion ids in the mask; ``pending``: ids made with "+ Another"
+        that are not saved yet (shown like the others). A binary mask has a
+        single toggle, 1: every connected region is a lesion, numbered by
+        position. ``selected`` is kept when it is still offered.
         """
         self._clear_label_buttons()
         self._labeled = bool(labeled)
-        ids = sorted(int(i) for i in ids) if labeled else ([1] if ids else [])
-        self._another_id = (max(ids) + 1) if (labeled and ids) else 1
+        self._pending = {int(i) for i in pending}
+        if labeled:
+            ids = sorted({int(i) for i in ids} | self._pending)
+        else:
+            ids = [1] if ids else []
 
         row = col = 0
         for label_id in ids:
             btn = self._make_label_button(label_id, str(label_id))
-            btn.setToolTip(f"Lesion {label_id}" if labeled
-                           else "Binary mask: all lesions (id 1)")
-            btn.clicked.connect(lambda _=False, v=label_id: self._select_label(v, False))
+            if not labeled:
+                btn.setToolTip("Binary mask: all lesions (id 1)")
+            elif label_id in self._pending:
+                btn.setToolTip(f"Lesion {label_id} — new, not saved yet")
+            else:
+                btn.setToolTip(f"Lesion {label_id}")
+            btn.clicked.connect(lambda _=False, v=label_id: self._select_label(v))
             self._label_grid.addWidget(btn, row, col)
             self._label_buttons[label_id] = btn
             col += 1
@@ -402,13 +423,13 @@ class RefineTab(QWidget):
                 row, col = row + 1, 0
         if col + 2 > _LABEL_COLUMNS:
             row, col = row + 1, 0
-        self._another_btn = self._make_label_button(self._another_id, "Another")
+        self._another_btn = QPushButton("+ Another")
+        self._another_btn.setFixedHeight(_LABEL_BUTTON_H)
         self._another_btn.setToolTip(
-            "Draw lesions the current ids are missing"
-            + (f" (new id {self._another_id})" if labeled else "")
-            + ".\nPress Give lesion ids afterwards to give each one its own id."
+            "Create a new lesion id and select it, to draw a lesion the current ids miss.\n"
+            "Give lesion ids renumbers all lesions afterwards if needed."
         )
-        self._another_btn.clicked.connect(lambda: self._select_label(self._another_id, True))
+        self._another_btn.clicked.connect(self.sig_another_clicked.emit)
         self._label_grid.addWidget(self._another_btn, row, col, 1, 2)
         n_rows = row + 1
         visible_rows = min(n_rows, _LABEL_ROWS_VISIBLE)
@@ -417,6 +438,7 @@ class RefineTab(QWidget):
 
         for btn in self._label_group.buttons():
             btn.setEnabled(has_mask)
+        self._another_btn.setEnabled(has_mask)
         self.btn_give_ids.setEnabled(has_mask and bool(ids))
 
         if not has_mask:
@@ -432,30 +454,29 @@ class RefineTab(QWidget):
         else:
             self.lbl_label_hint.setText(
                 "Binary mask: each connected region is one lesion (ids by position, "
-                "head → feet). Press Give lesion ids to edit lesions separately."
+                "head → feet). Press Give lesion ids — or + Another — to edit lesions "
+                "separately."
             )
         if selected is not None and int(selected) in self._label_buttons:
-            self._select_label(int(selected), False)
-        elif selected is not None and int(selected) == self._another_id:
-            self._select_label(self._another_id, True)
+            self._select_label(int(selected))
         elif ids:
-            self._select_label(ids[0], False)
+            self._select_label(ids[0])
         else:
-            self._select_label(self._another_id, True)
+            self._selected_label = 1
+            self.lbl_label_info.setText("Empty mask: paint lesions, or press + Another")
+            self.sig_label_selected.emit(1)
 
-    def _select_label(self, label_id: int, another: bool):
-        btn = self._another_btn if another else self._label_buttons.get(label_id)
+    def _select_label(self, label_id: int):
+        btn = self._label_buttons.get(label_id)
         if btn is not None and not btn.isChecked():
             btn.setChecked(True)
         self._selected_label = int(label_id)
-        if another and self._labeled:
-            self.lbl_label_info.setText(f"Editing: Another — new lesion id {label_id}")
-        elif another:
-            self.lbl_label_info.setText("Editing: Another lesion (binary mask)")
-        elif self._labeled:
-            self.lbl_label_info.setText(f"Editing: Lesion {label_id}")
-        else:
+        if not self._labeled:
             self.lbl_label_info.setText("Editing: all lesions (binary mask)")
+        elif label_id in self._pending:
+            self.lbl_label_info.setText(f"Editing: Lesion {label_id} (new)")
+        else:
+            self.lbl_label_info.setText(f"Editing: Lesion {label_id}")
         self.sig_label_selected.emit(self._selected_label)
 
     def selected_label(self) -> int:
@@ -509,7 +530,17 @@ class RefineTab(QWidget):
     def reset_manual_edit(self):
         """Reset manual edit section to Pan/Zoom."""
         self.btn_manual_pan.setChecked(True)
-        self.sig_manual_edit_tool.emit("pan_zoom")
+        self._emit_manual_tool("pan_zoom")
+
+    def _emit_manual_tool(self, tool: str):
+        self.set_manual_hint(
+            "Drag to erase the selected lesion; double-click to erase a whole island of it."
+            if tool == "erase" else "")
+        self.sig_manual_edit_tool.emit(tool)
+
+    def set_manual_hint(self, text: str):
+        """Status line under the manual edit tools (island erase results)."""
+        self.lbl_manual_hint.setText(text)
 
     def show_refine_progress(self):
         self.refine_progress.setVisible(True)

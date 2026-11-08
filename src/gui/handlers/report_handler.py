@@ -16,7 +16,7 @@ class ReportHandlerMixin:
     def _refresh_lesion_ui(self):
         """Show the session's current lesion statistics everywhere."""
         sm = self.session_manager
-        self._refresh_label_selector()
+        self._refresh_label_selector(fresh=True)    # ids just read from the mask
         self._refresh_lesion_table()
         shape = sm.pet_image.shape if sm.pet_image is not None else None
         self.layout_manager.set_lesions(sm.lesion_stats, shape, sm.lesion_stats_stale)
@@ -45,8 +45,6 @@ class ReportHandlerMixin:
 
     def _on_lesion_double_clicked(self, pos_zyx: list):
         """Toggle the quantification box of the lesion under a double-click."""
-        if self.control_panel.eraser_tab.btn_eraser_toggle.isChecked():
-            return      # double-click erases the lesion in eraser mode
         if self.layout_manager._ruler_enabled:
             return      # double-click clears the ruler
         if self.current_tool != "pan_zoom" or self._manual_edit_tool != "pan_zoom":
@@ -63,8 +61,8 @@ class ReportHandlerMixin:
         """Lesion table click: jump to the lesion and show only its box.
 
         No mode checks as in ``_on_lesion_double_clicked``: the table is on the
-        Workflow tab, and entering a tab already turns the eraser, the ruler and
-        the drawing tools off (``ControlPanel._on_tab_changed``).
+        Workflow tab, and entering a tab already turns the ruler and the drawing
+        tools off (``ControlPanel._on_tab_changed``).
         """
         if self.layout_manager.show_only_lesion(lesion_id):
             print(f"[Lesion] Lesion {lesion_id} info shown.")

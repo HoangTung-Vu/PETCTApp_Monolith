@@ -21,7 +21,7 @@ from ..utils.nifti_utils import MASK_DTYPE, mask_bbox
 
 MAX_LABEL = int(np.iinfo(MASK_DTYPE).max)
 
-# A lesion is a 26-connected component — the same unit the Eraser removes
+# A lesion is a 26-connected component — the same unit a double-click island erase removes
 # (skimage.flood's default full connectivity).
 _CONNECTIVITY_26 = np.ones((3, 3, 3), dtype=bool)
 
