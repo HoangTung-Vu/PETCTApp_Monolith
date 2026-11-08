@@ -6,6 +6,9 @@ from PyQt6.QtWidgets import (
     QHeaderView, QCheckBox, QLabel, QFileDialog, QScrollArea
 )
 from PyQt6.QtCore import Qt, pyqtSignal
+from PyQt6.QtGui import QBrush
+
+from ..viewers.label_colors import label_qcolor, text_color_for
 
 
 class WorkflowTab(QWidget):
@@ -352,6 +355,11 @@ class WorkflowTab(QWidget):
                 text = str(value) if key == "id" else f"{value:.2f}"
                 item = QTableWidgetItem(text)
                 item.setTextAlignment(Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
+                if key == "id" and stats.get("labeled"):
+                    # The id is the mask's value: show it in the lesion's colour.
+                    item.setBackground(QBrush(label_qcolor(value)))
+                    item.setForeground(QBrush(Qt.GlobalColor.black if text_color_for(value) == "black"
+                                              else Qt.GlobalColor.white))
                 self.tbl_lesions.setItem(row, col, item)
 
         if stale:

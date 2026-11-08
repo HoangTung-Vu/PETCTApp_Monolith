@@ -45,3 +45,15 @@ def test_smooth_outline_keeps_the_lesion_size():
         plane = ((yy - 32) ** 2 + (xx - 32) ** 2 <= r * r).astype(np.uint8)
         (outline,) = mask_outlines(plane, smooth=True)
         assert abs(_area(outline) / plane.sum() - 1) < 0.12, r
+
+
+def test_each_lesion_id_gets_its_own_outline():
+    from src.gui.components.viewers.mask_overlay import label_outlines
+    plane = np.zeros((20, 20), np.int16)
+    plane[2:8, 2:8] = 3
+    plane[2:8, 8:14] = 7          # touches lesion 3: still a separate outline
+    outlines = label_outlines(plane, smooth=False)
+    assert sorted(outlines) == [3, 7]
+    assert len(outlines[3]) == 1 and len(outlines[7]) == 1
+    assert abs(_area(outlines[7][0]) - 36) < 0.3
+    assert label_outlines(np.zeros((5, 5), np.int16), smooth=True) == {}

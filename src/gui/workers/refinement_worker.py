@@ -62,7 +62,8 @@ class ThresholdComputeWorker(QThread):
                     f"c1={self.kwargs.get('c1', 61.7)}, c0={self.kwargs.get('c0', 31.6)}"
                 )
                 components_info, labels = engine.compute_threshold(
-                    self.pet_image, self.mask_image, self.roi_mask
+                    self.pet_image, self.mask_image, self.roi_mask,
+                    tumor_label=self.kwargs.get("tumor_label"),
                 )
                 method_info = "Iterative Thresholding (Jentzen et al.)"
             else:

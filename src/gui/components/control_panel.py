@@ -55,6 +55,10 @@ class ControlPanel(QWidget):
     sig_interpolation_changed = pyqtSignal(str)
     sig_crosshair_toggled = pyqtSignal(bool)
 
+    # Refine — Lesion label
+    sig_label_selected = pyqtSignal(int)
+    sig_give_ids_clicked = pyqtSignal()
+
     # Refine — Manual Edit (tumor mask)
     sig_manual_edit_tool = pyqtSignal(str)
     sig_manual_edit_brush_changed = pyqtSignal(int)
@@ -151,6 +155,8 @@ class ControlPanel(QWidget):
 
         # Refine — Manual Edit
         r = self.refine_tab
+        r.sig_label_selected.connect(self.sig_label_selected)
+        r.sig_give_ids_clicked.connect(self.sig_give_ids_clicked)
         r.sig_manual_edit_tool.connect(self.sig_manual_edit_tool)
         r.sig_manual_edit_brush_changed.connect(self.sig_manual_edit_brush_changed)
 

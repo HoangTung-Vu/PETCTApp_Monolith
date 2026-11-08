@@ -31,6 +31,10 @@ _APP_ORNT = axcodes2ornt(APP_AXCODES)
 # (10–30 s instead of milliseconds). Use ``np.copy``/``zeros(order="F")``,
 # ``mask_bbox`` and ``np.copyto(..., where=...)`` instead.
 
+# The tumor mask holds lesion ids (0 = background), binary masks just use 1.
+# int16 is what labelled masks are stored as on disk; ROI and organ masks stay uint8.
+MASK_DTYPE = np.int16
+
 
 def mask_bbox(mask: np.ndarray) -> Optional[tuple]:
     """Tight bounding box of a 3D mask as a tuple of slices (None if empty).
@@ -132,10 +136,24 @@ def load_nifti_volume(path) -> tuple[nib.Nifti1Image, np.ndarray, Optional[Path]
     return img_las, back_ornt, (Path(path) if unchanged else None)
 
 
-def load_mask_volume(path, ref_shape: Optional[tuple] = None) -> nib.Nifti1Image:
-    """Load a label mask as uint8, reoriented to LAS, checked against ``ref_shape``."""
+def load_mask_volume(path, ref_shape: Optional[tuple] = None,
+                     dtype=MASK_DTYPE) -> nib.Nifti1Image:
+    """Load a label mask as ``dtype``, reoriented to LAS, checked against ``ref_shape``.
+
+    Values outside ``dtype``'s range are refused instead of wrapping (a uint8
+    cast turned lesion id 256 into background). Float masks are truncated.
+    """
     img = nib.load(path)
-    data = _squeeze_3d(np.asarray(img.dataobj, dtype=np.uint8), path)
+    raw = _squeeze_3d(np.asanyarray(img.dataobj), path)
+    if raw.dtype != dtype and raw.dtype != np.bool_ and raw.size:
+        info = np.iinfo(dtype)
+        lo, hi = raw.min(), raw.max()
+        if lo < info.min or hi > info.max:
+            raise ValueError(
+                f"{Path(path).name}: label values {lo}..{hi} do not fit a "
+                f"{np.dtype(dtype).name} mask ({info.min}..{info.max})."
+            )
+    data = raw.astype(dtype, copy=False)
     img_las, _ = to_app_orientation(nib.Nifti1Image(data, img.affine))
     data_las = np.asarray(img_las.dataobj)
     if not data_las.flags.f_contiguous:

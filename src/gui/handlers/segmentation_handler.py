@@ -3,6 +3,7 @@
 import numpy as np
 from PyQt6.QtWidgets import QMessageBox
 
+from ...utils.nifti_utils import MASK_DTYPE
 from ..components.segmentation_progress_dialog import SegmentationProgressDialog
 
 
@@ -38,6 +39,9 @@ class SegmentationHandlerMixin:
             images, paths = [sm.ct_image, sm.pet_image], [sm.ct_stream_path, sm.pet_stream_path]
         self.worker = SegmentationWorker(images, paths, model=model,
                                          kind="organ" if organ else "tumor")
+        # The Workflow tab stays usable during inference: a result that arrives
+        # after a session switch belongs to the old session and is dropped.
+        self._seg_session_id = sm.current_session_id
 
         # Non-modal status dialog: upload → inference % → done. The user can keep
         # viewing/panning/zooming while it runs.
@@ -56,12 +60,20 @@ class SegmentationHandlerMixin:
 
     def _on_segmentation_finished(self, result_tuple):
         mask_img, model, kind = result_tuple
-        data = np.asarray(mask_img.dataobj, dtype=np.uint8)
+        # Header shape only — the organ volume is decoded in OrganSaveWorker,
+        # not on the GUI thread.
+        shape = tuple(mask_img.shape[:3])
 
-        ct_img = self.session_manager.ct_image
-        if ct_img is None or data.shape != tuple(ct_img.shape):
+        if self.session_manager.current_session_id != getattr(self, "_seg_session_id", None):
             self._on_segmentation_error(
-                f"The engine returned a mask of shape {data.shape}, "
+                "The session changed while the segmentation was running; "
+                "its result was not applied. Run it again on this session."
+            )
+            return
+        ct_img = self.session_manager.ct_image
+        if ct_img is None or shape != tuple(ct_img.shape):
+            self._on_segmentation_error(
+                f"The engine returned a mask of shape {shape}, "
                 f"but the image grid is {None if ct_img is None else tuple(ct_img.shape)}."
             )
             return
@@ -73,7 +85,10 @@ class SegmentationHandlerMixin:
             self._organ_save_worker = OrganSaveWorker(self.session_manager, mask_img)
             self._spawn_worker(self._organ_save_worker, self._on_organ_saved, self._on_save_error)
         else:
-            self.session_manager.set_tumor_mask(data)
+            # The model returns a binary mask; it replaces a labelled one (the
+            # user gives the lesion ids again).
+            data = np.asarray(mask_img.dataobj, dtype=MASK_DTYPE)
+            self.session_manager.set_tumor_mask(data, labeled=False)
             self._push_mask_to_all("tumor", data)
             # Save immediately to this model's own file, <CT>_Segmentation_<model>.nii.gz
             # (the save worker also computes the lesion values).
@@ -87,8 +102,16 @@ class SegmentationHandlerMixin:
     def _on_organ_saved(self, path: str):
         self._set_ui_busy(False)
         self.control_panel.hide_progress()
+        # Free the engine's decoded copy (the thread object itself is kept: its
+        # run() may still be returning).
+        self._organ_save_worker.organ_img = None
+        # Builds the organ layers only if "Show Organ Mask" is on (off by default).
         self.layout_manager.set_organ_mask(self.session_manager.get_organ_mask_data())
-        QMessageBox.information(self, "Organ Segmentation", f"TotalSegmentator organ mask saved to:\n{path}")
+        shown = self.control_panel.view_display_tab.chk_organ.isChecked()
+        QMessageBox.information(
+            self, "Organ Segmentation",
+            f"TotalSegmentator organ mask saved to:\n{path}"
+            + ("" if shown else "\n\nTurn on \"Show Organ Mask\" (View & Display → Zoom & Mask) to see it."))
 
     def _push_mask_to_all(self, layer_type, data, data_zyx=None):
         self.layout_manager.update_mask(data, layer_type, data_zyx)

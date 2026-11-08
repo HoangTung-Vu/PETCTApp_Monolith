@@ -354,7 +354,8 @@ def test_segmentation_on_pet_grid_is_resampled_and_saved_next_to_ct(sm, tmp_path
     sm.update_current_session(tumor_seg_path=seg_path)
 
     mask = sm.get_tumor_mask_data()
-    assert mask.shape == ct.shape and mask.dtype == np.uint8 and mask.flags.f_contiguous
+    # In memory the tumor mask is int16 (lesion ids); a binary file stays uint8 on disk.
+    assert mask.shape == ct.shape and mask.dtype == np.int16 and mask.flags.f_contiguous
     assert not sm.tumor_dirty
     # The lesion lands at the same place in the world.
     inv = np.linalg.inv(ct.affine)

@@ -16,6 +16,7 @@ class ReportHandlerMixin:
     def _refresh_lesion_ui(self):
         """Show the session's current lesion statistics everywhere."""
         sm = self.session_manager
+        self._refresh_label_selector()
         self._refresh_lesion_table()
         shape = sm.pet_image.shape if sm.pet_image is not None else None
         self.layout_manager.set_lesions(sm.lesion_stats, shape, sm.lesion_stats_stale)

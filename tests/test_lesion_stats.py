@@ -101,7 +101,7 @@ def test_memory_order_and_int_pet(order):
 def test_empty_mask():
     pet, mask = volumes()
     stats = ReportEngine.compute_lesion_stats(pet, mask, AFFINE)
-    assert stats == {"tTLG": 0.0, "lesions": []}
+    assert stats == {"tTLG": 0.0, "lesions": [], "labeled": False}
 
 
 def test_crop_to_napari_matches_full_conversion():

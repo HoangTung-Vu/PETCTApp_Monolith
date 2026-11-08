@@ -18,11 +18,13 @@ from .handlers.refinement_handler import RefinementHandlerMixin
 from .handlers.eraser_handler import EraserHandlerMixin
 from .handlers.report_handler import ReportHandlerMixin
 from .handlers.dicom_import_handler import DicomImportHandlerMixin
+from .handlers.lesion_label_handler import LesionLabelHandlerMixin
 
 
 class MainWindow(
     SegmentationHandlerMixin,
     RefinementHandlerMixin,
+    LesionLabelHandlerMixin,
     EraserHandlerMixin,
     ReportHandlerMixin,
     DicomImportHandlerMixin,
@@ -52,6 +54,7 @@ class MainWindow(
         self.brush_size = 10
         self._last_tab_index = 0
         self._init_refinement_state()
+        self._init_lesion_label_state()
 
         # Eraser State
         self._eraser_undo_stack = []
@@ -194,6 +197,11 @@ class MainWindow(
         cp.sig_new_session_clicked.connect(self.create_new_session)
         cp.sig_load_session_clicked.connect(self.load_existing_session)
         cp.sig_delete_session_clicked.connect(self.delete_session)
+
+        # Refinement — Lesion label (the id every Segmentation-tab tool edits)
+        cp.sig_label_selected.connect(self._on_tumor_label_selected)
+        cp.sig_give_ids_clicked.connect(self._on_give_lesion_ids)
+        lm.sig_tumor_overwrite.connect(self._on_tumor_overwrite)
 
         # Refinement — Manual Edit (tumor mask)
         cp.sig_manual_edit_tool.connect(self._on_manual_edit_tool)

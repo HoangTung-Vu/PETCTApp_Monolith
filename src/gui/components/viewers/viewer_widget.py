@@ -5,14 +5,51 @@ import napari
 import numpy as np
 from typing import Optional, Tuple
 
-from ....utils.nifti_utils import to_napari, from_napari
+from ....utils.nifti_utils import MASK_DTYPE, to_napari, from_napari
 from ....utils.dimension_utils import get_spacing_from_affine
+from .label_colors import TUMOR_LABEL_COLORMAP
 from .crosshair_overlay import CrosshairOverlay
 from .colorbar_overlay import ColorBarOverlay
 from .ruler_overlay import RulerOverlay
 from .orientation_overlay import OrientationOverlay
 from .lesion_info_overlay import LesionInfoOverlay
 from .mask_overlay import MaskOverlay
+
+
+def reorder_layers(layers, desired_names) -> None:
+    """Put the layers named in ``desired_names`` in that bottom → top order.
+
+    Layers not in the list stay where they are relative to their neighbours.
+    Bubble sort by adjacent swaps; ``move(i + 1, i)`` puts layer i+1 before
+    layer i. (``move(i, i + 1)`` is a no-op in napari — "insert before i+1" —
+    which made the old ``while changed`` loop spin forever, e.g. when the organ
+    layer was added above an existing tumor layer.) Bounded by n² swaps.
+    """
+    rank = {name: i for i, name in enumerate(desired_names)}
+    n = len(layers)
+    for _ in range(n * n + 1):
+        swapped = False
+        for i in range(len(layers) - 1):
+            r1 = rank.get(layers[i].name, -1)
+            r2 = rank.get(layers[i + 1].name, -1)
+            if r1 > -1 and r2 > -1 and r1 > r2:
+                layers.move(i + 1, i)
+                swapped = True
+        if not swapped:
+            return
+
+
+def insert_index(layers, name, desired_names) -> int:
+    """Where a new layer ``name`` goes so ``desired_names`` order holds without
+    any move: before the first ranked layer that must sit above it."""
+    rank = {n: i for i, n in enumerate(desired_names)}
+    r = rank.get(name, -1)
+    if r < 0:
+        return len(layers)
+    for i, layer in enumerate(layers):
+        if rank.get(layer.name, -1) > r:
+            return i
+    return len(layers)
 
 
 class ViewerWidget(QWidget):
@@ -76,6 +113,7 @@ class ViewerWidget(QWidget):
             "roi": "ROI Mask",
         }
         self._organ_opacity = 0.4
+        self._tumor_label = 1        # lesion id the tumor brush paints / erases
         self.is_3d = False
         self._scale_zyx = None   # physical spacing (sz, sy, sx) in mm
 
@@ -249,12 +287,16 @@ class ViewerWidget(QWidget):
         self._enforce_layer_order()
 
     def load_mask(self, mask_data: np.ndarray, layer_type: str, color: Optional[int] = None):
-        mask_data = mask_data.astype(np.uint8)
+        mask_data = mask_data.astype(np.uint8 if layer_type in ("roi", "organ") else MASK_DTYPE)
         data_zyx = self.to_napari(mask_data)
         self.load_mask_zyx(data_zyx, layer_type)
 
-    def load_mask_zyx(self, mask_data: np.ndarray, mask_type: str):
-        """Load a label mask already in Napari space (Z, Y, X)."""
+    def load_mask_zyx(self, mask_data: np.ndarray, mask_type: str, visible: Optional[bool] = None):
+        """Load a label mask already in Napari space (Z, Y, X).
+
+        ``visible`` sets a newly created layer's visibility up front, so a
+        hidden layer (the organ mask by default) is never sliced or uploaded.
+        """
         name = self.LAYER_NAMES.get(mask_type, mask_type)
 
         # 1. Critical bypass to prevent re-triggering events on exact same object
@@ -279,13 +321,23 @@ class ViewerWidget(QWidget):
             layer.refresh()
         else:
             kwargs = dict(name=name, opacity=self._tumor_opacity, multiscale=False)
+            if visible is not None:
+                kwargs["visible"] = bool(visible)
             if mask_type == "roi":
                 kwargs["opacity"] = 0.9
             elif mask_type == "organ":
                 kwargs["opacity"] = self._organ_opacity
+            elif mask_type == "tumor":
+                kwargs["colormap"] = TUMOR_LABEL_COLORMAP
+            if not self.is_3d:
+                kwargs["blending"] = "translucent_no_depth"
             if self._scale_zyx is not None:
                 kwargs['scale'] = self._scale_zyx
-            layer = self.viewer.add_labels(mask_data, **kwargs)
+            # Inserted straight at its place in the layer order: a later
+            # layers.move() makes napari rebuild every vispy overlay (~1 s/view).
+            layer = napari.layers.Labels(mask_data, **kwargs)
+            self.viewer.layers.insert(
+                insert_index(self.viewer.layers, name, self._layer_order()), layer)
 
         # Always enforce yellow colormap for ROI layer
         if mask_type == "roi":
@@ -295,13 +347,17 @@ class ViewerWidget(QWidget):
         # the depth buffer written by CT/PET layers causes the mask to fail depth
         # testing on Windows OpenGL. Disabling depth testing on the Labels layer
         # ensures it always renders on top of coplanar image layers.
-        if not self.is_3d:
+        if not self.is_3d and layer.blending != "translucent_no_depth":
             layer.blending = "translucent_no_depth"
 
         if self.is_3d or mask_type == "organ":
             layer.editable = False      # the organ labels are never painted on
 
         if mask_type == "tumor":
+            # One colour per lesion id, the same the Segmentation tab shows.
+            if layer.colormap is not TUMOR_LABEL_COLORMAP:
+                layer.colormap = TUMOR_LABEL_COLORMAP
+            self._apply_tumor_label(layer)
             self._mask_overlay.attach_layer(layer)
             self._apply_mask_display()
 
@@ -360,29 +416,21 @@ class ViewerWidget(QWidget):
             if isinstance(layer, napari.layers.Image):
                 layer.visible = False      # LayoutManager sets visibility again on load
 
-    def _enforce_layer_order(self):
-        """Ensure rendering order: CT < PET < Organ < Tumor < ROI < Preview < Lesion"""
-        desired_order = [
+    def _layer_order(self) -> list:
+        """Rendering order, bottom → top: CT < PET < Organ < Tumor < ROI < Preview < Lesion."""
+        return [
             self.LAYER_NAMES.get("ct", "CT Image"),
             self.LAYER_NAMES.get("pet", "PET Image"),
             self.LAYER_NAMES.get("organ", "Organ Mask"),
             self.LAYER_NAMES.get("tumor", "Tumor Mask"),
             self.LAYER_NAMES.get("roi", "ROI Mask"),
             self.SHAPE_PREVIEW_LAYER,
-            self.LESION_LABEL_LAYER_NAME
+            self.LESION_LABEL_LAYER_NAME,
         ]
-        order_map = {name: i for i, name in enumerate(desired_order)}
-        changed = True
-        while changed:
-            changed = False
-            for i in range(len(self.viewer.layers) - 1):
-                name1 = self.viewer.layers[i].name
-                name2 = self.viewer.layers[i+1].name
-                idx1 = order_map.get(name1, -1)
-                idx2 = order_map.get(name2, -1)
-                if idx1 > -1 and idx2 > -1 and idx1 > idx2:
-                    self.viewer.layers.move(i, i+1)
-                    changed = True
+
+    def _enforce_layer_order(self):
+        """Ensure rendering order: CT < PET < Organ < Tumor < ROI < Preview < Lesion"""
+        reorder_layers(self.viewer.layers, self._layer_order())
 
         # add_labels/add_image makes the new layer the active layer. In 2D viewers
         # this triggers napari's _on_active_layer_mode_change callback which may
@@ -425,6 +473,12 @@ class ViewerWidget(QWidget):
                 self._select_image_layer()
             else:
                 self.viewer.layers.selection.active = layer
+                if layer_type == "tumor":
+                    # The selected lesion rules the brush: paint writes it (the
+                    # app asks before keeping it over another lesion), erase
+                    # removes only it (napari's preserve_labels).
+                    self._apply_tumor_label(layer)
+                    layer.preserve_labels = (mode == "erase")
                 if mode == "paint":
                     layer.mode = "paint"
                     layer.brush_size = brush_size
@@ -437,6 +491,17 @@ class ViewerWidget(QWidget):
                     layer.mode = "fill"
         # Always re-assert: napari resets mouse_pan via mode-change callbacks
         self.viewer.camera.mouse_pan = False
+
+    def set_tumor_label(self, label_id: int):
+        """Lesion id the tumor brush paints and erases."""
+        self._tumor_label = int(label_id)
+        name = self.LAYER_NAMES["tumor"]
+        if name in self.viewer.layers:
+            self._apply_tumor_label(self.viewer.layers[name])
+
+    def _apply_tumor_label(self, layer):
+        if layer.selected_label != self._tumor_label:
+            layer.selected_label = self._tumor_label
 
     def _select_image_layer(self):
         """Select the first available Image layer as active."""

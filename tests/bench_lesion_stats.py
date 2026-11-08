@@ -29,6 +29,7 @@ from src.core.engine.report_engine import (  # noqa: E402
     ReportEngine, _CONNECTIVITY_26, _label_components, _sphere_kernel, _sphere_mean,
     SUVPEAK_RADIUS_MM,
 )
+from src.core import lesion_labels  # noqa: E402
 from src.gui.components.layout.lesion_info_manager import LesionInfoMixin  # noqa: E402
 from src.utils.dimension_utils import get_spacing_from_affine  # noqa: E402
 from src.utils.nifti_utils import mask_bbox  # noqa: E402
@@ -161,6 +162,18 @@ def bench(name, pet, mask, affine, repeat, profile=False):
     res["main_thread_stall_ms"], res["threaded_compute_ms"] = main_thread_stall(
         lambda: ReportEngine.compute_lesion_stats(pet, mask, affine))
 
+    # Lesion ids (v1.3.0): the app keeps the mask as int16. Binary stats on the
+    # int16 copy, "Give lesion ids", labelled stats and the id list for the toggles.
+    mask16 = mask.astype(np.int16, order="F")
+    _, res["binary_int16"] = timed(
+        lambda: ReportEngine.compute_lesion_stats(pet, mask16, affine), repeat)
+    (ids, _), res["give_ids"] = timed(lambda: lesion_labels.give_lesion_ids(mask16), repeat)
+    lab, res["labeled_total"] = timed(
+        lambda: ReportEngine.compute_lesion_stats(pet, ids, affine, labeled=True), repeat)
+    assert [l["id"] for l in lab["lesions"]] == [l["id"] for l in stats["lesions"]]
+    _, res["present_labels"] = timed(lambda: lesion_labels.present_labels(ids), repeat)
+    del mask16, ids
+
     if profile:
         import cProfile
         import pstats
@@ -171,6 +184,14 @@ def bench(name, pet, mask, affine, repeat, profile=False):
         print(f"---- profile: {name} ----")
         pstats.Stats(prof).sort_stats("cumulative").print_stats(15)
     return res
+
+
+def fmt_ids(res):
+    def ms(key):
+        v = res.get(key)
+        return f"{v['median_ms']:9.1f}" if v else "        -"
+    return (f"{res['scenario']:<12} {res['n_lesions']:>4}  {ms('binary_int16')} {ms('give_ids')} "
+            f"{ms('labeled_total')} {ms('present_labels')}")
 
 
 def fmt(res):
@@ -219,6 +240,11 @@ def main():
         res = bench(name, pet, mask, affine, args.repeat, args.profile)
         results.append(res)
         print(fmt(res), flush=True)
+
+    print(f"\n{'lesion ids':<12} {'n':>4}  {'bin16 ms':>9} {'giveids':>9} {'labeled':>9} "
+          f"{'ids ms':>9}")
+    for res in results:
+        print(fmt_ids(res), flush=True)
 
     if args.out:
         Path(args.out).write_text(json.dumps(results, indent=2))

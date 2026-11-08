@@ -79,6 +79,7 @@ class DataLoaderWorker(QThread):
             # so nothing heavy is left for the main thread to decompress.
             self.session_manager.refresh_organ_mask()      # <CT>_organ.nii.gz, if present
             self.session_manager.update_lesion_stats()
+            self.session_manager.refresh_label_ids()
             self.finished.emit(True)
 
         except Exception as e:

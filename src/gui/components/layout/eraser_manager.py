@@ -75,6 +75,9 @@ class EraserMixin:
                 self.sig_eraser_background_click.emit()
                 return
 
+            # The flood takes only this id's voxels; undo puts the id back.
+            erased_id = int(mask_zyx[z, y, x])
+
             from ...workers import EraserFloodWorker
             
             # Prevent multiple simultaneous eraser tasks
@@ -101,7 +104,7 @@ class EraserMixin:
                 print(f"[Eraser] Removed component at {coord_zyx} ({num_voxels} voxels).")
 
                 # Emit the diff directly instead of doing heavy numpy copies.
-                self.sig_eraser_region_removed.emit(component_indices_zyx, mask_zyx)
+                self.sig_eraser_region_removed.emit(component_indices_zyx, mask_zyx, erased_id)
                 
             def _on_error(msg):
                 QApplication.restoreOverrideCursor()

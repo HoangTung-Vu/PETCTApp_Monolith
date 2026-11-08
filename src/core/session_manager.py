@@ -8,8 +8,9 @@ from pathlib import Path
 from .file_manager import FileManager, safe_filename_part
 from ..database.session_repository import SessionRepository
 from .engine.report_engine import ReportEngine
+from . import lesion_labels
 from ..utils.nifti_utils import (
-    from_app_orientation, grids_match, las_grid, load_mask_volume, load_nifti_volume,
+    MASK_DTYPE, from_app_orientation, grids_match, las_grid, load_mask_volume, load_nifti_volume,
 )
 
 
@@ -22,6 +23,20 @@ def _stem_from_path(path: Path) -> str:
     return path.stem
 
 
+def load_tumor_mask(path, ref_shape: Optional[tuple] = None) -> tuple:
+    """Read a tumor segmentation: ``(LAS int16 image, labeled)``.
+
+    ``labeled`` — the mask holds lesion ids: some voxel is above 1, or the file
+    carries the app's lesion-id marker (a labelled mask whose lesions were all
+    merged into id 1). A 0/1 file is binary whatever its stored dtype.
+    """
+    img = load_mask_volume(path, ref_shape)
+    labeled = lesion_labels.has_lesion_ids_marker(nib.load(path).header)
+    if not labeled:
+        labeled = bool(np.asarray(img.dataobj).max(initial=0) > 1)
+    return img, labeled
+
+
 def _load_files(ct_path=None, pet_path=None, seg_path=None) -> dict:
     """Read the given NIfTI files concurrently (zlib releases the GIL while
     decompressing, so the .nii.gz files inflate in parallel)."""
@@ -32,7 +47,7 @@ def _load_files(ct_path=None, pet_path=None, seg_path=None) -> dict:
         if pet_path:
             jobs["pet"] = pool.submit(load_nifti_volume, pet_path)
         if seg_path:
-            jobs["seg"] = pool.submit(load_mask_volume, seg_path)
+            jobs["seg"] = pool.submit(load_tumor_mask, seg_path)
         return {key: job.result() for key, job in jobs.items()}
 
 
@@ -104,6 +119,13 @@ class SessionManager:
         # Set by set_tumor_mask, the eraser, and by viewer paint events via
         # MainWindow's sig_mask_modified handler.
         self.tumor_dirty: bool = False
+
+        # The tumor mask holds lesion ids (int16 on disk) instead of 0/1. A
+        # binary mask's lesions are its 26-connected components, numbered head
+        # → feet (see core/lesion_labels.py). ``tumor_label_ids`` = ids present,
+        # refreshed by the load / save workers (``refresh_label_ids``).
+        self.tumor_labeled: bool = False
+        self.tumor_label_ids: list = []
 
         self.patient_name: str = ""
         self.doctor_name: str = ""
@@ -204,7 +226,8 @@ class SessionManager:
             if not candidate.exists():
                 continue
             try:
-                self.tumor_mask = load_mask_volume(candidate, self._ref_image().shape)
+                self.tumor_mask, self.tumor_labeled = load_tumor_mask(
+                    candidate, self._ref_image().shape)
                 abs_seg = str(candidate)
                 print(f"[SessionManager] Reusing existing segmentation {candidate}")
                 break
@@ -314,7 +337,7 @@ class SessionManager:
         seg = seg or self._legacy_path(session_id, "tumor_seg")
         if seg and self._ref_image() is not None:
             try:
-                self.tumor_mask = load_mask_volume(seg, self._ref_image().shape)
+                self.tumor_mask, self.tumor_labeled = load_tumor_mask(seg, self._ref_image().shape)
             except ValueError as e:
                 # Wrong grid (e.g. saved before the session changed grids):
                 # open the images anyway and say why the mask is missing.
@@ -353,6 +376,8 @@ class SessionManager:
 
     def _reset_images(self):
         self.ct_image = self.pet_image = self.tumor_mask = None
+        self.tumor_labeled = False
+        self.tumor_label_ids = []
         self.organ_mask = self._organ_key = None
         self.roi_mask = None
         self._ct_back_ornt = self._pet_back_ornt = None
@@ -377,7 +402,7 @@ class SessionManager:
         if new_image:
             ct, pet, mode, warnings = self._align_grids(ct, pet, resample_mode)
         ref = ct[0] if ct[0] is not None else pet[0]
-        seg = loaded.get("seg")
+        seg, seg_labeled = loaded.get("seg", (None, False))
         seg_resampled = False
         if seg is not None:
             if ref is None:
@@ -399,6 +424,7 @@ class SessionManager:
         mask_closed = False
         if seg is not None:
             self.tumor_mask = seg
+            self.tumor_labeled = seg_labeled
             # Fresh load from disk → in-memory matches disk
             self.tumor_dirty = False
             self.clear_lesion_data()
@@ -410,6 +436,7 @@ class SessionManager:
             if seg is None and self.tumor_mask is not None and (
                     moved or tuple(self.tumor_mask.shape) != tuple(ref.shape)):
                 self.tumor_mask = None
+                self.tumor_labeled = False
                 self.tumor_dirty = False
                 mask_closed = True
             if self.roi_mask is not None and (moved or tuple(self.roi_mask.shape) != tuple(ref.shape)):
@@ -688,7 +715,7 @@ class SessionManager:
         if key == self._organ_key and self.organ_mask is not None:
             return
         try:
-            organ = load_mask_volume(path)
+            organ = load_mask_volume(path, dtype=np.uint8)
             if tuple(organ.shape) != tuple(ref.shape):   # same rule as the tumor mask
                 organ = self._resample_segmentation(organ, ref)
             self.organ_mask, self._organ_key = organ, key
@@ -703,11 +730,25 @@ class SessionManager:
         return None
 
     def _write_tumor_mask(self, seg_path: Path) -> Path:
-        """Write the tumor mask in the source grid's voxel order; returns the path used."""
-        # Back to the native voxel order of the source grid, stored as uint8.
-        mask = nib.Nifti1Image(self.get_tumor_mask_data(), self.tumor_mask.affine)
+        """Write the tumor mask in the source grid's voxel order; returns the path used.
+
+        A labelled mask is stored as int16 with the lesion-id marker; a binary
+        one as uint8 0/1, like the AI results.
+        """
+        data = self.get_tumor_mask_data()
+        # Never squeeze ids into uint8, even if the flag was not set.
+        labeled = self.tumor_labeled or bool(data.max(initial=0) > 1)
+        if not labeled:
+            # Cast here (keeps F order): nibabel's own int16 → uint8 cast also
+            # scans for scaling, ~2× slower.
+            data = data.astype(np.uint8)
+        mask = nib.Nifti1Image(data, self.tumor_mask.affine)
         mask = from_app_orientation(mask, self.ref_back_ornt)
-        mask.set_data_dtype(np.uint8)
+        if labeled:
+            mask.set_data_dtype(MASK_DTYPE)
+            lesion_labels.mark_lesion_ids(mask.header)
+        else:
+            mask.set_data_dtype(np.uint8)
         try:
             nib.save(mask, seg_path)
         except OSError as e:
@@ -733,9 +774,9 @@ class SessionManager:
         return None
 
     def get_tumor_mask_data(self) -> Optional[np.ndarray]:
-        """The in-memory uint8 mask array itself (edits through it are in place)."""
+        """The in-memory int16 mask array itself (edits through it are in place)."""
         if self.tumor_mask is not None:
-            return np.asarray(self.tumor_mask.dataobj, dtype=np.uint8)
+            return np.asarray(self.tumor_mask.dataobj, dtype=MASK_DTYPE)
         return None
 
     def get_all_sessions(self):
@@ -761,11 +802,13 @@ class SessionManager:
         if self.pet_image is None or self.tumor_mask is None:
             self.clear_lesion_data()
             return
-        if self.lesion_stats is not None and not self.lesion_stats_stale:
+        if (self.lesion_stats is not None and not self.lesion_stats_stale
+                and self.lesion_stats.get("labeled") == self.tumor_labeled):
             return
         try:
             self.lesion_stats = ReportEngine.compute_lesion_stats(
-                self.get_pet_data(), self.get_tumor_mask_data(), self.pet_image.affine
+                self.get_pet_data(), self.get_tumor_mask_data(), self.pet_image.affine,
+                labeled=self.tumor_labeled,
             )
         except Exception:
             import traceback
@@ -776,13 +819,35 @@ class SessionManager:
         print(f"[SessionManager] Lesion stats: {len(self.lesion_stats['lesions'])} lesion(s), "
               f"tTLG={self.lesion_stats['tTLG']:.2f}")
 
+    def refresh_label_ids(self):
+        """Recompute ``tumor_label_ids`` (worker threads, after a load or save).
+
+        Taken from fresh lesion statistics when there are some (their ids are
+        the mask's ids, or 1..N for a binary mask = "has lesions"); otherwise
+        (no PET) the mask is scanned (~50–150 ms on a whole-body grid).
+        """
+        data = self.get_tumor_mask_data()
+        if data is None:
+            self.tumor_label_ids = []
+            return
+        stats = self.lesion_stats
+        if stats is not None and not self.lesion_stats_stale \
+                and stats.get("labeled") == self.tumor_labeled:
+            ids = [les["id"] for les in stats["lesions"]]
+            self.tumor_label_ids = sorted(ids) if self.tumor_labeled else ([1] if ids else [])
+            return
+        self.tumor_label_ids = lesion_labels.present_labels(data)
+
     # ── Mask helpers ──────────────────────────────────────────────────────
 
-    def set_tumor_mask(self, mask_array: np.ndarray):
+    def set_tumor_mask(self, mask_array: np.ndarray, labeled: Optional[bool] = None):
+        """Replace the tumor mask; ``labeled`` None keeps the current mode."""
         ref = self._ref_image()
         if ref is None:
             raise ValueError("A CT or PET image must be loaded to set the mask (need affine).")
-        self.tumor_mask = nib.Nifti1Image(np.asarray(mask_array, dtype=np.uint8), ref.affine)
+        self.tumor_mask = nib.Nifti1Image(np.asarray(mask_array, dtype=MASK_DTYPE), ref.affine)
+        if labeled is not None:
+            self.tumor_labeled = bool(labeled)
         self.tumor_dirty = True
         self.invalidate_lesion_stats()
 
@@ -804,14 +869,15 @@ class SessionManager:
             # In memory only: the file is written by the Segmentation tab's save
             # button. An untouched empty mask has nothing to lose, so it is not dirty.
             print(f"[SessionManager] Creating new zeroed Tumor Mask ({ref.shape})")
-            self.tumor_mask = nib.Nifti1Image(np.zeros(ref.shape, dtype=np.uint8, order="F"), ref.affine)
+            self.tumor_mask = nib.Nifti1Image(np.zeros(ref.shape, dtype=MASK_DTYPE, order="F"), ref.affine)
+            self.tumor_labeled = False
         if self.roi_mask is None:
             self.roi_mask = np.zeros(ref.shape, dtype=np.uint8, order="F")
 
     def merge_roi_into_tumor(self) -> Optional[np.ndarray]:
         if self.roi_mask is None or self.tumor_mask is None:
             return self.get_tumor_mask_data()
-        merged = np.maximum(self.get_tumor_mask_data(), self.roi_mask)
+        merged = lesion_labels.merge_roi(np.copy(self.get_tumor_mask_data()), self.roi_mask, 1)
         self.set_tumor_mask(merged)
         self.clear_roi_mask()
         return merged

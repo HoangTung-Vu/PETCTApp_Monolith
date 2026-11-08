@@ -33,7 +33,7 @@ class EnsureROIWorker(QThread):
         tumor_zyx = None
         if created_new_tumor and tumor_data is not None:
             print("[EnsureROIWorker] Starting to_napari for new Tumor...")
-            tumor_zyx = to_napari(tumor_data.astype(np.uint8, copy=False))
+            tumor_zyx = to_napari(tumor_data)
 
         print(f"[EnsureROIWorker] Emitting finished signal... (created_new_tumor={created_new_tumor})")
         self.finished.emit(roi_data, tumor_data, roi_zyx, tumor_zyx, created_new_tumor)

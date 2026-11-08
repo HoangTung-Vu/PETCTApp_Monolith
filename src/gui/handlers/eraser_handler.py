@@ -13,7 +13,7 @@ class EraserHandlerMixin:
             self.layout_manager.disable_eraser_click_mode()
             print("[Eraser] Mode disabled.")
 
-    def _on_eraser_region_removed(self, erased_indices_zyx, mask_zyx):
+    def _on_eraser_region_removed(self, erased_indices_zyx, mask_zyx, erased_id: int = 1):
         """Called after eraser removes a connected component. Preview only (no save).
 
         The ZYX viewer array is already zeroed; mirror the change into the XYZ
@@ -27,7 +27,8 @@ class EraserHandlerMixin:
         # Limit undo stack depth to 5
         if len(self._eraser_undo_stack) >= 5:
             self._eraser_undo_stack.pop(0)
-        self._eraser_undo_stack.append({"xyz": erased_indices_xyz, "zyx": erased_indices_zyx})
+        self._eraser_undo_stack.append({"xyz": erased_indices_xyz, "zyx": erased_indices_zyx,
+                                        "id": int(erased_id)})
 
         self._set_tumor_voxels(erased_indices_xyz, erased_indices_zyx, 0)
         print(f"[Eraser] Preview updated. Undo stack depth: {len(self._eraser_undo_stack)}")
@@ -42,7 +43,8 @@ class EraserHandlerMixin:
             return
 
         backup = self._eraser_undo_stack.pop()
-        self._set_tumor_voxels(backup["xyz"], backup["zyx"], 1)
+        # The component had a single lesion id (the flood follows one value).
+        self._set_tumor_voxels(backup["xyz"], backup["zyx"], backup.get("id", 1))
         print(f"[Eraser] Undo successful. Undo stack depth: {len(self._eraser_undo_stack)}")
 
     def _set_tumor_voxels(self, indices_xyz, indices_zyx, value: int):

@@ -408,7 +408,7 @@ class ViewDisplayTab(QWidget):
 
         # TotalSegmentator organ labels (<CT>_organ.nii.gz), shown under the tumor mask.
         self.chk_organ = QCheckBox("Show Organ Mask")
-        self.chk_organ.setChecked(True)
+        self.chk_organ.setChecked(False)      # off by default; shown on demand
         self.chk_organ.setToolTip("TotalSegmentator organs, read from <CT>_organ.nii.gz when it exists")
         self.chk_organ.toggled.connect(lambda c: self.sig_toggle_mask.emit("organ", c))
         zm_lay.addRow(self.chk_organ)

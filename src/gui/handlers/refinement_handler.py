@@ -217,6 +217,7 @@ class RefinementHandlerMixin:
             self.session_manager.tumor_mask,
             roi_mask,
             method="iterative",
+            tumor_label=self._active_tumor_label(),   # other lesions count as background
             m=m, c1=c1, c0=c0,
             convergence_tol=convergence_tol,
             max_iterations=max_iterations,
@@ -549,6 +550,8 @@ class RefinementHandlerMixin:
         if roi_data is not None:
             print("[RefineHandler] Pushing ROI mask to all viewers...")
             self._push_mask_to_all("roi", roi_data, data_zyx=roi_zyx)
+        if created_new_tumor:
+            self._refresh_label_selector()     # a new empty mask: label toggles on
         print("[RefineHandler] _on_roi_ready finished")
 
         self._set_ui_busy(False)
@@ -680,10 +683,14 @@ class RefinementHandlerMixin:
             
         self._sync_tumor_from_viewer()
 
-        self.control_panel.show_progress()
-
         roi_xyz = self.session_manager.get_roi_mask_data() if has_roi else None
-        self._merge_save_worker = MergeSaveWorker(self.session_manager, roi_data_xyz=roi_xyz)
+        # The ROI becomes the selected lesion; lesions under it are asked about.
+        merge_ids = self._roi_merge_ids(roi_xyz)
+
+        self.control_panel.show_progress()
+        self._merge_save_worker = MergeSaveWorker(
+            self.session_manager, roi_data_xyz=roi_xyz,
+            label_id=self._active_tumor_label(), merge_ids=merge_ids)
         self._merge_save_worker.merge_ready.connect(self._on_merge_ready)
         self._merge_save_worker.finished.connect(self._on_merge_save_finished)
         self._merge_save_worker.error.connect(self._on_merge_save_error)

@@ -8,6 +8,7 @@ painting finishes (300ms debounce) so MainWindow can sync back
 to session manager without a manual Sync button.
 """
 
+import numpy as np
 from PyQt6.QtCore import QTimer, pyqtSignal
 
 
@@ -20,6 +21,7 @@ class MaskSyncMixin:
     # `update_mask` disconnects events while pushing programmatic data, so
     # this signal only fires for genuine user mutations.
     sig_mask_modified = pyqtSignal(str)
+    # (LayoutManager also declares sig_tumor_overwrite, emitted by _on_tumor_paint.)
 
     def _init_mask_sync(self):
         self._paint_debounce_timer = QTimer()
@@ -52,6 +54,8 @@ class MaskSyncMixin:
                     layer.events.data.connect(self._on_mask_data_changed)
                     if hasattr(layer.events, 'paint'):
                         layer.events.paint.connect(self._on_mask_data_changed)
+                        if layer_name == "Tumor Mask":
+                            layer.events.paint.connect(self._on_tumor_paint)
 
     def _disconnect_mask_events(self):
         """Disconnect mask layer data/paint events from ALL pool viewers (safety)."""
@@ -75,6 +79,11 @@ class MaskSyncMixin:
                             )
                     except Exception:
                         pass
+                    if layer_name == "Tumor Mask":
+                        try:
+                            v.viewer.layers[layer_name].events.paint.disconnect(self._on_tumor_paint)
+                        except Exception:
+                            pass
 
     def _on_mask_data_changed(self, event):
         trigger_layer = event.source
@@ -92,6 +101,26 @@ class MaskSyncMixin:
         # Synchronous notification for dirty-flag tracking — must fire even if
         # the user immediately closes the app before the debounce timer pops.
         self.sig_mask_modified.emit(layer_type)
+
+    def _on_tumor_paint(self, event):
+        """End of a tumor brush stroke: did it paint over another lesion id?
+
+        napari emits ``paint`` once per stroke (``block_history``) with the
+        stroke's history atoms; erase strokes (new value 0) never ask. Binary
+        masks hold only id 1, so this only matters for labelled masks.
+        """
+        if not getattr(self, "_tumor_labeled", False):
+            return
+        atoms = list(event.value or [])
+        if not atoms:
+            return
+        new_value = int(np.asarray(atoms[0][2]).flat[0])
+        if new_value == 0:
+            return
+        from ....core.lesion_labels import overwritten_labels
+        covered = overwritten_labels(atoms, new_value)
+        if covered:
+            self.sig_tumor_overwrite.emit(atoms, new_value, covered)
 
     def _do_visual_refresh(self):
         for trigger_layer, layer_name in list(self._pending_refresh_layers):

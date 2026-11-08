@@ -5,34 +5,16 @@ from pathlib import Path
 
 import numpy as np
 from PIL import Image
-from scipy.ndimage import label, find_objects
 
 from ...utils.dimension_utils import get_spacing_from_affine, get_voxel_volume_from_affine
-from ...utils.nifti_utils import crop_to_napari, mask_bbox
-
-
-# A lesion is a 26-connected component — the same unit the Eraser removes
-# (skimage.flood's default full connectivity).
-_CONNECTIVITY_26 = np.ones((3, 3, 3), dtype=bool)
+from ...utils.nifti_utils import crop_to_napari
+# Re-exported: tests/bench_lesion_stats.py imports them from here.
+from ..lesion_labels import (  # noqa: F401
+    _CONNECTIVITY_26, _label_components, binary_components, label_components,
+)
 
 # SUVpeak sphere: 1 cm³ = 1000 mm³ → r = (3·1000 / 4π)^(1/3) ≈ 6.20 mm.
 SUVPEAK_RADIUS_MM = (3.0 * 1000.0 / (4.0 * np.pi)) ** (1.0 / 3.0)
-
-
-def _label_components(mask: np.ndarray, structure=None):
-    """``scipy.ndimage.label`` + ``find_objects`` in the fast memory order.
-
-    Both are 50–100× slower on Fortran-ordered input (NIfTI's layout), so an
-    F-ordered mask is processed through its C-contiguous transpose; labels come
-    back in ``mask``'s axis order. Returns ``(labels, n, slices)``.
-    """
-    if mask.flags.f_contiguous and not mask.flags.c_contiguous:
-        st = None if structure is None else structure.T
-        labels_t, n = label(mask.T, structure=st)
-        slices = [None if s is None else s[::-1] for s in find_objects(labels_t)]
-        return labels_t.T, n, slices
-    labels, n = label(mask, structure=structure)
-    return labels, n, find_objects(labels)
 
 
 def _sphere_kernel(spacing_xyz, radius_mm: float):
@@ -80,46 +62,41 @@ class ReportEngine:
     """
 
     @staticmethod
-    def compute_lesion_stats(pet: np.ndarray, mask: np.ndarray, affine: np.ndarray) -> dict:
+    def compute_lesion_stats(pet: np.ndarray, mask: np.ndarray, affine: np.ndarray,
+                             labeled: bool = False) -> dict:
         """Per-lesion quantification of a tumour mask.
 
         Args:
-            pet:    PET volume in SUV (XYZ, LAS), any dtype / memory order.
-            mask:   Tumour mask (XYZ, same grid); every non-zero voxel counts.
-            affine: 4x4 voxel → mm affine of the grid.
+            pet:     PET volume in SUV (XYZ, LAS), any dtype / memory order.
+            mask:    Tumour mask (XYZ, same grid).
+            affine:  4x4 voxel → mm affine of the grid.
+            labeled: ``mask`` holds lesion ids — a lesion is every voxel with
+                     one id and its ``id`` is that value (sorted by id, gaps
+                     kept). Otherwise every non-zero voxel counts and the
+                     26-connected components get ids 1..N head → feet, the
+                     ids "Give lesion ids" writes (``lesion_labels``).
 
         Returns:
-            dict with ``tTLG`` (float) and ``lesions``, a list sorted head → feet
-            with 1-based ``id``. Each lesion holds ``MTV`` (mL), ``SUVmax``,
-            ``SUVmean``, ``SUVpeak``, ``TLG``, ``n_voxels``, ``bbox``
-            (inclusive ``(x0, y0, z0, x1, y1, z1)``), ``slices`` (the bbox as XYZ
-            slices), ``mask`` (bool crop of the lesion inside ``slices``),
-            ``suvmax_voxel``, ``center_voxel`` (bbox centre, XYZ) and
-            ``center_physical`` (mm). Values are unrounded.
+            dict with ``tTLG`` (float), ``labeled`` and ``lesions``, a list of dicts with
+            ``id``, ``MTV`` (mL), ``SUVmax``, ``SUVmean``, ``SUVpeak``, ``TLG``,
+            ``n_voxels``, ``bbox`` (inclusive ``(x0, y0, z0, x1, y1, z1)``),
+            ``slices`` (the bbox as XYZ slices), ``mask`` (bool crop of the
+            lesion inside ``slices``), ``suvmax_voxel``, ``center_voxel`` (bbox
+            centre, XYZ) and ``center_physical`` (mm). Values are unrounded.
         """
         if pet.shape != mask.shape:
             raise ValueError(f"Shape mismatch: PET {pet.shape} vs Mask {mask.shape}")
 
-        bb = mask_bbox(mask)
-        if bb is None:
-            return {"tTLG": 0.0, "lesions": []}
+        components = label_components(mask) if labeled else binary_components(mask)
+        if not components:
+            return {"tTLG": 0.0, "lesions": [], "labeled": bool(labeled)}
 
         voxel_ml = get_voxel_volume_from_affine(affine) / 1000.0
         spacing = [abs(float(s)) for s in get_spacing_from_affine(affine)]
         kernel, half = _sphere_kernel(spacing, SUVPEAK_RADIUS_MM)
 
-        # Label only the mask's bounding box. `>` keeps the crop's F layout, so
-        # the transpose fast path of _label_components applies.
-        labels, _, comp_slices = _label_components(mask[bb] > 0, _CONNECTIVITY_26)
-        offset = [s.start for s in bb]
-
         lesions = []
-        for k, sl in enumerate(comp_slices, start=1):
-            if sl is None:
-                continue
-            comp = labels[sl] == k
-            abs_sl = tuple(slice(o + s.start, o + s.stop) for o, s in zip(offset, sl))
-
+        for lesion_id, abs_sl, comp in components:
             # Boolean indexing / argmax walk the array in C order; on the
             # F-ordered crops that is ~30× slower than going through the
             # transposes (memory order). Element order doesn't matter here.
@@ -140,6 +117,7 @@ class ReportEngine:
             phys = affine @ np.array([*center, 1.0])
 
             lesions.append({
+                "id": int(lesion_id),
                 "MTV": mtv,
                 "SUVmax": suv_max,
                 "SUVmean": suv_mean,
@@ -154,14 +132,10 @@ class ReportEngine:
                 "center_physical": tuple(float(v) for v in phys[:3]),
             })
 
-        # IDs go from head to feet: in LAS, larger z is superior.
-        lesions.sort(key=lambda l: (l["bbox"][2] + l["bbox"][5]) / 2.0, reverse=True)
-        for idx, lesion in enumerate(lesions, start=1):
-            lesion["id"] = idx
-
         return {
             "tTLG": float(sum(l["TLG"] for l in lesions)),
             "lesions": lesions,
+            "labeled": bool(labeled),       # ids are the mask's values
         }
 
     # ── Report Export ────────────────────────────────────────────────────

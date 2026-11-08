@@ -25,6 +25,12 @@ from .mask_sync import MaskSyncMixin
 from .eraser_manager import EraserMixin
 from .lesion_info_manager import LesionInfoMixin
 from ....utils.dimension_utils import get_spacing_from_affine
+from ....utils.nifti_utils import MASK_DTYPE
+
+
+def _mask_dtype(mask_type: str):
+    """Lesion ids (tumor) are int16; ROI and organ masks stay uint8."""
+    return MASK_DTYPE if mask_type == "tumor" else np.uint8
 
 
 # ── View metadata ────────────────────────────────────────────────────────────
@@ -68,10 +74,13 @@ def _view_sort_key(view_id: str):
 class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
     """Dynamic multi-view layout manager with a pool of 9 ViewerWidgets."""
 
-    sig_eraser_region_removed   = pyqtSignal(object, object)   # (indices_zyx, mask_zyx)
+    sig_eraser_region_removed   = pyqtSignal(object, object, int)   # (indices_zyx, mask_zyx, erased id)
     sig_eraser_background_click = pyqtSignal()
     sig_mask_painted            = pyqtSignal(str)
     sig_mask_modified           = pyqtSignal(str)
+    # A tumor brush stroke of lesion id A covered other ids: (napari history
+    # item [(indices, old_values, new_value), …], A, [B, …]) → MainWindow asks.
+    sig_tumor_overwrite         = pyqtSignal(object, int, object)
     sig_shape_committed         = pyqtSignal(str)
     sig_cursor_intensity        = pyqtSignal(str)
 
@@ -141,9 +150,14 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
         self._overlay_pet_colormap = "jet"
         self._overlay_pet_opacity = 0.5
         self._tumor_opacity = 0.7
-        # Organ mask (TotalSegmentator, display only): its "Show" checkbox state,
-        # re-applied whenever the layer is created again.
-        self._organ_visible = True
+        # Organ mask (TotalSegmentator, display only): its "Show" checkbox state.
+        # Hidden by default; while hidden no Napari copy or layer is built for
+        # it (see _load_organ_into), so it costs nothing until it is shown.
+        self._organ_visible = False
+        # Lesion id the tumor brush paints / erases (Segmentation tab), and
+        # whether the tumor mask holds lesion ids (decides the overwrite prompt).
+        self._tumor_label = 1
+        self._tumor_labeled = False
 
         # Crosshair state
         self._crosshair_enabled = False
@@ -284,7 +298,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
 
         from ....utils.nifti_utils import to_napari
         if tumor_mask is not None:
-            self._cached_data_zyx["tumor"] = to_napari(tumor_mask.astype(np.uint8, copy=False))
+            self._cached_data_zyx["tumor"] = to_napari(tumor_mask.astype(MASK_DTYPE, copy=False))
         else:
             self._cached_data_zyx["tumor"] = None
         if roi_mask is not None:
@@ -292,8 +306,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
         else:
             self._cached_data_zyx["roi"] = None
         self._cached_data["organ"] = organ_mask
-        self._cached_data_zyx["organ"] = (
-            to_napari(organ_mask.astype(np.uint8, copy=False)) if organ_mask is not None else None)
+        self._cached_data_zyx["organ"] = self._organ_zyx() if self._organ_visible else None
 
         if ct_data is not None:
             self._cached_data_zyx["ct"] = to_napari(ct_data)
@@ -422,25 +435,62 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
             self._load_mask_into(vw, mask_type)
 
     def _load_mask_into(self, vw, mask_type: str):
+        if mask_type == "organ":
+            self._load_organ_into(vw)
+            return
         data = self._cached_data_zyx.get(mask_type)
         if data is None:
             vw.remove_layer(mask_type)
             return
         vw.load_mask_zyx(data, mask_type)
-        if mask_type == "organ":
-            vw.viewer.layers[vw.LAYER_NAMES["organ"]].visible = self._organ_visible
+
+    def _organ_zyx(self):
+        """Napari copy of the session's organ mask (None without one)."""
+        organ = self._cached_data.get("organ")
+        if organ is None:
+            return None
+        from ....utils.nifti_utils import to_napari
+        return to_napari(organ.astype(np.uint8, copy=False))
+
+    def _load_organ_into(self, vw):
+        """Organ layer of ``vw``: filled and shown only while "Show Organ Mask" is on.
+
+        Hidden, an existing layer keeps a 1-voxel placeholder — no slicing or
+        GPU upload of the 117-label volume, and no ~0.4 s layer teardown.
+        """
+        name = vw.LAYER_NAMES["organ"]
+        data = self._cached_data_zyx.get("organ")
+        if self._organ_visible and data is not None:
+            vw.load_mask_zyx(data, "organ", visible=True)
+            vw.viewer.layers[name].visible = True
+        elif name in vw.viewer.layers:
+            layer = vw.viewer.layers[name]
+            layer.visible = False
+            if data is None and layer.data.shape != (1, 1, 1):
+                layer.data = np.zeros((1, 1, 1), dtype=np.uint8)
+
+    def _hide_organ_in(self, vw):
+        """Hide ``vw``'s organ layer and drop its (possibly old) data."""
+        name = vw.LAYER_NAMES["organ"]
+        if name in vw.viewer.layers:
+            layer = vw.viewer.layers[name]
+            layer.visible = False
+            if layer.data.shape != (1, 1, 1):
+                layer.data = np.zeros((1, 1, 1), dtype=np.uint8)
 
     def set_organ_mask(self, organ_mask):
-        """Show a new organ mask (XYZ, session grid) in every loaded view, or remove it (None).
+        """Use a new organ mask (XYZ, session grid), or none (None).
 
-        Only the organ layer is touched — the tumor layers may hold unsynced paint.
+        Only the organ layer is touched — the tumor layers may hold unsynced
+        paint. Nothing is built while the organ mask is hidden.
         """
-        from ....utils.nifti_utils import to_napari
         self._cached_data["organ"] = organ_mask
-        self._cached_data_zyx["organ"] = (
-            to_napari(organ_mask.astype(np.uint8, copy=False)) if organ_mask is not None else None)
+        self._cached_data_zyx["organ"] = self._organ_zyx() if self._organ_visible else None
         for vw in self._get_all_loaded_viewers():
-            self._load_mask_into(vw, "organ")
+            if vw is not self.viewer_3d or vw in self._organ_target_viewers():
+                self._load_organ_into(vw)
+            else:
+                self._hide_organ_in(vw)
 
     # ── 3D data loading ───────────────────────────────────────────────────────
 
@@ -509,6 +559,8 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
             self.stack.setCurrentWidget(self.view_3d_widget)
             first_open = not self._is_3d_loaded      # first 3D view of this session
             self._load_3d_data()
+            if not first_open:
+                self._load_organ_into(self.viewer_3d)   # organ shown since the last 3D visit
             self.viewer_3d.viewer.dims.ndisplay = 3
             if first_open:
                 self._present_coronal_mip()
@@ -781,11 +833,46 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
     def toggle_mask(self, mask_type: str, visible: bool):
         name_map = {"tumor": "Tumor Mask", "roi": "ROI Mask", "organ": "Organ Mask"}
         if mask_type == "organ":
-            self._organ_visible = visible
+            self._show_organ(visible)
+            return
         target_name = name_map.get(mask_type, mask_type)
         for vw in self._get_all_loaded_viewers():
             if target_name in vw.viewer.layers:
                 vw.viewer.layers[target_name].visible = visible
+
+    def _show_organ(self, visible: bool):
+        """Show / hide the organ mask; the first show builds its Napari copy and layers."""
+        self._organ_visible = bool(visible)
+        if self._organ_visible and self._cached_data_zyx.get("organ") is None \
+                and self._cached_data.get("organ") is not None:
+            QApplication.setOverrideCursor(Qt.CursorShape.WaitCursor)
+            try:
+                self._cached_data_zyx["organ"] = self._organ_zyx()
+                for vw in self._organ_target_viewers():
+                    self._load_organ_into(vw)
+            finally:
+                QApplication.restoreOverrideCursor()
+            return
+        for vw in self._organ_target_viewers():
+            self._load_organ_into(vw)
+
+    def _organ_target_viewers(self) -> list:
+        """2D views in the grid, plus the 3D view only while it is on screen
+        (its organ layer is built when it is opened — ``set_view_mode``)."""
+        viewers = [self._fixed_view_map[v_id] for v_id in self._active_views]
+        if self._is_3d_loaded and self.stack.currentWidget() == self.view_3d_widget:
+            viewers.append(self.viewer_3d)
+        return viewers
+
+    def set_tumor_label(self, label_id: int):
+        """Lesion id the tumor brush paints / erases, in every viewer."""
+        self._tumor_label = int(label_id)
+        for vw in list(self._viewer_pool) + [self.viewer_3d]:
+            vw.set_tumor_label(self._tumor_label)
+
+    def set_tumor_labeled(self, labeled: bool):
+        """The tumor mask holds lesion ids (painting over another id asks first)."""
+        self._tumor_labeled = bool(labeled)
 
     def toggle_3d_pet(self, pet_mode: bool):
         ct_name  = self.viewer_3d.LAYER_NAMES["ct"]
@@ -853,10 +940,10 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
                 data_zyx = existing_zyx
         elif reuse:
             if not is_same_object:
-                to_napari(np.asarray(mask_data, dtype=np.uint8), out=existing_zyx)
+                to_napari(np.asarray(mask_data, dtype=_mask_dtype(mask_type)), out=existing_zyx)
             data_zyx = existing_zyx
         else:
-            data_zyx = to_napari(np.asarray(mask_data, dtype=np.uint8))
+            data_zyx = to_napari(np.asarray(mask_data, dtype=_mask_dtype(mask_type)))
 
         self._cached_data_zyx[mask_type] = data_zyx
         self._push_mask_to_viewers(data_zyx, mask_type)
@@ -927,7 +1014,7 @@ class LayoutManager(MaskSyncMixin, EraserMixin, LesionInfoMixin, QWidget):
                 self._cached_data_zyx[mask_type] = None
                 return
             from ....utils.nifti_utils import to_napari
-            self._cached_data_zyx[mask_type] = to_napari(np.asarray(mask_data, dtype=np.uint8))
+            self._cached_data_zyx[mask_type] = to_napari(np.asarray(mask_data, dtype=_mask_dtype(mask_type)))
 
         if self._cached_data_zyx[mask_type] is not None:
             for v in self._get_visible_viewers():

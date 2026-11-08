@@ -1,16 +1,27 @@
-"""Refine tab: Manual edit (tumor), ROI tools, SUV refinement, Adaptive/Iterative threshold computation."""
+"""Refine (Segmentation) tab: lesion label, manual edit (tumor), ROI tools,
+SUV refinement, Adaptive/Iterative threshold computation."""
 
 from PyQt6.QtWidgets import (
     QWidget, QVBoxLayout, QPushButton, QFormLayout, QGroupBox,
     QSlider, QHBoxLayout, QLabel, QGridLayout, QComboBox,
     QDoubleSpinBox, QSpinBox, QProgressBar, QButtonGroup,
-    QScrollArea
+    QScrollArea, QToolButton, QFrame
 )
 from PyQt6.QtCore import Qt, pyqtSignal
 
+from ..viewers.label_colors import label_qcolor, text_color_for
+
+_LABEL_COLUMNS = 6
+_LABEL_ROWS_VISIBLE = 4
+_LABEL_BUTTON_H = 26
+
 
 class RefineTab(QWidget):
-    """Manual edit (tumor) + ROI drawing tools + SUV refinement + threshold computation."""
+    """Lesion label + manual edit (tumor) + ROI drawing tools + SUV refinement + threshold computation."""
+
+    # Signals — Lesion label: every tool below edits only the selected id
+    sig_label_selected = pyqtSignal(int)
+    sig_give_ids_clicked = pyqtSignal()
 
     # Signals — Manual Edit (tumor mask)
     sig_manual_edit_tool = pyqtSignal(str)       # 'pan_zoom', 'paint', 'erase'
@@ -27,6 +38,11 @@ class RefineTab(QWidget):
 
     def __init__(self, parent=None):
         super().__init__(parent)
+        self._label_buttons = {}      # id → QToolButton (the "Another" one excluded)
+        self._another_btn = None
+        self._another_id = 1
+        self._selected_label = 1
+        self._labeled = False
         self._init_ui()
 
     def _init_ui(self):
@@ -41,6 +57,12 @@ class RefineTab(QWidget):
         # Container widget
         container = QWidget()
         layout = QVBoxLayout(container)
+
+        # ═══════════════════════════════════════════════════════════════
+        # SECTION 0: Lesion Label — the id every tool below edits
+        # ═══════════════════════════════════════════════════════════════
+        layout.addWidget(self._build_label_section())
+        layout.addSpacing(8)
 
         # ═══════════════════════════════════════════════════════════════
         # SECTION 1: Manual Edit — paint/erase directly on tumor mask
@@ -284,6 +306,160 @@ class RefineTab(QWidget):
 
         scroll.setWidget(container)
         main_layout.addWidget(scroll)
+
+    # ── Lesion label section ──
+
+    def _build_label_section(self) -> QGroupBox:
+        grp = QGroupBox("Lesion Label")
+        lay = QVBoxLayout()
+
+        self._label_grid_widget = QWidget()
+        self._label_grid = QGridLayout(self._label_grid_widget)
+        self._label_grid.setContentsMargins(0, 0, 0, 0)
+        self._label_grid.setSpacing(3)
+        self._label_group = QButtonGroup(self)
+        self._label_group.setExclusive(True)
+
+        self._label_scroll = QScrollArea()
+        self._label_scroll.setWidgetResizable(True)
+        self._label_scroll.setFrameShape(QFrame.Shape.NoFrame)
+        self._label_scroll.setHorizontalScrollBarPolicy(Qt.ScrollBarPolicy.ScrollBarAlwaysOff)
+        self._label_scroll.setWidget(self._label_grid_widget)
+        lay.addWidget(self._label_scroll)
+
+        self.lbl_label_info = QLabel("")
+        self.lbl_label_info.setStyleSheet("font-weight: bold; padding: 2px;")
+        lay.addWidget(self.lbl_label_info)
+
+        self.lbl_label_hint = QLabel("")
+        self.lbl_label_hint.setWordWrap(True)
+        self.lbl_label_hint.setStyleSheet("color: #888; font-style: italic; padding: 2px;")
+        lay.addWidget(self.lbl_label_hint)
+
+        self.btn_give_ids = QPushButton("Give lesion ids")
+        self.btn_give_ids.setToolTip(
+            "Number the lesions from scratch: every non-zero voxel is tumor, each\n"
+            "26-connected region becomes one lesion, ids 1..N from head to feet.\n"
+            "The segmentation file is overwritten (int16) and the values recomputed."
+        )
+        self.btn_give_ids.clicked.connect(self.sig_give_ids_clicked.emit)
+        lay.addWidget(self.btn_give_ids)
+
+        grp.setLayout(lay)
+        self.set_label_choices([], False, None, has_mask=False)
+        return grp
+
+    def _make_label_button(self, label_id: int, text: str) -> QToolButton:
+        btn = QToolButton()
+        btn.setCheckable(True)
+        btn.setText(text)
+        btn.setFixedHeight(_LABEL_BUTTON_H)
+        btn.setMinimumWidth(36)
+        color = label_qcolor(label_id).name()
+        btn.setStyleSheet(
+            f"QToolButton {{ background: {color}; color: {text_color_for(label_id)};"
+            " border: 1px solid #222; border-radius: 3px; font-weight: bold; padding: 0 4px; }"
+            " QToolButton:checked { border: 3px solid #ffffff; }"
+            " QToolButton:disabled { background: #555; color: #999; }"
+        )
+        self._label_group.addButton(btn)
+        return btn
+
+    def _clear_label_buttons(self):
+        for btn in list(self._label_group.buttons()):
+            self._label_group.removeButton(btn)
+            self._label_grid.removeWidget(btn)
+            btn.hide()                 # gone now, not when deleteLater runs
+            btn.setParent(None)
+            btn.deleteLater()
+        self._label_buttons = {}
+        self._another_btn = None
+
+    def set_label_choices(self, ids, labeled: bool, selected=None, has_mask: bool = True):
+        """Rebuild the lesion toggles and select one; emits ``sig_label_selected``.
+
+        ``ids``: lesion ids present in the mask. A binary mask has only id 1
+        (every connected region is a lesion, numbered by position). The last
+        toggle, "Another", paints a new id (``max(ids) + 1``; 1 on a binary
+        mask) for lesions the current ids miss — "Give lesion ids" then
+        separates them. ``selected`` is kept when it is still offered.
+        """
+        self._clear_label_buttons()
+        self._labeled = bool(labeled)
+        ids = sorted(int(i) for i in ids) if labeled else ([1] if ids else [])
+        self._another_id = (max(ids) + 1) if (labeled and ids) else 1
+
+        row = col = 0
+        for label_id in ids:
+            btn = self._make_label_button(label_id, str(label_id))
+            btn.setToolTip(f"Lesion {label_id}" if labeled
+                           else "Binary mask: all lesions (id 1)")
+            btn.clicked.connect(lambda _=False, v=label_id: self._select_label(v, False))
+            self._label_grid.addWidget(btn, row, col)
+            self._label_buttons[label_id] = btn
+            col += 1
+            if col == _LABEL_COLUMNS:
+                row, col = row + 1, 0
+        if col + 2 > _LABEL_COLUMNS:
+            row, col = row + 1, 0
+        self._another_btn = self._make_label_button(self._another_id, "Another")
+        self._another_btn.setToolTip(
+            "Draw lesions the current ids are missing"
+            + (f" (new id {self._another_id})" if labeled else "")
+            + ".\nPress Give lesion ids afterwards to give each one its own id."
+        )
+        self._another_btn.clicked.connect(lambda: self._select_label(self._another_id, True))
+        self._label_grid.addWidget(self._another_btn, row, col, 1, 2)
+        n_rows = row + 1
+        visible_rows = min(n_rows, _LABEL_ROWS_VISIBLE)
+        self._label_scroll.setFixedHeight(visible_rows * (_LABEL_BUTTON_H + 3) + 4)
+        self._label_grid_widget.adjustSize()
+
+        for btn in self._label_group.buttons():
+            btn.setEnabled(has_mask)
+        self.btn_give_ids.setEnabled(has_mask and bool(ids))
+
+        if not has_mask:
+            self.lbl_label_info.setText("No segmentation loaded")
+            self.lbl_label_hint.setText("")
+            self._selected_label = 1
+            return
+        if labeled:
+            self.lbl_label_hint.setText(
+                "The tools below edit only the selected lesion; other lesions count as "
+                "background. Painting over another lesion asks whether it is the same lesion."
+            )
+        else:
+            self.lbl_label_hint.setText(
+                "Binary mask: each connected region is one lesion (ids by position, "
+                "head → feet). Press Give lesion ids to edit lesions separately."
+            )
+        if selected is not None and int(selected) in self._label_buttons:
+            self._select_label(int(selected), False)
+        elif selected is not None and int(selected) == self._another_id:
+            self._select_label(self._another_id, True)
+        elif ids:
+            self._select_label(ids[0], False)
+        else:
+            self._select_label(self._another_id, True)
+
+    def _select_label(self, label_id: int, another: bool):
+        btn = self._another_btn if another else self._label_buttons.get(label_id)
+        if btn is not None and not btn.isChecked():
+            btn.setChecked(True)
+        self._selected_label = int(label_id)
+        if another and self._labeled:
+            self.lbl_label_info.setText(f"Editing: Another — new lesion id {label_id}")
+        elif another:
+            self.lbl_label_info.setText("Editing: Another lesion (binary mask)")
+        elif self._labeled:
+            self.lbl_label_info.setText(f"Editing: Lesion {label_id}")
+        else:
+            self.lbl_label_info.setText("Editing: all lesions (binary mask)")
+        self.sig_label_selected.emit(self._selected_label)
+
+    def selected_label(self) -> int:
+        return self._selected_label
 
     # ── Signal emitters ──
 

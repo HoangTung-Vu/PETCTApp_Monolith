@@ -1,3 +1,5 @@
+from typing import Optional
+
 import numpy as np
 import nibabel as nib
 from ...utils.dimension_utils import get_voxel_volume_ml_from_affine
@@ -85,8 +87,13 @@ class IterativeThresholdingEngine:
         pet_image: nib.Nifti1Image,
         mask_image: nib.Nifti1Image,
         roi_mask: np.ndarray,
+        tumor_label: Optional[int] = None,
     ):
         """Compute iterative threshold per connected component in the ROI.
+
+        ``tumor_label``: only that lesion id of ``mask_image`` counts as tumour
+        when estimating the background (the Segmentation tab edits one lesion
+        and treats the others as background). None = every non-zero voxel.
 
         Uses scipy.ndimage.label to split ROI into connected components,
         then runs the iterative algorithm on each independently.
@@ -100,7 +107,7 @@ class IterativeThresholdingEngine:
         from scipy.ndimage import label as cc_label, find_objects
 
         pet_data = pet_image.get_fdata(dtype=np.float32)
-        mask_data = np.asarray(mask_image.dataobj, dtype=np.uint8)
+        mask_data = np.asarray(mask_image.dataobj)     # lesion ids: no uint8 wrap
         roi = roi_mask > 0
 
         self._validate_shapes(pet_data, mask_data, roi)
@@ -130,7 +137,7 @@ class IterativeThresholdingEngine:
 
             comp = labels[slc] == comp_id
             pet_slc = pet_data[slc]
-            mask_slc = mask_data[slc]
+            mask_slc = (mask_data[slc] == tumor_label) if tumor_label is not None else mask_data[slc]
 
             n_voxels = int(comp.sum())
             if n_voxels < 2:
@@ -238,7 +245,7 @@ class IterativeThresholdingEngine:
             Refined binary mask NIfTI with the same affine/header as mask_image.
         """
         pet_data = pet_image.get_fdata(dtype=np.float32)
-        mask_data = np.asarray(mask_image.dataobj, dtype=np.uint8)
+        mask_data = np.asarray(mask_image.dataobj)
         roi = roi_mask > 0
 
         self._validate_shapes(pet_data, mask_data, roi)

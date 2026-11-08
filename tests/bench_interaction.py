@@ -148,6 +148,146 @@ def check(ok, what):
 CHECK_FAILURES = []
 
 
+def lesion_id_paths(b, win, shape):
+    """v1.3.0: Give lesion ids, the "same lesion?" prompt (no / yes), ROI merge
+    into a selected id, eraser undo of an id, and the organ layer shown after
+    the tumor layer exists (the post-TotalSegmentator "Not Responding" hang)."""
+    from src.core.lesion_labels import has_lesion_ids_marker
+
+    lm, sm = win.layout_manager, win.session_manager
+    rt = win.control_panel.refine_tab
+    Zn, Yn, Xn = shape[2], shape[1], shape[0]
+
+    def to_nap(v):
+        x, y, z = v
+        return (Zn - 1 - z, Yn - 1 - y, x)
+
+    win.control_panel.tabs.setCurrentIndex(win._TAB_REFINE)
+    b.wait(lambda: win.control_panel.tabs.isEnabled())
+    b.pump(200)
+    check(not sm.tumor_labeled and rt.btn_give_ids.isEnabled(),
+          "binary mask: Give lesion ids enabled, single toggle")
+    binary = [(l["id"], l["bbox"]) for l in sm.lesion_stats["lesions"]]
+
+    # ── 10. Give lesion ids (relabel + save int16 + recompute) ──
+    t0 = b.start("give_lesion_ids")
+    win._on_give_lesion_ids()
+    b.wait(lambda: not win._give_ids_worker.isRunning())
+    b.pump(100)
+    b.record("give_lesion_ids", time.perf_counter() - t0)
+    labelled = [(l["id"], l["bbox"]) for l in sm.lesion_stats["lesions"]]
+    check(sm.tumor_labeled and sm.lesion_stats["labeled"] and labelled == binary,
+          f"Give ids = the binary report's ids and lesions ({len(labelled)})")
+    seg_path = sm.repository.get_by_id(sm.current_session_id).tumor_seg_path
+    saved = nib.load(seg_path)
+    check(saved.get_data_dtype() == np.int16 and has_lesion_ids_marker(saved.header),
+          "saved as int16 with the lesion-id marker")
+    check(sorted(rt._label_buttons) == [i for i, _ in labelled] and rt._another_btn is not None,
+          "one toggle per id + Another")
+
+    # ── 11. Brush of lesion 1 over lesion 2 → "same lesion?" ──
+    answers = {"merge": False, "asked": []}
+
+    def fake_ask(label_id, covered, what):
+        answers["asked"].append((label_id, list(covered), what))
+        return answers["merge"]
+    win._ask_same_lesion = fake_ask
+
+    les = {l["id"]: l for l in sm.lesion_stats["lesions"]}
+    target = to_nap(les[2]["suvmax_voxel"])
+    rt._select_label(1, False)
+    win._on_manual_edit_tool("paint")
+    vw = lm._fixed_view_map["axial_ct"]
+    layer = vw.viewer.layers[vw.LAYER_NAMES["tumor"]]
+    zyx = lm.get_active_mask_data_zyx("tumor")
+    lm.jump_to_position(*[float(c) for c in target])
+    b.pump(100)
+    t0 = b.start("paint_over_other_lesion_no")
+    layer.paint(target, 1)
+    b.pump(100)
+    b.record("paint_over_other_lesion_no", time.perf_counter() - t0)
+    check(answers["asked"] and answers["asked"][-1][:2] == (1, [2]), "prompt asked about lesion 2")
+    check(zyx[target] == 2, "No: lesion 2 kept its voxels")
+
+    answers["merge"] = True
+    n2 = int((zyx == 2).sum())
+    t0 = b.start("paint_over_other_lesion_yes")
+    layer.paint(target, 1)
+    b.pump(100)
+    b.record("paint_over_other_lesion_yes", time.perf_counter() - t0)
+    check(n2 > 0 and not (zyx == 2).any(), f"Yes: all {n2} voxels of lesion 2 became lesion 1")
+    win._on_manual_edit_tool("pan_zoom")
+    t0 = b.start("save_merged")
+    win._on_confirm_and_save()
+    b.wait(lambda: not win._merge_save_worker.isRunning())
+    b.pump(100)
+    b.record("save_merged", time.perf_counter() - t0)
+    ids_after = [l["id"] for l in sm.lesion_stats["lesions"]]
+    check(2 not in ids_after and 1 in ids_after and len(ids_after) == len(labelled) - 1,
+          f"merged lesion is one lesion in the values ({ids_after})")
+
+    # ── 12. ROI thresholded into "Another" (new id), lesion under it kept ──
+    rt._another_btn.click()
+    new_id = rt.selected_label()
+    check(new_id == max(ids_after) + 1, f"Another = new id {new_id}")
+    les3 = to_nap(les[3]["suvmax_voxel"])
+    roi_zyx = lm.get_active_mask_data_zyx("roi")
+    r = _LESION_R + 4
+    roi_zyx[les3[0] - r:les3[0] + r, les3[1] - r:les3[1] + r, les3[2] - r:les3[2] + r] = 1
+    lm.refresh_mask("roi")
+    win._sync_roi_from_viewer()                      # the red button merges the session ROI
+    answers["merge"] = False
+    n_asked = len(answers["asked"])
+    win._on_confirm_and_save()
+    b.wait(lambda: not win._merge_save_worker.isRunning())
+    b.pump(100)
+    zyx = lm.get_active_mask_data_zyx("tumor")
+    check(len(answers["asked"]) == n_asked + 1 and answers["asked"][-1][:2] == (new_id, [3]),
+          "ROI over lesion 3 asked once")
+    check(zyx[les3] == 3 and (zyx == new_id).any(),
+          "ROI filled background as the new id, lesion 3 kept")
+    check(new_id in [l["id"] for l in sm.lesion_stats["lesions"]], "new id in the values")
+
+    # ── 13. Eraser + undo restores the lesion's own id ──
+    win.control_panel.tabs.setCurrentIndex(win._TAB_ERASER)
+    b.pump(200)
+    win.control_panel.eraser_tab.btn_eraser_toggle.setChecked(True)
+    b.pump(100)
+    scale = vw._scale_zyx
+    before = len(win._eraser_undo_stack)
+    vw._eraser_callback(vw.viewer, FakeMouseEvent(tuple(c * s for c, s in zip(les3, scale))))
+    b.wait(lambda: len(win._eraser_undo_stack) > before)
+    b.pump()
+    check(zyx[les3] == 0, "eraser removed lesion 3")
+    win._on_eraser_undo()
+    b.pump()
+    check(zyx[les3] == 3, "eraser undo put id 3 back (not 1)")
+    win.control_panel.eraser_tab.btn_eraser_toggle.setChecked(False)
+    win.control_panel.tabs.setCurrentIndex(win._TAB_WORKFLOW)
+    b.pump(200)
+
+    # ── 14. Organ mask shown while tumor layers exist (old: infinite loop) ──
+    organ = np.zeros(shape, dtype=np.uint8, order="F")
+    organ[shape[0] // 4: 3 * shape[0] // 4, shape[1] // 4: 3 * shape[1] // 4, :] = 5
+    t0 = b.start("organ_mask_after_tumor_hidden")
+    lm.set_organ_mask(organ)
+    b.pump(50)
+    b.record("organ_mask_after_tumor_hidden", time.perf_counter() - t0)
+    check(lm._cached_data_zyx.get("organ") is None, "hidden organ mask builds nothing")
+    t0 = b.start("organ_mask_show")
+    win.control_panel.view_display_tab.chk_organ.setChecked(True)
+    b.pump(100)
+    b.record("organ_mask_show", time.perf_counter() - t0)
+    ok = True
+    for v in lm._get_visible_viewers():
+        names = [l.name for l in v.viewer.layers]
+        ok &= ("Organ Mask" in names and names.index("Organ Mask") < names.index("Tumor Mask")
+               and v.viewer.layers["Organ Mask"].visible)
+    check(ok, "organ layer shown under the tumor in every view")
+    win.control_panel.view_display_tab.chk_organ.setChecked(False)
+    b.pump(50)
+
+
 def run(args):
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtGui import QWheelEvent
@@ -384,6 +524,8 @@ def run(args):
     csv_path = export_root / str(sm.current_session_id) / "report_metabolic.csv"
     head = csv_path.read_text().splitlines()[0] if csv_path.exists() else ""
     check("SUVpeak" in head and "TLG" in head, "CSV has SUVpeak + TLG columns")
+
+    lesion_id_paths(b, win, shape)
 
     if CHECK_FAILURES:
         print(f"[bench] {len(CHECK_FAILURES)} check(s) FAILED: {CHECK_FAILURES}")

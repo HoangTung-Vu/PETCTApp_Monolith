@@ -10,8 +10,10 @@ layer reports a change:
 * ``events.labels_update`` — each mouse move of a brush / fill stroke
 * ``events.paint``         — end of a stroke, undo / redo
 
-Only the current slice's ``QPainterPath`` is kept (in voxel-index
-coordinates); pan and zoom just change the painter transform.
+Only the current slice's ``QPainterPath``s are kept (one per lesion id, in
+voxel-index coordinates); pan and zoom just change the painter transform.
+Each lesion id is drawn in its own colour, so touching lesions with different
+ids keep separate outlines.
 """
 
 import numpy as np
@@ -46,8 +48,9 @@ def _chaikin(points: np.ndarray, iterations: int = 2) -> np.ndarray:
     return points
 
 
-def mask_outlines(plane: np.ndarray, smooth: bool) -> list:
-    """Closed outlines of ``plane > 0`` as (N, 2) arrays of (row, col) indices.
+def mask_outlines(plane: np.ndarray, smooth: bool, value: int = None) -> list:
+    """Closed outlines of ``plane > 0`` (or ``plane == value``) as (N, 2)
+    arrays of (row, col) indices.
 
     Voxel centres sit on integer indices. ``smooth`` traces the 0.5 iso-line
     (marching squares), flattens its steps and rounds it with Chaikin's corner
@@ -55,7 +58,7 @@ def mask_outlines(plane: np.ndarray, smooth: bool) -> list:
     """
     from skimage.measure import find_contours
 
-    mask = plane > 0
+    mask = plane > 0 if value is None else plane == value
     rows = np.flatnonzero(mask.any(axis=1))
     if rows.size == 0:
         return []
@@ -79,6 +82,19 @@ def mask_outlines(plane: np.ndarray, smooth: bool) -> list:
     return outlines
 
 
+def label_outlines(plane: np.ndarray, smooth: bool) -> dict:
+    """``{lesion id: mask_outlines(plane == id)}`` for every id in ``plane``."""
+    rows = np.flatnonzero(plane.any(axis=1))
+    if rows.size == 0:
+        return {}
+    cols = np.flatnonzero(plane.any(axis=0))
+    crop = plane[rows[0]:rows[-1] + 1, cols[0]:cols[-1] + 1]
+    ids = [int(v) for v in np.unique(crop) if v != 0]
+    if len(ids) == 1:
+        return {ids[0]: mask_outlines(plane, smooth)}
+    return {v: mask_outlines(plane, smooth, v) for v in ids}
+
+
 class MaskOverlay(QWidget):
     """Tumor mask drawn as a smoothed fill or an outline of constant pixel width."""
 
@@ -91,7 +107,7 @@ class MaskOverlay(QWidget):
         self._smooth = False
         self._width = 2                   # contour pen width, screen pixels
         self._opacity = 0.7
-        self._path = None                 # QPainterPath of the slice in _path_key
+        self._path = None                 # {lesion id: QPainterPath} of the slice in _path_key
         self._path_key = None
 
         # Completely transparent: mouse events fall through to canvas below
@@ -157,25 +173,26 @@ class MaskOverlay(QWidget):
         transform = self._vw._canvas_transform()
         if transform is None:
             return
-        path = self._current_path(layer)
-        if path is None or path.isEmpty():
+        paths = self._current_path(layer)
+        if not paths:
             return
 
-        rgba = np.asarray(layer.colormap.map(1), dtype=float).ravel()
-        color = QColor.fromRgbF(float(rgba[0]), float(rgba[1]), float(rgba[2]), self._opacity)
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setTransform(transform)
-        if self._style == "contour":
-            pen = QPen(color, self._width)
-            pen.setCosmetic(True)                 # width in screen pixels at any zoom
-            pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
-            painter.setPen(pen)
-            painter.setBrush(Qt.BrushStyle.NoBrush)
-        else:
-            painter.setPen(Qt.PenStyle.NoPen)
-            painter.setBrush(color)
-        painter.drawPath(path)
+        for lesion_id, path in paths.items():
+            rgba = np.asarray(layer.colormap.map(np.array([lesion_id])), dtype=float).ravel()
+            color = QColor.fromRgbF(float(rgba[0]), float(rgba[1]), float(rgba[2]), self._opacity)
+            if self._style == "contour":
+                pen = QPen(color, self._width)
+                pen.setCosmetic(True)                 # width in screen pixels at any zoom
+                pen.setJoinStyle(Qt.PenJoinStyle.RoundJoin)
+                painter.setPen(pen)
+                painter.setBrush(Qt.BrushStyle.NoBrush)
+            else:
+                painter.setPen(Qt.PenStyle.NoPen)
+                painter.setBrush(color)
+            painter.drawPath(path)
         painter.end()
 
     def _current_path(self, layer):
@@ -190,15 +207,19 @@ class MaskOverlay(QWidget):
         if self._path is not None and key == self._path_key:
             return self._path
 
-        path = QPainterPath()
-        path.setFillRule(Qt.FillRule.OddEvenFill)          # holes stay empty
+        paths = {}
         if 0 <= index < data.shape[axis]:
             plane = data[tuple(index if d == axis else slice(None) for d in range(3))]
             if displayed[0] > displayed[1]:
                 plane = plane.T
-            for outline in mask_outlines(plane, self._smooth):
-                # (row, col) = (vertical, horizontal) → (x, y) = (col, row)
-                path.addPolygon(QPolygonF([QPointF(x, y) for y, x in outline]))
-                path.closeSubpath()
-        self._path, self._path_key = path, key
-        return path
+            for lesion_id, outlines in label_outlines(plane, self._smooth).items():
+                path = QPainterPath()
+                path.setFillRule(Qt.FillRule.OddEvenFill)          # holes stay empty
+                for outline in outlines:
+                    # (row, col) = (vertical, horizontal) → (x, y) = (col, row)
+                    path.addPolygon(QPolygonF([QPointF(x, y) for y, x in outline]))
+                    path.closeSubpath()
+                if not path.isEmpty():
+                    paths[lesion_id] = path
+        self._path, self._path_key = paths, key
+        return paths

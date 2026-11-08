@@ -20,6 +20,7 @@ class SaveWorker(QThread):
             self.session_manager.save_session(self.seg_path)
             # A saved (edited) mask gets fresh lesion statistics.
             self.session_manager.update_lesion_stats()
+            self.session_manager.refresh_label_ids()
             self.finished.emit()
         except Exception as e:
             import traceback

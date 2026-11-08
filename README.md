@@ -129,7 +129,19 @@ The app is installed to `/opt/MetLePET` and uses the desktop's own GTK/Qt system
 | TotalSegmentator (organs), port 8105 | CT | `<CT>_organ.nii.gz` — organ labels, display only |
 | Other… | CT + PET | `<CT>_Segmentation_<typed name>.nii.gz` |
 
-Picking a preset fills in that engine's default port. Running a model overwrites its own result file. When `<CT>_organ.nii.gz` exists, the app shows it automatically as the **Organ Mask** layer (View tab → Zoom & Mask: show/hide, opacity); it is never edited and does not change the lesion values. Any other segmentation is opened with **Load Segmentation** and becomes the session's lesion segmentation.
+Picking a preset fills in that engine's default port. Running a model overwrites its own result file. When `<CT>_organ.nii.gz` exists, the app loads it as the **Organ Mask** layer, hidden by default: turn on **View tab → Zoom & Mask → Show Organ Mask** to see it (opacity next to it). It is never edited and does not change the lesion values. Any other segmentation is opened with **Load Segmentation** and becomes the session's lesion segmentation.
+
+### Lesion ids
+
+A lesion segmentation is either **binary** (0/1, what the AI models return) or **labelled** (int16, each voxel holds its lesion id).
+
+- **Binary:** every 26-connected region is one lesion, numbered 1..N from head to feet. The report and the lesion table use these numbers.
+- **Labelled:** a lesion is every voxel with one id, and its id is the mask value (gaps allowed).
+- **Give lesion ids** (Segmentation tab) numbers the mask from scratch: binarise, connected regions, 1..N head → feet, the same numbers a binary mask is reported with. The file is saved at once as int16.
+- **Lesion Label** (Segmentation tab) selects the id that every tool below it edits: the brush paints it, the erase brush removes only it, ROI thresholding merges into it.
+  - **Another** paints a new id for lesions the current ids miss; press Give lesion ids afterwards to separate them.
+  - Painting over another lesion asks whether it is the same lesion: **Yes** merges it into the selected id, **No** keeps it and paints only background.
+- A new AI run writes a binary mask again; give the ids again if needed.
 
 ### Building a release
 
