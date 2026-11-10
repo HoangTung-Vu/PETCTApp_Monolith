@@ -56,6 +56,8 @@ class MaskSyncMixin:
                         layer.events.paint.connect(self._on_mask_data_changed)
                         if layer_name == "Tumor Mask":
                             layer.events.paint.connect(self._on_tumor_paint)
+                        else:
+                            layer.events.paint.connect(self._on_roi_paint)
 
     def _disconnect_mask_events(self):
         """Disconnect mask layer data/paint events from ALL pool viewers (safety)."""
@@ -79,11 +81,11 @@ class MaskSyncMixin:
                             )
                     except Exception:
                         pass
-                    if layer_name == "Tumor Mask":
-                        try:
-                            v.viewer.layers[layer_name].events.paint.disconnect(self._on_tumor_paint)
-                        except Exception:
-                            pass
+                    try:
+                        v.viewer.layers[layer_name].events.paint.disconnect(
+                            self._on_tumor_paint if layer_name == "Tumor Mask" else self._on_roi_paint)
+                    except Exception:
+                        pass
 
     def _on_mask_data_changed(self, event):
         trigger_layer = event.source
@@ -122,6 +124,11 @@ class MaskSyncMixin:
         covered = overwritten_labels(atoms, new_value)
         if covered:
             self.sig_tumor_overwrite.emit(atoms, new_value, covered)
+
+    def _on_roi_paint(self, event):
+        """End of an ROI brush / fill stroke: remember its view for undo / redo."""
+        if event.value:
+            self._record_stroke("roi", event.source)
 
     def _do_visual_refresh(self):
         for trigger_layer, layer_name in list(self._pending_refresh_layers):

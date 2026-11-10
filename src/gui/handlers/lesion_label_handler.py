@@ -177,9 +177,29 @@ class LesionLabelHandlerMixin:
 
     def _on_manual_undo(self):
         """Undo the last brush stroke or double-click island erase."""
-        if self.layout_manager.undo_tumor_edit():
+        self._tumor_history_step(redo=False)
+
+    def _tumor_history_step(self, redo: bool):
+        lm = self.layout_manager
+        if lm.redo_mask_edit("tumor") if redo else lm.undo_mask_edit("tumor"):
             self.session_manager.tumor_dirty = True
             self._mark_lesion_stats_stale()
-            self.control_panel.refine_tab.set_manual_hint("Last edit undone.")
+            self.control_panel.refine_tab.set_manual_hint(
+                "Last undone edit redone." if redo else "Last edit undone.")
         else:
-            self.control_panel.refine_tab.set_manual_hint("Nothing to undo.")
+            self.control_panel.refine_tab.set_manual_hint(
+                "Nothing to redo." if redo else "Nothing to undo.")
+
+    def _on_mask_history_key(self, mask_type: str, redo: bool):
+        """Ctrl+Z / Ctrl+Shift+Z on the tumor or ROI layer, in any view.
+
+        Same as the Undo button for the tumor; the ROI gets its own undo /
+        redo. Either way every view is refreshed (napari's built-in undo
+        refreshed only the view the keys were pressed in).
+        """
+        if mask_type == "tumor":
+            self._tumor_history_step(redo)
+            return
+        lm = self.layout_manager
+        if lm.redo_mask_edit("roi") if redo else lm.undo_mask_edit("roi"):
+            self._update_refine_button_states()

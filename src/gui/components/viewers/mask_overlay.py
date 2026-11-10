@@ -1,25 +1,42 @@
-"""Smoothed fill / outline of the tumor mask, drawn over a 2D Napari canvas.
+"""Smoothed fill / outline of a mask (tumor or ROI), drawn over a 2D Napari canvas.
 
 Display only. The Labels layer underneath stays the data and the editor
 (brush, erase, fill, shapes, undo); in these styles it is drawn at opacity 0
 and this widget redraws the current slice from ``layer.data`` whenever the
-layer reports a change:
+layer reports a change. What napari 0.6.6 emits (measured):
 
 * ``events.set_data``      — slice change and every ``refresh()`` (view sync,
-  island erase, load, confirm & save)
+  island erase, undo / redo, load, threshold preview, confirm & save)
 * ``events.labels_update`` — each mouse move of a brush / fill stroke
-* ``events.paint``         — end of a stroke, undo / redo
+* ``events.paint``         — end of a stroke
+* ``events.data``          — ``layer.data = ...``; the only event when the
+  layer is hidden, since ``refresh()`` does nothing on a hidden layer
+* ``events.visible``       — show / hide (showing also refreshes)
 
-Only the current slice's ``QPainterPath``s are kept (one per lesion id, in
+So the Labels layer must stay *visible* at opacity 0: hidden, it stops
+emitting ``set_data`` and napari forces it into pan_zoom (no painting).
+
+Only the current slice's ``QPainterPath``s are kept (one per label id, in
 voxel-index coordinates); pan and zoom just change the painter transform.
-Each lesion id is drawn in its own colour, so touching lesions with different
-ids keep separate outlines.
+Each id is drawn in its layer colormap's colour, so touching lesions with
+different ids keep separate outlines and the ROI stays yellow.
 """
 
 import numpy as np
 from PyQt6.QtWidgets import QWidget
 from PyQt6.QtCore import Qt, QEvent, QPointF
 from PyQt6.QtGui import QPainter, QPainterPath, QPen, QColor, QPolygonF
+
+# Startup look of each mask, (style, smooth, contour width px), shared by the
+# viewers and the View tab controls so the two never disagree.
+DEFAULT_MASK_DISPLAY = {
+    "tumor": ("filled", True, 2),
+    "roi": ("contour", True, 2),
+}
+DEFAULT_MASK_OPACITY = {"tumor": 0.7, "roi": 1.0}
+
+# Layer events that change what the overlay must draw (see module docstring).
+_LAYER_EVENTS = ("set_data", "labels_update", "paint", "visible", "data")
 
 
 def _smooth_closed(points: np.ndarray, sigma: float = 1.0) -> np.ndarray:
@@ -96,7 +113,7 @@ def label_outlines(plane: np.ndarray, smooth: bool) -> dict:
 
 
 class MaskOverlay(QWidget):
-    """Tumor mask drawn as a smoothed fill or an outline of constant pixel width."""
+    """A mask layer drawn as a smoothed fill or an outline of constant pixel width."""
 
     def __init__(self, viewer_widget_ref, parent: QWidget):
         super().__init__(parent)
@@ -107,8 +124,13 @@ class MaskOverlay(QWidget):
         self._smooth = False
         self._width = 2                   # contour pen width, screen pixels
         self._opacity = 0.7
-        self._path = None                 # {lesion id: QPainterPath} of the slice in _path_key
+        self._path = None                 # {label id: QPainterPath} of the slice in _path_key
         self._path_key = None
+        # {label id: (r, g, b)} of ``_rgb_cmap``. napari's DirectLabelColormap
+        # (the ROI's yellow) takes ~1.3 ms per ``map()`` call — too slow for
+        # every paint of every view. Assigning a colormap replaces the object.
+        self._rgb_cmap = None
+        self._rgb = {}
 
         # Completely transparent: mouse events fall through to canvas below
         self.setAttribute(Qt.WidgetAttribute.WA_TransparentForMouseEvents, True)
@@ -139,18 +161,18 @@ class MaskOverlay(QWidget):
         self.update()
 
     def attach_layer(self, layer):
-        """Follow ``layer`` (the tumor Labels layer); no-op if already attached."""
+        """Follow ``layer`` (a tumor or ROI Labels layer); no-op if already attached."""
         if layer is self._layer:
             return
         self.detach()
         self._layer = layer
-        for name in ("set_data", "labels_update", "paint", "visible"):
+        for name in _LAYER_EVENTS:
             getattr(layer.events, name).connect(self.invalidate)
         self.invalidate()
 
     def detach(self):
         if self._layer is not None:
-            for name in ("set_data", "labels_update", "paint", "visible"):
+            for name in _LAYER_EVENTS:
                 try:
                     getattr(self._layer.events, name).disconnect(self.invalidate)
                 except Exception:
@@ -180,9 +202,9 @@ class MaskOverlay(QWidget):
         painter = QPainter(self)
         painter.setRenderHint(QPainter.RenderHint.Antialiasing, True)
         painter.setTransform(transform)
+        rgb = self._label_rgb(layer, paths)
         for lesion_id, path in paths.items():
-            rgba = np.asarray(layer.colormap.map(np.array([lesion_id])), dtype=float).ravel()
-            color = QColor.fromRgbF(float(rgba[0]), float(rgba[1]), float(rgba[2]), self._opacity)
+            color = QColor.fromRgbF(*rgb[lesion_id], self._opacity)
             if self._style == "contour":
                 pen = QPen(color, self._width)
                 pen.setCosmetic(True)                 # width in screen pixels at any zoom
@@ -194,6 +216,18 @@ class MaskOverlay(QWidget):
                 painter.setBrush(color)
             painter.drawPath(path)
         painter.end()
+
+    def _label_rgb(self, layer, ids) -> dict:
+        """``{id: (r, g, b)}`` for ``ids`` from the layer's colormap, cached."""
+        cmap = layer.colormap
+        if cmap is not self._rgb_cmap:
+            self._rgb_cmap, self._rgb = cmap, {}
+        missing = [i for i in ids if i not in self._rgb]
+        if missing:
+            rgba = np.asarray(cmap.map(np.array(missing)), dtype=float).reshape(-1, 4)
+            for i, c in zip(missing, rgba):
+                self._rgb[i] = (float(c[0]), float(c[1]), float(c[2]))
+        return self._rgb
 
     def _current_path(self, layer):
         dims = self._vw.viewer.dims

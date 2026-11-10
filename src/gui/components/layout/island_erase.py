@@ -1,4 +1,4 @@
-"""Island erase + undo for the tumor mask's manual edits — mixin for LayoutManager.
+"""Island erase + undo / redo for manual mask edits — mixin for LayoutManager.
 
 With the Segmentation tab's Erase brush active, a double-click removes the
 whole island under the cursor: the 26-connected region of the selected
@@ -6,8 +6,13 @@ lesion id (skimage.flood, same value). It replaces the old Eraser tab.
 
 The removal goes through ``Labels.data_setitem``, so it lands in napari's
 undo history like a brush stroke and fires the usual ``paint`` event (dirty
-flag, stale lesion values, refresh of the other views). ``undo_tumor_edit``
-undoes the latest stroke / island, newest first, across all 2D views.
+flag, stale lesion values, refresh of the other views).
+
+Each 2D view has its own Labels layer (and napari history) over one shared
+array. ``undo_mask_edit`` / ``redo_mask_edit`` pop the latest tumor or ROI
+edit across all views and refresh every view — napari's own undo / redo
+refreshes only the layer it ran on (no ``paint`` / ``data`` event). The Undo
+button and Ctrl+Z / Ctrl+Shift+Z in any view go through them.
 """
 
 import time
@@ -20,42 +25,76 @@ from PyQt6.QtWidgets import QApplication
 class IslandEraseMixin:
 
     def _init_island_erase(self):
-        # Tumor layers in the order their edits were made (one entry per
-        # napari history item), so Undo knows which view's history to pop.
-        self._tumor_edit_layers = []
+        # Per mask, the layers in the order their edits were made (one entry
+        # per napari history item), so undo / redo know which view's history
+        # to pop. The lists are only ever cleared, never rebound.
+        self._edit_layers = {"tumor": [], "roi": []}
+        self._redo_layers = {"tumor": [], "roi": []}
+        self._tumor_edit_layers = self._edit_layers["tumor"]
         self._last_tumor_stroke = None      # (layer, time, atoms) of the latest stroke
         self._island_worker = None
 
     # ── History bookkeeping ──
 
+    def _record_stroke(self, mask_type: str, layer):
+        """A finished brush / fill / island edit of ``mask_type`` on ``layer``."""
+        stack = self._edit_layers[mask_type]
+        stack.append(layer)
+        del stack[:-200]
+        self._redo_layers[mask_type].clear()      # a new edit drops what was undone
+
     def _record_tumor_stroke(self, layer, atoms):
         """Called for every finished tumor stroke (paint, erase, island)."""
-        self._tumor_edit_layers.append(layer)
-        del self._tumor_edit_layers[:-200]
+        self._record_stroke("tumor", layer)
         self._last_tumor_stroke = (layer, time.monotonic(), atoms)
 
-    def reset_tumor_history(self):
-        """The tumor mask was replaced from outside the brush (load, save, Give
-        ids, AI run): the napari histories no longer match the data."""
+    def reset_mask_history(self, mask_type: str):
+        """The mask was replaced from outside the brush (load, save, Give ids,
+        AI run, threshold preview / apply): napari's histories no longer match
+        the data, and undoing them would write stale voxels."""
         for vw in list(self._viewer_pool) + [self.viewer_3d]:
-            name = vw.LAYER_NAMES["tumor"]
+            name = vw.LAYER_NAMES[mask_type]
             if name in vw.viewer.layers:
                 layer = vw.viewer.layers[name]
                 if hasattr(layer, "_reset_history"):
                     layer._reset_history()
-        self._tumor_edit_layers = []
-        self._last_tumor_stroke = None
+        self._edit_layers[mask_type].clear()
+        self._redo_layers[mask_type].clear()
+        if mask_type == "tumor":
+            self._last_tumor_stroke = None
+
+    def reset_tumor_history(self):
+        self.reset_mask_history("tumor")
+
+    def undo_mask_edit(self, mask_type: str) -> bool:
+        """Undo the latest edit of ``mask_type`` in any view. False if none."""
+        stack = self._edit_layers[mask_type]
+        while stack:
+            layer = stack.pop()
+            if getattr(layer, "_undo_history", None):
+                layer.undo()
+                self._redo_layers[mask_type].append(layer)
+                if mask_type == "tumor":
+                    self._last_tumor_stroke = None
+                self.refresh_mask(mask_type)     # the other views share the array
+                return True
+        return False
+
+    def redo_mask_edit(self, mask_type: str) -> bool:
+        """Redo the latest undone edit of ``mask_type``. False if none."""
+        stack = self._redo_layers[mask_type]
+        while stack:
+            layer = stack.pop()
+            if getattr(layer, "_redo_history", None):
+                layer.redo()
+                self._edit_layers[mask_type].append(layer)
+                self.refresh_mask(mask_type)
+                return True
+        return False
 
     def undo_tumor_edit(self) -> bool:
         """Undo the latest tumor stroke or island erase. False if nothing to undo."""
-        while self._tumor_edit_layers:
-            layer = self._tumor_edit_layers.pop()
-            if getattr(layer, "_undo_history", None):
-                layer.undo()
-                self._last_tumor_stroke = None
-                self.refresh_mask("tumor")       # the other views share the array
-                return True
-        return False
+        return self.undo_mask_edit("tumor")
 
     # ── Island erase ──
 

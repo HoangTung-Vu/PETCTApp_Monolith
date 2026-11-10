@@ -198,6 +198,7 @@ class MainWindow(
         cp.sig_give_ids_clicked.connect(self._on_give_lesion_ids)
         cp.sig_another_clicked.connect(self._on_another_clicked)
         cp.sig_manual_undo_clicked.connect(self._on_manual_undo)
+        lm.sig_mask_history_key.connect(self._on_mask_history_key)
         lm.sig_island_erase_info.connect(self.control_panel.refine_tab.set_manual_hint)
         lm.sig_tumor_overwrite.connect(self._on_tumor_overwrite)
 

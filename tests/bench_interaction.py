@@ -148,6 +148,61 @@ def check(ok, what):
 CHECK_FAILURES = []
 
 
+def overlay_fresh(lm, mask_type) -> bool:
+    """Every visible 2D view's smooth / contour overlay draws what its Labels
+    layer holds now: the cached slice paths equal a rebuild from ``layer.data``
+    (a stale cache means an edit path ended without a napari event)."""
+    ok = True
+    for v in lm._get_visible_viewers():
+        name = v.LAYER_NAMES[mask_type]
+        overlay = v._mask_overlays[mask_type]
+        if v.is_3d or name not in v.viewer.layers or not overlay._enabled:
+            continue
+        layer = v.viewer.layers[name]
+        drawn = overlay._current_path(layer)
+        overlay._path = None
+        rebuilt = overlay._current_path(layer)
+        ok &= drawn.keys() == rebuilt.keys() and all(drawn[k] == rebuilt[k] for k in rebuilt)
+    return ok
+
+
+def labels_fresh(lm, mask_type) -> bool:
+    """Every visible 2D view shows the current mask: napari's displayed slice
+    (what the texture is built from) equals the shared data. False is the
+    "other views only update after a scroll" state."""
+    ok = True
+    for v in lm._get_visible_viewers():
+        name = v.LAYER_NAMES[mask_type]
+        if v.is_3d or name not in v.viewer.layers:
+            continue
+        sl = v.viewer.layers[name]._slice.image
+        ok &= np.array_equal(np.asarray(sl.view),
+                             np.asarray(v.viewer.layers[name]._raw_to_displayed(np.asarray(sl.raw))))
+    return ok
+
+
+def press_keys(lm, view_id, keys):
+    """A key press in ``view_id`` (goes to its active layer's key bindings)."""
+    lm._fixed_view_map[view_id].qt_viewer._key_map_handler.press_key(keys)
+
+
+def overlay_mode_ok(lm, mask_type) -> bool:
+    """2D: Labels transparent under an enabled overlay. 3D: plain Labels at the
+    mask opacity (smooth / contour are 2D only)."""
+    ok = True
+    for v in lm._get_visible_viewers() + ([lm.viewer_3d] if lm._is_3d_loaded else []):
+        name = v.LAYER_NAMES[mask_type]
+        if name not in v.viewer.layers:
+            continue
+        layer = v.viewer.layers[name]
+        opacity = v._roi_opacity if mask_type == "roi" else v._tumor_opacity
+        if v.is_3d:
+            ok &= abs(layer.opacity - opacity) < 1e-6
+        else:
+            ok &= layer.visible and layer.opacity == 0.0 and v._mask_overlays[mask_type]._enabled
+    return ok
+
+
 def lesion_id_paths(b, win, shape):
     """v1.3.0: Give lesion ids, the "same lesion?" prompt (no / yes), ROI merge
     into a selected id, island erase + undo of an id, and the organ layer shown after
@@ -443,6 +498,35 @@ def run(args):
         b.pump(400)                                   # debounced auto-sync
         b.record(f"brush_paint{suffix}", time.perf_counter() - t0, n)
         win._on_manual_edit_tool("pan_zoom")
+        check(overlay_mode_ok(lm, "tumor") and overlay_mode_ok(lm, "roi"),
+              f"default smooth display: Labels at opacity 0 under the overlays{suffix}")
+        check(overlay_fresh(lm, "tumor"), f"tumor overlay follows the brush in every view{suffix}")
+
+        # ── 5b. ROI brush stroke at the crosshair, then put the voxels back ──
+        roi_layer = vw.viewer.layers[vw.LAYER_NAMES["roi"]]
+        zr, yr, xr = (int(round(c)) for c in lm._xhair_pos)
+        roi_zyx = lm.get_active_mask_data_zyx("roi")
+        box = (zr, slice(max(yr - 8, 0), yr + 8), slice(max(xr - 8, 0), xr + 8))
+        saved_roi = roi_zyx[box].copy()
+        lm.set_drawing_tool("paint", 10, "roi")       # ROI layer active: gets the keys
+        roi_layer.paint((zr, yr, xr), 1)
+        b.pump(150)                                   # mask_sync refreshes the other views
+        check(not np.array_equal(roi_zyx[box], saved_roi) and roi_zyx[zr, yr, xr] == 1
+              and overlay_fresh(lm, "roi") and labels_fresh(lm, "roi"),
+              f"ROI overlay follows a brush stroke in every view{suffix}")
+        press_keys(lm, "coronal_ct", "Control-Z")     # stroke was made in axial_ct
+        b.pump(50)
+        check(np.array_equal(roi_zyx[box], saved_roi) and labels_fresh(lm, "roi")
+              and overlay_fresh(lm, "roi"), f"ROI Ctrl+Z from another view, all views updated{suffix}")
+        press_keys(lm, "axial_pet", "Control-Shift-Z")
+        b.pump(50)
+        check(roi_zyx[zr, yr, xr] == 1 and labels_fresh(lm, "roi") and overlay_fresh(lm, "roi"),
+              f"ROI Ctrl+Shift+Z redo, all views updated{suffix}")
+        lm.set_drawing_tool("pan_zoom", 10, "roi")
+        roi_zyx[box] = saved_roi
+        lm.refresh_mask("roi")
+        b.pump(50)
+        check(overlay_fresh(lm, "roi"), f"ROI overlay follows refresh_mask{suffix}")
 
         # ── 6. Threshold preview slider ticks ──
         cx, cy, cz = lesion_centres(shape)[1]
@@ -453,6 +537,8 @@ def run(args):
         for v in lm._get_visible_viewers():
             if vw.LAYER_NAMES["roi"] in v.viewer.layers:
                 v.viewer.layers[vw.LAYER_NAMES["roi"]].refresh()
+        b.pump(50)
+        check(overlay_fresh(lm, "roi"), f"ROI overlay follows an in-place edit + refresh{suffix}")
         win._on_refine_adaptive(0.7, "outside_isocontour", 3)
         b.wait(lambda: getattr(win, "_current_preview_dialog", None) is not None)
         b.pump(200)
@@ -461,8 +547,11 @@ def run(args):
             win._update_component_preview(2.0 + 0.1 * i)
             b.pump()
         b.record(f"threshold_slider_tick{suffix}", time.perf_counter() - t0, 30)
+        b.pump(50)
+        check(overlay_fresh(lm, "roi"), f"ROI overlay follows the threshold preview{suffix}")
         win._current_preview_dialog.reject()
         b.pump(200)
+        check(overlay_fresh(lm, "roi"), f"ROI overlay follows the preview reject{suffix}")
 
         # ── 7. Confirm & save (merge ROI into tumor, write to disk) ──
         check(sm.lesion_stats_stale, "brush edit marks lesion values stale")
@@ -474,6 +563,8 @@ def run(args):
         check(not sm.lesion_stats_stale, "red button recomputed the lesion values "
               f"({len(sm.lesion_stats['lesions'])} lesions)")
         check(len(lm._shown_lesion_keys) == 1, "lesion box survives the recompute")
+        check(overlay_fresh(lm, "tumor") and overlay_fresh(lm, "roi"),
+              f"both overlays follow confirm & save{suffix}")
 
         # ── 8. Island erase: Erase tool + double-click on a lesion, then Undo ──
         rt = win.control_panel.refine_tab
@@ -498,6 +589,32 @@ def run(args):
         b.pump()
         b.record(f"manual_undo{suffix}", time.perf_counter() - t0)
         check(zyx[voxel] == 1, "Undo restored the island")
+        check(overlay_fresh(lm, "tumor") and labels_fresh(lm, "tumor"),
+              f"tumor overlay follows island erase + Undo{suffix}")
+
+        # Ctrl+Z / Ctrl+Shift+Z: napari's own undo refreshed only one view.
+        # Empty corner of the crosshair's axial slice (Erase mode keeps
+        # preserve_labels on: inside a lesion this paint would change nothing).
+        zt = int(round(lm._xhair_pos[0]))
+        tbox = (slice(max(zt - 8, 0), zt + 8), slice(4, 28), slice(4, 28))
+        saved_t = zyx[tbox].copy()
+        layer.paint((zt, 16, 16), int(lm._tumor_label))
+        b.pump(150)
+        painted = zyx[tbox].copy()
+        check(not np.array_equal(painted, saved_t) and labels_fresh(lm, "tumor"),
+              f"tumor test stroke painted and synced{suffix}")
+        press_keys(lm, "sagittal_overlay", "Control-Z")
+        b.pump(50)
+        check(np.array_equal(zyx[tbox], saved_t) and labels_fresh(lm, "tumor")
+              and overlay_fresh(lm, "tumor"), f"tumor Ctrl+Z from another view, all views updated{suffix}")
+        press_keys(lm, "axial_ct", "Control-Shift-Z")
+        b.pump(50)
+        check(np.array_equal(zyx[tbox], painted) and labels_fresh(lm, "tumor")
+              and overlay_fresh(lm, "tumor"), f"tumor Ctrl+Shift+Z redo, all views updated{suffix}")
+        rt.btn_manual_undo.click()                    # Undo button: same history
+        b.pump(50)
+        check(np.array_equal(zyx[tbox], saved_t) and labels_fresh(lm, "tumor"),
+              f"Undo button after a redo{suffix}")
 
         # Erase again and save with the red button → values recomputed.
         vw._lesion_dblclick_cb(vw.viewer, FakeMouseEvent(pos))

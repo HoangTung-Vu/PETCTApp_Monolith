@@ -40,7 +40,7 @@ class ControlPanel(QWidget):
     sig_reset_3d_view = pyqtSignal()
     sig_overlay_pet_opacity_changed = pyqtSignal(float)
     sig_tumor_opacity_changed = pyqtSignal(float)
-    sig_mask_display_changed = pyqtSignal(str, bool, int)
+    sig_mask_display_changed = pyqtSignal(str, str, bool, int)   # mask type, style, smooth, width
     sig_roi_opacity_changed = pyqtSignal(float)
     sig_organ_opacity_changed = pyqtSignal(float)
     sig_ct_window_level_changed = pyqtSignal(float, float)

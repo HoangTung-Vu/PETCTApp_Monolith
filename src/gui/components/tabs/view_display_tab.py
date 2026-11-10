@@ -7,6 +7,8 @@ from PyQt6.QtWidgets import (
 )
 from PyQt6.QtCore import Qt, pyqtSignal, QTimer
 
+from ..viewers.mask_overlay import DEFAULT_MASK_DISPLAY, DEFAULT_MASK_OPACITY
+
 
 # ── Preset W/L tables ──────────────────────────────────────────────────────
 CT_PRESETS = {
@@ -98,8 +100,8 @@ class ViewDisplayTab(QWidget):
 
     sig_overlay_pet_opacity_changed = pyqtSignal(float)
     sig_tumor_opacity_changed    = pyqtSignal(float)
-    # Tumor mask style: ("filled" | "contour", smooth edges, contour width in px)
-    sig_mask_display_changed     = pyqtSignal(str, bool, int)
+    # Mask style: ("tumor" | "roi", "filled" | "contour", smooth edges, contour width px)
+    sig_mask_display_changed     = pyqtSignal(str, str, bool, int)
     sig_roi_opacity_changed      = pyqtSignal(float)
     sig_organ_opacity_changed    = pyqtSignal(float)
     sig_ct_window_level_changed  = pyqtSignal(float, float)
@@ -360,33 +362,15 @@ class ViewDisplayTab(QWidget):
 
         self.slider_tumor_opacity = QSlider(Qt.Orientation.Horizontal)
         self.slider_tumor_opacity.setRange(0, 100)
-        self.slider_tumor_opacity.setValue(70)
+        self.slider_tumor_opacity.setValue(round(DEFAULT_MASK_OPACITY["tumor"] * 100))
         self.slider_tumor_opacity.valueChanged.connect(
             lambda v: self.sig_tumor_opacity_changed.emit(v / 100.0)
         )
         zm_lay.addRow("Mask opacity:", self.slider_tumor_opacity)
 
-        self.combo_mask_style = QComboBox()
-        self.combo_mask_style.addItems(["Filled", "Contour"])
-        self.combo_mask_style.setToolTip("Tumor mask as a filled area or as an outline (2D views)")
-        zm_lay.addRow("Mask style:", self.combo_mask_style)
-
-        self.chk_mask_smooth = QCheckBox("Smooth edges")
-        self.chk_mask_smooth.setToolTip(
-            "Draw the tumor mask with rounded edges instead of voxel steps.\n"
-            "Display only — the segmentation and its values are unchanged.")
-        zm_lay.addRow(self.chk_mask_smooth)
-
-        self.spin_mask_width = QSpinBox()
-        self.spin_mask_width.setRange(1, 5)
-        self.spin_mask_width.setValue(2)
-        self.spin_mask_width.setSuffix(" px")
-        self.spin_mask_width.setEnabled(False)
-        zm_lay.addRow("Contour width:", self.spin_mask_width)
-
-        self.combo_mask_style.currentIndexChanged.connect(self._on_mask_style_changed)
-        self.chk_mask_smooth.toggled.connect(self._emit_mask_display)
-        self.spin_mask_width.valueChanged.connect(self._emit_mask_display)
+        # Style / smooth / width controls per mask: {"tumor" | "roi": (combo, check, spin)}
+        self._mask_style_widgets = {}
+        self._add_mask_style_rows(zm_lay, "tumor", "Mask", "tumor mask", self.slider_tumor_opacity)
 
         self.chk_tumor = QCheckBox("Show Tumor Mask")
         self.chk_tumor.setChecked(True)
@@ -400,11 +384,12 @@ class ViewDisplayTab(QWidget):
 
         self.slider_roi_opacity = QSlider(Qt.Orientation.Horizontal)
         self.slider_roi_opacity.setRange(0, 100)
-        self.slider_roi_opacity.setValue(90)
+        self.slider_roi_opacity.setValue(round(DEFAULT_MASK_OPACITY["roi"] * 100))
         self.slider_roi_opacity.valueChanged.connect(
             lambda v: self.sig_roi_opacity_changed.emit(v / 100.0)
         )
         zm_lay.addRow("ROI opacity:", self.slider_roi_opacity)
+        self._add_mask_style_rows(zm_lay, "roi", "ROI", "ROI mask", self.slider_roi_opacity)
 
         # TotalSegmentator organ labels (<CT>_organ.nii.gz), shown under the tumor mask.
         self.chk_organ = QCheckBox("Show Organ Mask")
@@ -504,20 +489,57 @@ class ViewDisplayTab(QWidget):
         self.btn_crosshair.setText("Crosshair: ON" if checked else "Crosshair: OFF")
         self.sig_crosshair_toggled.emit(checked)
 
-    def _on_mask_style_changed(self, index: int):
+    def _add_mask_style_rows(self, form: QFormLayout, mask_type: str, prefix: str,
+                             what: str, opacity_slider: QSlider):
+        """Style (Filled / Contour), Smooth edges and Contour width rows for one mask.
+
+        Initial values come from ``DEFAULT_MASK_DISPLAY`` — the viewers start
+        from the same table, so nothing has to be emitted at startup.
+        """
+        style, smooth, width = DEFAULT_MASK_DISPLAY[mask_type]
+
+        combo = QComboBox()
+        combo.addItems(["Filled", "Contour"])
+        combo.setCurrentIndex(1 if style == "contour" else 0)
+        combo.setToolTip(f"The {what} as a filled area or as an outline (2D views)")
+        form.addRow(f"{prefix} style:", combo)
+
+        check = QCheckBox("Smooth edges")
+        check.setChecked(smooth)
+        check.setToolTip(
+            f"Draw the {what} with rounded edges instead of voxel steps.\n"
+            "Display only — the mask and its values are unchanged.")
+        form.addRow(check)
+
+        spin = QSpinBox()
+        spin.setRange(1, 5)
+        spin.setValue(width)
+        spin.setSuffix(" px")
+        spin.setEnabled(style == "contour")
+        form.addRow("Contour width:", spin)
+
+        self._mask_style_widgets[mask_type] = (combo, check, spin)
+        combo.currentIndexChanged.connect(
+            lambda index: self._on_mask_style_changed(mask_type, index, opacity_slider))
+        check.toggled.connect(lambda *_: self._emit_mask_display(mask_type))
+        spin.valueChanged.connect(lambda *_: self._emit_mask_display(mask_type))
+
+    def _on_mask_style_changed(self, mask_type: str, index: int, opacity_slider: QSlider):
         # A thin outline at partial opacity is hard to see over PET, so
         # switching to contour starts fully opaque (the slider can lower it).
         if index == 1:
-            self.slider_tumor_opacity.setValue(100)
-        self._emit_mask_display()
+            opacity_slider.setValue(100)
+        self._emit_mask_display(mask_type)
 
-    def _emit_mask_display(self, *_):
-        contour = self.combo_mask_style.currentIndex() == 1
-        self.spin_mask_width.setEnabled(contour)
+    def _emit_mask_display(self, mask_type: str):
+        combo, check, spin = self._mask_style_widgets[mask_type]
+        contour = combo.currentIndex() == 1
+        spin.setEnabled(contour)
         self.sig_mask_display_changed.emit(
+            mask_type,
             "contour" if contour else "filled",
-            self.chk_mask_smooth.isChecked(),
-            self.spin_mask_width.value(),
+            check.isChecked(),
+            spin.value(),
         )
 
     def _on_interpolation_toggled(self, *_):

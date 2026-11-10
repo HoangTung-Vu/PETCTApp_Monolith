@@ -141,8 +141,13 @@ A lesion segmentation is either **binary** (0/1, what the AI models return) or *
 - **Lesion Label** (Segmentation tab) selects the id that every tool below it edits: the brush paints it, the erase brush removes only it, ROI thresholding merges into it.
   - **+ Another** creates a new id (one more than the largest) and selects it, to draw a lesion the current ids miss. On a binary mask it first offers to give the lesion ids. An id that is never drawn disappears at the next save.
   - With **Erase** selected, a **double-click** removes the whole island (connected region) of the selected lesion under the cursor. **Undo** takes back the last stroke or island. This replaces the old Eraser tab.
+  - **Ctrl+Z / Ctrl+Shift+Z** undo / redo the last lesion or ROI edit while a brush tool is active, in whichever view you press them; every view updates.
   - Painting over another lesion asks whether it is the same lesion: **Yes** merges it into the selected id, **No** keeps it and paints only background.
 - A new AI run writes a binary mask again; give the ids again if needed.
+
+### Mask display
+
+**View tab → Zoom & Mask** sets the look of the lesion mask and the ROI mask separately: **Filled** or **Contour**, **Smooth edges** on or off, and the contour width. The lesion mask starts as a smooth fill. The ROI starts as a smooth yellow outline at full opacity, so the PET uptake inside it stays visible while you draw and threshold. These settings change only how the mask looks in the 2D views. The mask itself, the brush and the lesion values are unchanged, and the 3D view always shows the plain mask.
 
 ### Building a release
 

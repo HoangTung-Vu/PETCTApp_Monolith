@@ -13,7 +13,7 @@ from .colorbar_overlay import ColorBarOverlay
 from .ruler_overlay import RulerOverlay
 from .orientation_overlay import OrientationOverlay
 from .lesion_info_overlay import LesionInfoOverlay
-from .mask_overlay import MaskOverlay
+from .mask_overlay import MaskOverlay, DEFAULT_MASK_DISPLAY, DEFAULT_MASK_OPACITY
 
 
 def reorder_layers(layers, desired_names) -> None:
@@ -82,6 +82,8 @@ class ViewerWidget(QWidget):
     # Double-click while the tumor Erase brush is active: [z, y, x] of the
     # island (connected region of the selected lesion) to remove.
     sig_island_erase = pyqtSignal(list)
+    # Ctrl+Z / Ctrl+Shift+Z on the tumor or ROI layer: (mask type, redo).
+    sig_mask_history_key = pyqtSignal(str, bool)
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -120,11 +122,17 @@ class ViewerWidget(QWidget):
         self.is_3d = False
         self._scale_zyx = None   # physical spacing (sz, sy, sx) in mm
 
-        # ── Tumor mask display (smoothed fill / contour) ────────────────
-        # Created first so crosshair, lesion boxes and ruler paint above it.
-        self._tumor_opacity = 0.7
-        self._mask_display = ("filled", False, 2)   # (style, smooth, width px)
-        self._mask_overlay = MaskOverlay(self, self.qt_viewer.canvas.native)
+        # ── Tumor / ROI mask display (smoothed fill / contour) ──────────
+        # Created first so crosshair, lesion boxes and ruler paint above them;
+        # the ROI overlay after the tumor one, as the ROI layer sits above.
+        self._tumor_opacity = DEFAULT_MASK_OPACITY["tumor"]
+        self._roi_opacity = DEFAULT_MASK_OPACITY["roi"]
+        # {mask type: (style, smooth, width px)}
+        self._mask_display = dict(DEFAULT_MASK_DISPLAY)
+        self._mask_overlays = {
+            mask_type: MaskOverlay(self, self.qt_viewer.canvas.native)
+            for mask_type in ("tumor", "roi")
+        }
 
         # ── Crosshair overlay ───────────────────────────────────────────
         self._crosshair_enabled = False   # managed by LayoutManager
@@ -327,7 +335,7 @@ class ViewerWidget(QWidget):
             if visible is not None:
                 kwargs["visible"] = bool(visible)
             if mask_type == "roi":
-                kwargs["opacity"] = 0.9
+                kwargs["opacity"] = self._roi_opacity
             elif mask_type == "organ":
                 kwargs["opacity"] = self._organ_opacity
             elif mask_type == "tumor":
@@ -341,6 +349,8 @@ class ViewerWidget(QWidget):
             layer = napari.layers.Labels(mask_data, **kwargs)
             self.viewer.layers.insert(
                 insert_index(self.viewer.layers, name, self._layer_order()), layer)
+            if mask_type in ("tumor", "roi"):
+                self._bind_history_keys(layer, mask_type)
 
         # Always enforce yellow colormap for ROI layer
         if mask_type == "roi":
@@ -361,29 +371,52 @@ class ViewerWidget(QWidget):
             if layer.colormap is not TUMOR_LABEL_COLORMAP:
                 layer.colormap = TUMOR_LABEL_COLORMAP
             self._apply_tumor_label(layer)
-            self._mask_overlay.attach_layer(layer)
-            self._apply_mask_display()
+
+        if mask_type in self._mask_overlays:
+            self._mask_overlays[mask_type].attach_layer(layer)
+            self._apply_mask_display(mask_type)
 
         self._enforce_layer_order()
+
+    def _bind_history_keys(self, layer, mask_type: str):
+        """Send Ctrl+Z / Ctrl+Shift+Z on this layer to the app's undo / redo.
+
+        napari binds them to ``layer.undo()`` / ``redo()``, which refresh only
+        this view: they emit ``set_data`` but no ``paint`` / ``data`` event, so
+        the other views (same array) kept the old mask until scrolled. The
+        app's undo pops the latest edit across all views and refreshes them.
+        An instance binding overrides napari's class binding.
+        """
+        from app_model.types import KeyCode, KeyMod
+        layer.bind_key(KeyMod.CtrlCmd | KeyCode.KeyZ,
+                       lambda _layer: self.sig_mask_history_key.emit(mask_type, False),
+                       overwrite=True)
+        layer.bind_key(KeyMod.CtrlCmd | KeyMod.Shift | KeyCode.KeyZ,
+                       lambda _layer: self.sig_mask_history_key.emit(mask_type, True),
+                       overwrite=True)
 
     def remove_layer(self, layer_type: str):
         """Remove the layer for ``layer_type`` if present."""
         name = self.LAYER_NAMES.get(layer_type, layer_type)
-        if layer_type == "tumor":
-            self._mask_overlay.detach()
+        if layer_type in self._mask_overlays:
+            self._mask_overlays[layer_type].detach()
         if name in self.viewer.layers:
             self.viewer.layers.remove(name)
 
-    # ── Tumor mask display style ─────────────────────────────────────────
+    # ── Tumor / ROI mask display style ───────────────────────────────────
 
-    def set_mask_display(self, style: str, smooth: bool, width: int):
-        """Tumor mask as "filled" or "contour", optionally smoothed (2D only)."""
-        self._mask_display = (style, bool(smooth), int(width))
-        self._apply_mask_display()
+    def set_mask_display(self, mask_type: str, style: str, smooth: bool, width: int):
+        """Tumor or ROI mask as "filled" or "contour", optionally smoothed (2D only)."""
+        self._mask_display[mask_type] = (style, bool(smooth), int(width))
+        self._apply_mask_display(mask_type)
 
     def set_tumor_opacity(self, value: float):
         self._tumor_opacity = float(value)
-        self._apply_mask_display()
+        self._apply_mask_display("tumor")
+
+    def set_roi_opacity(self, value: float):
+        self._roi_opacity = float(value)
+        self._apply_mask_display("roi")
 
     def set_organ_opacity(self, value: float):
         self._organ_opacity = float(value)
@@ -391,19 +424,22 @@ class ViewerWidget(QWidget):
         if name in self.viewer.layers:
             self.viewer.layers[name].opacity = self._organ_opacity
 
-    def _apply_mask_display(self):
-        """Show the tumor mask either through its Labels layer or the overlay.
+    def _apply_mask_display(self, mask_type: Optional[str] = None):
+        """Show a mask (``None`` = tumor and ROI) through its Labels layer or its overlay.
 
-        Smoothed / contour styles draw the overlay and keep the Labels layer at
-        opacity 0: still visible and editable, so painting works and its
-        events keep the overlay up to date.
+        The only place that sets the tumor / ROI Labels opacity. Smoothed /
+        contour styles draw the overlay and keep the Labels layer at opacity 0
+        — never hidden: a hidden layer emits no ``set_data`` on refresh and
+        napari drops it to pan_zoom, so painting and the overlay would stop.
         """
-        style, smooth, width = self._mask_display
-        use_overlay = not self.is_3d and (style == "contour" or smooth)
-        self._mask_overlay.configure(style, smooth, width, self._tumor_opacity, use_overlay)
-        name = self.LAYER_NAMES["tumor"]
-        if name in self.viewer.layers:
-            self.viewer.layers[name].opacity = 0.0 if use_overlay else self._tumor_opacity
+        for mt in ((mask_type,) if mask_type else tuple(self._mask_overlays)):
+            style, smooth, width = self._mask_display[mt]
+            opacity = self._roi_opacity if mt == "roi" else self._tumor_opacity
+            use_overlay = not self.is_3d and (style == "contour" or smooth)
+            self._mask_overlays[mt].configure(style, smooth, width, opacity, use_overlay)
+            name = self.LAYER_NAMES[mt]
+            if name in self.viewer.layers:
+                self.viewer.layers[name].opacity = 0.0 if use_overlay else opacity
 
     def release_data(self):
         """Swap image/mask data for a 1-voxel placeholder, keeping the layers.
@@ -730,7 +766,8 @@ class ViewerWidget(QWidget):
             self._ruler_overlay.update()
         if self._lesion_overlay.has_infos():
             self._lesion_overlay.update()
-        self._mask_overlay.update()
+        for overlay in self._mask_overlays.values():
+            overlay.update()
         self.sig_camera_changed.emit(self)
 
     def _on_slice_changed(self, event=None):

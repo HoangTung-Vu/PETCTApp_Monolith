@@ -75,6 +75,8 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
     """Dynamic multi-view layout manager with a pool of 9 ViewerWidgets."""
 
     sig_island_erase_info       = pyqtSignal(str)   # status line for a double-click island erase
+    # Ctrl+Z / Ctrl+Shift+Z on a tumor / ROI layer in any view: (mask type, redo)
+    sig_mask_history_key        = pyqtSignal(str, bool)
     sig_mask_painted            = pyqtSignal(str)
     sig_mask_modified           = pyqtSignal(str)
     # A tumor brush stroke of lesion id A covered other ids: (napari history
@@ -183,6 +185,7 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
             vw.hide()
             vw.sig_lesion_double_click.connect(self._on_viewer_lesion_double_click)
             vw.sig_island_erase.connect(lambda pos, v=vw: self._on_island_erase(v, pos))
+            vw.sig_mask_history_key.connect(self.sig_mask_history_key)
             vw.set_lesion_infos(self._shown_lesion_infos(), self._lesion_stale)
             self._viewer_pool.append(vw)
             self._fixed_view_map[view_id] = vw
@@ -331,7 +334,8 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
 
         self._load_active_views()
         self._connect_mask_events()
-        self.reset_tumor_history()
+        self.reset_mask_history("tumor")
+        self.reset_mask_history("roi")
 
     def _load_active_views(self):
         """Push cached data into all currently assigned pool viewers.
@@ -795,19 +799,20 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
         for vw in self._viewer_pool + [self.viewer_3d]:
             vw.set_organ_opacity(value)
 
-    def set_mask_display(self, style: str, smooth: bool, width: int):
-        """Tumor mask as a filled area or a contour, optionally smoothed (2D views).
+    def set_mask_display(self, mask_type: str, style: str, smooth: bool, width: int):
+        """Tumor or ROI mask as a filled area or a contour, optionally smoothed (2D views).
 
         Every pool viewer keeps the style, so views opened later use it too.
         """
         for vw in self._viewer_pool:
-            vw.set_mask_display(style, smooth, width)
+            vw.set_mask_display(mask_type, style, smooth, width)
 
     def set_roi_opacity(self, value: float):
-        for vw in self._get_all_loaded_viewers():
-            name = vw.LAYER_NAMES.get("roi", "ROI Mask")
-            if name in vw.viewer.layers:
-                vw.viewer.layers[name].opacity = value
+        # Through the viewer, never ``layer.opacity``: in smooth / contour
+        # styles the ROI Labels layer must stay at opacity 0 under its overlay.
+        # Every viewer keeps the value, so views opened later use it too.
+        for vw in self._viewer_pool + [self.viewer_3d]:
+            vw.set_roi_opacity(value)
 
     def set_ct_window_level(self, window: float, level: float):
         self._ct_wl = (window, level)
@@ -949,8 +954,8 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
 
         self._cached_data_zyx[mask_type] = data_zyx
         self._push_mask_to_viewers(data_zyx, mask_type)
-        if mask_type == "tumor":
-            self.reset_tumor_history()
+        if mask_type in ("tumor", "roi"):
+            self.reset_mask_history(mask_type)
 
     def update_mask_region(self, mask_data, mask_type, region_xyz):
         """Copy only ``region_xyz`` (3 slices, XYZ) of ``mask_data`` into the ZYX cache.
@@ -972,6 +977,8 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
         block = mask_data[sx, sy, sz]                       # (x, y, z)
         existing_zyx[z_nap, y_nap, sx] = block.transpose(2, 1, 0)[::-1, ::-1, :]
         self._push_mask_to_viewers(existing_zyx, mask_type)
+        if mask_type in ("tumor", "roi"):
+            self.reset_mask_history(mask_type)
 
     def refresh_mask(self, mask_type):
         """Redraw a mask whose cached ZYX array was edited in place."""
