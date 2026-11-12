@@ -362,6 +362,64 @@ def lesion_id_paths(b, win, shape):
     b.pump(50)
 
 
+def new_view_settings(b, win):
+    """A view opened for the first time shows the current View / Segmentation
+    tab settings, not the defaults (Contour came back filled, the brush
+    painted lesion 1, a hidden ROI was shown, interpolation was linear)."""
+    lm = win.layout_manager
+    vd = win.control_panel.view_display_tab
+    combo, smooth_chk, width_spin = vd._mask_style_widgets["tumor"]
+    rcombo, rsmooth_chk, _ = vd._mask_style_widgets["roi"]
+    unopened = [v for v in ("sagittal_ct", "sagittal_pet", "coronal_overlay")
+                if v not in lm._fixed_view_map]
+    if not unopened:
+        check(False, "a never-opened view is left for the new-view check")
+        return
+    views_before, label_before = list(lm._active_views), lm._tumor_label
+
+    combo.setCurrentIndex(1)                  # tumor: Contour (opacity → 100)
+    width_spin.setValue(3)
+    rcombo.setCurrentIndex(0)                 # ROI: filled voxels at 55 %, hidden
+    rsmooth_chk.setChecked(False)
+    vd.slider_roi_opacity.setValue(55)
+    vd.chk_roi.setChecked(False)
+    lm.set_tumor_label(7)
+    vd.btn_interpolation.click()              # OFF → "nearest"
+    b.pump(100)
+
+    lm.set_active_views(views_before + [unopened[0]])
+    b.pump(300)
+    vw = lm._fixed_view_map[unopened[0]]
+    tumor = vw.viewer.layers[vw.LAYER_NAMES["tumor"]]
+    check(vw._mask_display["tumor"] == ("contour", True, 3) and vw._mask_overlays["tumor"]._enabled
+          and vw._mask_overlays["tumor"]._style == "contour" and tumor.opacity == 0.0
+          and abs(vw._tumor_opacity - 1.0) < 1e-6,
+          f"new view {unopened[0]}: tumor drawn as contour at 100 %")
+    roi_name = vw.LAYER_NAMES["roi"]
+    roi_ok = vw._mask_display["roi"] == ("filled", False, 2) and abs(vw._roi_opacity - 0.55) < 1e-6
+    if roi_name in vw.viewer.layers:
+        roi = vw.viewer.layers[roi_name]
+        roi_ok &= (not roi.visible) and abs(roi.opacity - 0.55) < 1e-6
+    check(roi_ok, f"new view {unopened[0]}: ROI filled at 55 % and hidden")
+    check(vw._tumor_label == 7 and tumor.selected_label == 7,
+          f"new view {unopened[0]}: brush on the selected lesion id")
+    images = [l for l in vw.viewer.layers if hasattr(l, "interpolation2d")]
+    check(images and all(l.interpolation2d == "nearest" for l in images),
+          f"new view {unopened[0]}: interpolation OFF")
+
+    # Put everything back.
+    vd.btn_interpolation.click()
+    lm.set_tumor_label(label_before)
+    vd.chk_roi.setChecked(True)
+    rsmooth_chk.setChecked(True)
+    rcombo.setCurrentIndex(1)
+    width_spin.setValue(2)
+    combo.setCurrentIndex(0)
+    vd.slider_tumor_opacity.setValue(70)
+    lm.set_active_views(views_before)
+    b.pump(200)
+
+
 def run(args):
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtGui import QWheelEvent
@@ -668,6 +726,7 @@ def run(args):
     check("SUVpeak" in head and "TLG" in head, "CSV has SUVpeak + TLG columns")
 
     lesion_id_paths(b, win, shape)
+    new_view_settings(b, win)
 
     if CHECK_FAILURES:
         print(f"[bench] {len(CHECK_FAILURES)} check(s) FAILED: {CHECK_FAILURES}")

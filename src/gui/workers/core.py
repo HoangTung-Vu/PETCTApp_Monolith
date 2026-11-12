@@ -44,6 +44,20 @@ def is_totalseg_model(model: str) -> bool:
     return model == TOTALSEG_MODEL
 
 
+def model_file_tag(model: str) -> str:
+    """Short model name for result file names: ``<CT>_Segmentation_<tag>.nii.gz``.
+
+    The model name in the URL is the full nnU-Net folder name
+    (``<Trainer>__<Plans>__<configuration>``), too long for a file name. The
+    nnU-Net preset is ``nnUNet``; another nnU-Net name keeps only its trainer
+    part; any other name is used as it is.
+    """
+    model = (model or "").strip().strip("/")
+    if model == ENGINE_NNUNET_MODEL:
+        return "nnUNet"
+    return model.split("__", 1)[0] or model
+
+
 def _clean_ip(value: str) -> str:
     """Reduce input to a bare IP/host, dropping any scheme, port, or path.
 

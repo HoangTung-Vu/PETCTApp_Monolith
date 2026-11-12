@@ -119,6 +119,8 @@ class ViewerWidget(QWidget):
         }
         self._organ_opacity = 0.4
         self._tumor_label = 1        # lesion id the tumor brush paints / erases
+        self._mask_visible = {"tumor": True, "roi": True}   # "Show … Mask" checkboxes
+        self._interpolation = "linear"   # interpolation2d of the image layers
         self.is_3d = False
         self._scale_zyx = None   # physical spacing (sz, sy, sx) in mm
 
@@ -292,7 +294,7 @@ class ViewerWidget(QWidget):
                 colormap=colormap,
                 blending=effective_blending,
                 opacity=opacity,
-                interpolation2d='linear',
+                interpolation2d=self._interpolation,
                 multiscale=False,
             )
         self._enforce_layer_order()
@@ -332,6 +334,8 @@ class ViewerWidget(QWidget):
             layer.refresh()
         else:
             kwargs = dict(name=name, opacity=self._tumor_opacity, multiscale=False)
+            if visible is None:
+                visible = self._mask_visible.get(mask_type)
             if visible is not None:
                 kwargs["visible"] = bool(visible)
             if mask_type == "roi":
@@ -417,6 +421,13 @@ class ViewerWidget(QWidget):
     def set_roi_opacity(self, value: float):
         self._roi_opacity = float(value)
         self._apply_mask_display("roi")
+
+    def set_mask_visible(self, mask_type: str, visible: bool):
+        """Show / hide the tumor or ROI mask (also for a layer created later)."""
+        self._mask_visible[mask_type] = bool(visible)
+        name = self.LAYER_NAMES[mask_type]
+        if name in self.viewer.layers and self.viewer.layers[name].visible != bool(visible):
+            self.viewer.layers[name].visible = bool(visible)
 
     def set_organ_opacity(self, value: float):
         self._organ_opacity = float(value)
@@ -1224,8 +1235,10 @@ class ViewerWidget(QWidget):
 
     def set_interpolation(self, mode: str):
         # `mode` is a napari interpolation2d kernel ("nearest" = OFF state).
+        # Kept for image layers created later; only Image layers have it.
+        self._interpolation = mode
         for layer in self.viewer.layers:
-            if hasattr(layer, "interpolation2d"):
+            if hasattr(layer, "interpolation2d") and layer.interpolation2d != mode:
                 try:
                     layer.interpolation2d = mode
                 except Exception:

@@ -21,6 +21,7 @@ import numpy as np
 import napari
 
 from ..viewers.viewer_widget import ViewerWidget
+from ..viewers.mask_overlay import DEFAULT_MASK_DISPLAY, DEFAULT_MASK_OPACITY
 from .mask_sync import MaskSyncMixin
 from .island_erase import IslandEraseMixin
 from .lesion_info_manager import LesionInfoMixin
@@ -151,7 +152,14 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
         self._pet_colormap = "jet"
         self._overlay_pet_colormap = "jet"
         self._overlay_pet_opacity = 0.5
-        self._tumor_opacity = 0.7
+        # View-tab settings each ViewerWidget keeps for itself; a viewer created
+        # later gets them in _apply_viewer_settings (else it shows the defaults).
+        self._tumor_opacity = DEFAULT_MASK_OPACITY["tumor"]
+        self._roi_opacity = DEFAULT_MASK_OPACITY["roi"]
+        self._organ_opacity = 0.4
+        self._mask_display = dict(DEFAULT_MASK_DISPLAY)   # {mask: (style, smooth, width)}
+        self._mask_visible = {"tumor": True, "roi": True}
+        self._interpolation = "linear"
         # Organ mask (TotalSegmentator, display only): its "Show" checkbox state.
         # Hidden by default; while hidden no Napari copy or layer is built for
         # it (see _load_organ_into), so it costs nothing until it is shown.
@@ -186,10 +194,27 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
             vw.sig_lesion_double_click.connect(self._on_viewer_lesion_double_click)
             vw.sig_island_erase.connect(lambda pos, v=vw: self._on_island_erase(v, pos))
             vw.sig_mask_history_key.connect(self.sig_mask_history_key)
+            self._apply_viewer_settings(vw)
             vw.set_lesion_infos(self._shown_lesion_infos(), self._lesion_stale)
             self._viewer_pool.append(vw)
             self._fixed_view_map[view_id] = vw
         return self._fixed_view_map[view_id]
+
+    def _apply_viewer_settings(self, vw: "ViewerWidget"):
+        """Give a newly created viewer the current View / Segmentation tab
+        settings. The setters below only reach viewers that already exist, so
+        a view opened for the first time used to show the defaults — e.g. a
+        filled mask while Contour was selected, or a brush painting lesion 1
+        instead of the selected lesion."""
+        for mask_type, (style, smooth, width) in self._mask_display.items():
+            vw.set_mask_display(mask_type, style, smooth, width)
+        for mask_type, visible in self._mask_visible.items():
+            vw.set_mask_visible(mask_type, visible)
+        vw.set_tumor_opacity(self._tumor_opacity)
+        vw.set_roi_opacity(self._roi_opacity)
+        vw.set_organ_opacity(self._organ_opacity)
+        vw.set_tumor_label(self._tumor_label)
+        vw.set_interpolation(self._interpolation)
 
     # ── 3D viewer init ───────────────────────────────────────────────────────
 
@@ -788,29 +813,30 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
                 if name in vw.viewer.layers:
                     vw.viewer.layers[name].opacity = value
 
+    # The display setters below store the value (for viewers created later,
+    # see _apply_viewer_settings) and push it to every existing viewer, shown
+    # or not: each viewer keeps it for the layers it creates later.
+
     def set_tumor_opacity(self, value: float):
-        # Every viewer keeps the value, so views opened later use it too.
         self._tumor_opacity = value
         for vw in self._viewer_pool + [self.viewer_3d]:
             vw.set_tumor_opacity(value)
 
     def set_organ_opacity(self, value: float):
-        # Every viewer keeps the value, so views opened later use it too.
+        self._organ_opacity = value
         for vw in self._viewer_pool + [self.viewer_3d]:
             vw.set_organ_opacity(value)
 
     def set_mask_display(self, mask_type: str, style: str, smooth: bool, width: int):
-        """Tumor or ROI mask as a filled area or a contour, optionally smoothed (2D views).
-
-        Every pool viewer keeps the style, so views opened later use it too.
-        """
+        """Tumor or ROI mask as a filled area or a contour, optionally smoothed (2D views)."""
+        self._mask_display[mask_type] = (style, bool(smooth), int(width))
         for vw in self._viewer_pool:
             vw.set_mask_display(mask_type, style, smooth, width)
 
     def set_roi_opacity(self, value: float):
         # Through the viewer, never ``layer.opacity``: in smooth / contour
         # styles the ROI Labels layer must stay at opacity 0 under its overlay.
-        # Every viewer keeps the value, so views opened later use it too.
+        self._roi_opacity = value
         for vw in self._viewer_pool + [self.viewer_3d]:
             vw.set_roi_opacity(value)
 
@@ -838,14 +864,13 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
                 vw.viewer.camera.zoom = zoom_factor
 
     def toggle_mask(self, mask_type: str, visible: bool):
-        name_map = {"tumor": "Tumor Mask", "roi": "ROI Mask", "organ": "Organ Mask"}
         if mask_type == "organ":
             self._show_organ(visible)
             return
-        target_name = name_map.get(mask_type, mask_type)
-        for vw in self._get_all_loaded_viewers():
-            if target_name in vw.viewer.layers:
-                vw.viewer.layers[target_name].visible = visible
+        # Every viewer, shown or not, so a view (re)opened later matches too.
+        self._mask_visible[mask_type] = bool(visible)
+        for vw in self._viewer_pool + [self.viewer_3d]:
+            vw.set_mask_visible(mask_type, visible)
 
     def _show_organ(self, visible: bool):
         """Show / hide the organ mask; the first show builds its Napari copy and layers."""
@@ -1360,10 +1385,6 @@ class LayoutManager(MaskSyncMixin, IslandEraseMixin, LesionInfoMixin, QWidget):
 
     def set_interpolation(self, mode: str):
         # `mode` is a napari interpolation2d kernel (see ViewerWidget.set_interpolation).
-        for vw in self._get_all_loaded_viewers():
-            for layer in vw.viewer.layers:
-                if hasattr(layer, "interpolation2d"):
-                    try:
-                        layer.interpolation2d = mode
-                    except Exception:
-                        pass
+        self._interpolation = mode
+        for vw in self._viewer_pool + [self.viewer_3d]:
+            vw.set_interpolation(mode)

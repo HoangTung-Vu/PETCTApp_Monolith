@@ -90,9 +90,12 @@ class SegmentationHandlerMixin:
             data = np.asarray(mask_img.dataobj, dtype=MASK_DTYPE)
             self.session_manager.set_tumor_mask(data, labeled=False)
             self._push_mask_to_all("tumor", data)
-            # Save immediately to this model's own file, <CT>_Segmentation_<model>.nii.gz
+            # Save immediately to this model's own file, <CT>_Segmentation_<tag>.nii.gz
+            # with a short tag (nnUNet), not the long model name in the URL
             # (the save worker also computes the lesion values).
-            self.save_session(seg_path=self.session_manager.model_segmentation_path(model))
+            from ..workers.core import model_file_tag
+            self.save_session(
+                seg_path=self.session_manager.model_segmentation_path(model_file_tag(model)))
         print(f"Segmentation {kind} ({model}) finished.")
 
         self._close_seg_progress_dialog()

@@ -125,9 +125,9 @@ The app is installed to `/opt/MetLePET` and uses the desktop's own GTK/Qt system
 
 | Model | Sends | Result file (next to the CT) |
 |---|---|---|
-| nnU-Net tumor (custom), port 8104 | CT + PET | `<CT>_Segmentation_<model>.nii.gz` — becomes the session's lesion segmentation |
+| nnU-Net tumor (custom), port 8104 | CT + PET | `<CT>_Segmentation_nnUNet.nii.gz` — becomes the session's lesion segmentation |
 | TotalSegmentator (organs), port 8105 | CT | `<CT>_organ.nii.gz` — organ labels, display only |
-| Other… | CT + PET | `<CT>_Segmentation_<typed name>.nii.gz` |
+| Other… | CT + PET | `<CT>_Segmentation_<typed name>.nii.gz` (an nnU-Net `<Trainer>__<Plans>__<config>` name keeps only `<Trainer>`) |
 
 Picking a preset fills in that engine's default port. Running a model overwrites its own result file. When `<CT>_organ.nii.gz` exists, the app loads it as the **Organ Mask** layer, hidden by default: turn on **View tab → Zoom & Mask → Show Organ Mask** to see it (opacity next to it). It is never edited and does not change the lesion values. Any other segmentation is opened with **Load Segmentation** and becomes the session's lesion segmentation.
 

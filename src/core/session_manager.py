@@ -636,7 +636,10 @@ class SessionManager:
         return Path(ref_path) if ref_path and Path(ref_path).exists() else None
 
     def model_segmentation_path(self, model: str) -> Path:
-        """File for an AI tumor segmentation: ``<CT>_Segmentation_<model>.nii.gz``."""
+        """File for an AI tumor segmentation: ``<CT>_Segmentation_<model>.nii.gz``.
+
+        ``model`` is the short file tag (``workers.core.model_file_tag``), e.g. nnUNet.
+        """
         session = self.repository.get_by_id(self.current_session_id)
         return self._default_seg_path(session, f"Segmentation_{safe_filename_part(model)}")
 
